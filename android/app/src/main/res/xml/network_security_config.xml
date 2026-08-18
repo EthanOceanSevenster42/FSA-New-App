@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TLS is required everywhere by default.
+
+  The single cleartext exception below is the LAN development server. The
+  legacy app set android:usesCleartextTraffic="true" application-wide and
+  talked plain HTTP to public IPs (45.222.124.223, 102.22.82.8, ...), which
+  put credentials and inspection data on the wire in the clear.
+
+  Delete this <domain-config> block before any build that leaves a developer
+  machine.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Development machines on the local network. DHCP reassigns these,
+             so more than one is listed; Android's config takes literal hosts,
+             not CIDR ranges. -->
+        <domain includeSubdomains="false">192.168.2.2</domain>
+        <domain includeSubdomains="false">10.0.0.118</domain>
+        <domain includeSubdomains="false">10.0.0.191</domain>
+        <domain includeSubdomains="false">10.0.0.136</domain>
+        <!-- Android emulator loopback alias. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

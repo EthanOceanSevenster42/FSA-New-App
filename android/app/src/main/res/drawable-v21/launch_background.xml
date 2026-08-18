@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window shown behind the app while the Flutter engine starts.
+
+  Plain white, not `?android:colorBackground`. That attribute resolves against
+  the *system* theme, so on a handset set to dark mode the launch window came
+  up black — and this app is light-only, so the first thing an inspector saw
+  was a black flash belonging to no screen in the app.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/launch_background" />
+</layer-list>
