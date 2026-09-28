@@ -2,8 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/restricted_particulars_picker.dart';
 import '../data/eggs_repository.dart';
 import 'summary_widgets.dart';
 
@@ -75,8 +78,8 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
     final trays = await repo.traySizes();
     final facilityTypes = await repo.facilityTypes();
 
-    String nameOf<T>(Iterable<T> items, bool Function(T) match,
-        String Function(T) label) {
+    String nameOf<T>(
+        Iterable<T> items, bool Function(T) match, String Function(T) label) {
       for (final item in items) {
         if (match(item)) return label(item);
       }
@@ -106,8 +109,11 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
               (f) => f.name),
       failedRequirements:
           await repo.requirementNames(inspection.failedRequirementIds),
-      restrictedParticulars: await repo
-          .restrictedParticularNames(inspection.restrictedParticularIds),
+      restrictedParticulars: [
+        ...await repo
+            .restrictedParticularNames(inspection.restrictedParticularIds),
+        ...TypedParticulars.unpack(inspection.restrictedParticularsText),
+      ],
     );
   }
 
@@ -125,7 +131,8 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_Data?>(
+      body: ContentWidth(
+          child: FutureBuilder<_Data?>(
         future: _future,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -146,7 +153,7 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
           }
           return _body(data);
         },
-      ),
+      )),
     );
   }
 
@@ -162,7 +169,6 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
           status: i.status,
         ),
         const SizedBox(height: 18),
-
         SummarySection(
           title: 'Result',
           children: [
@@ -184,18 +190,17 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
               ),
           ],
         ),
-
         SummarySection(
           title: 'Facility',
           children: [
             SummaryField(label: 'Name', value: orDash(i.facilityName)),
             SummaryField(label: 'Type', value: d.facilityTypeName),
             SummaryField(label: 'Address', value: orDash(i.facilityAddress)),
-            SummaryField(label: 'Telephone', value: orDash(i.facilityPhone)),
+            SummaryField(
+                label: 'Telephone / cellphone', value: orDash(i.facilityPhone)),
             SummaryField(label: 'Reason', value: d.reasonName),
           ],
         ),
-
         SummarySection(
           title: 'Client',
           children: [
@@ -204,18 +209,17 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
             SummaryField(
                 label: 'Contact', value: orDash(i.clientContactPerson)),
             SummaryField(
-                label: 'Telephone', value: orDash(i.clientContactNumber)),
+                label: 'Telephone / cellphone',
+                value: orDash(i.clientContactNumber)),
             SummaryField(label: 'Email', value: orDash(i.clientEmail)),
             SummaryField(
                 label: 'Representative', value: orDash(i.representativeName)),
           ],
         ),
-
         SummarySection(
           title: 'Consignment',
           children: [
-            SummaryField(
-                label: 'Producer', value: orDash(i.producerSupplier)),
+            SummaryField(label: 'Producer', value: orDash(i.producerSupplier)),
             SummaryField(label: 'Batch', value: orDash(i.batchNumber)),
             SummaryField(
               label: 'Best before',
@@ -234,10 +238,8 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
               ),
           ],
         ),
-
         _samplesSection(d),
         _deviationSection(d),
-
         if (d.failedRequirements.isNotEmpty)
           SummarySection(
             title: 'Labelling and packing failures',
@@ -245,7 +247,6 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
               for (final r in d.failedRequirements) SummaryBullet(text: r),
             ],
           ),
-
         SummarySection(
           title: 'Restricted particulars',
           children: d.restrictedParticulars.isEmpty
@@ -255,33 +256,20 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
                     SummaryBullet(text: r),
                 ],
         ),
-
-        if (i.generalComments.isNotEmpty ||
-            i.nonConformanceComments.isNotEmpty)
+        if (i.nonConformanceComments.isNotEmpty)
           SummarySection(
             title: 'Comments',
             children: [
-              if (i.generalComments.isNotEmpty)
-                SummaryField(label: 'General', value: i.generalComments),
               if (i.nonConformanceComments.isNotEmpty)
                 SummaryField(
                     label: 'Non-conformance', value: i.nonConformanceComments),
             ],
           ),
-
         _photoSection(d),
-
         SummarySection(
           title: 'Record',
           children: [
             SummaryField(label: 'Reference', value: i.clientUuid, mono: true),
-            SummaryField(
-              label: 'Location',
-              value: i.latitude == null || i.longitude == null
-                  ? 'Not captured'
-                  : '${i.latitude!.toStringAsFixed(5)}, '
-                      '${i.longitude!.toStringAsFixed(5)}',
-            ),
             SummaryField(
               label: 'Upload',
               value: i.isUploaded ? 'Sent to the server' : 'Waiting to send',
@@ -331,8 +319,7 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
               color: AppColors.muted,
               letterSpacing: 0.6,
             ),
-            dataTextStyle:
-                TextStyle(fontSize: 13, color: AppColors.ink),
+            dataTextStyle: TextStyle(fontSize: 13, color: AppColors.ink),
             columns: const [
               DataColumn(label: Text('EGG')),
               DataColumn(label: Text('MASS (g)')),
@@ -394,24 +381,23 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
                     children: [
                       Text(
                         t.description,
-                        style: TextStyle(
-                            fontSize: 13.5, color: AppColors.ink),
+                        style: TextStyle(fontSize: 13.5, color: AppColors.ink),
                       ),
                       if (t.category.isNotEmpty)
                         Text(
                           t.category,
-                          style: TextStyle(
-                              fontSize: 11.5, color: AppColors.muted),
+                          style:
+                              TextStyle(fontSize: 11.5, color: AppColors.muted),
                         ),
                     ],
                   ),
                 ),
                 const SizedBox(width: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppColors.brandRed.withValues(alpha: 0.08),
+                    color: AppColors.brandPrimary.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
@@ -421,7 +407,7 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
                     style: const TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w900,
-                      color: AppColors.brandRed,
+                      color: AppColors.brandPrimary,
                     ),
                   ),
                 ),
@@ -567,7 +553,8 @@ class PhotoImage extends StatelessWidget {
   final int? cacheWidth;
   final BoxFit fit;
 
-  bool get _isRemote => path.startsWith('http://') || path.startsWith('https://');
+  bool get _isRemote =>
+      path.startsWith('http://') || path.startsWith('https://');
 
   @override
   Widget build(BuildContext context) {
@@ -578,8 +565,7 @@ class PhotoImage extends StatelessWidget {
         height: height,
         fit: fit,
         cacheWidth: cacheWidth,
-        errorBuilder: (_, __, ___) =>
-            _unavailable('Could not be downloaded'),
+        errorBuilder: (_, __, ___) => _unavailable('Could not be downloaded'),
         loadingBuilder: (context, child, progress) => progress == null
             ? child
             : SizedBox(
@@ -623,8 +609,7 @@ class PhotoImage extends StatelessWidget {
         child: Text(
           message,
           textAlign: TextAlign.center,
-          style: TextStyle(
-              fontSize: 10.5, color: AppColors.muted, height: 1.3),
+          style: TextStyle(fontSize: 10.5, color: AppColors.muted, height: 1.3),
         ),
       );
 }
@@ -679,7 +664,8 @@ class _PhotoViewerState extends State<_PhotoViewer> {
             ),
         ],
       ),
-      body: Column(
+      body: ContentWidth(
+          child: Column(
         children: [
           Expanded(
             child: PageView.builder(
@@ -717,21 +703,19 @@ class _PhotoViewerState extends State<_PhotoViewer> {
                 ],
                 Text(
                   'Taken ${formatDateTime(at)}',
-                  style:
-                      const TextStyle(color: Colors.white70, fontSize: 12.5),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
                 ),
                 Text(
                   photo.isUploaded
                       ? 'Uploaded to the server'
                       : 'Waiting to upload',
-                  style:
-                      const TextStyle(color: Colors.white54, fontSize: 12.5),
+                  style: const TextStyle(color: Colors.white54, fontSize: 12.5),
                 ),
               ],
             ),
           ),
         ],
-      ),
+      )),
     );
   }
 }

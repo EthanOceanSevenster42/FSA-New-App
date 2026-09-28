@@ -21,7 +21,7 @@ class AppConfig {
         // The default is a dev machine on the LAN, whose address DHCP moves.
         apiBaseUrl: String.fromEnvironment(
           'API_BASE_URL',
-          defaultValue: 'http://192.168.2.2:8010',
+          defaultValue: 'http://192.168.2.4:8010',
         ),
         isTrialVersion: bool.fromEnvironment('IS_TRIAL'),
       );

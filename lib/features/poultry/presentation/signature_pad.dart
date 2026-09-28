@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/responsive.dart';
 import 'package:flutter/rendering.dart';
 
 import '../../../core/theme/app_theme.dart';
@@ -16,22 +18,49 @@ import '../../../core/theme/app_theme.dart';
 /// Opened full-screen and landscape-friendly. A signature strip a centimetre
 /// tall gets an initial rather than a signature, and the one thing this has to
 /// produce is something a person would accept as theirs.
+///
+/// Returns the PNG path, `null` when the page was cancelled, or
+/// [signatureDeclined] when [declineLabel] was offered and chosen — the
+/// signer would not or could not sign, which is an outcome, not a blank.
 Future<String?> captureSignature(
   BuildContext context, {
   required String title,
   required String outputPath,
+  String? caption,
+  String? declineLabel,
 }) =>
     Navigator.of(context).push<String>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => _SignaturePage(title: title, outputPath: outputPath),
+        builder: (_) => _SignaturePage(
+          title: title,
+          caption: caption,
+          outputPath: outputPath,
+          declineLabel: declineLabel,
+        ),
       ),
     );
 
+/// What [captureSignature] returns when the signer declined to sign.
+const signatureDeclined = '';
+
 class _SignaturePage extends StatefulWidget {
-  const _SignaturePage({required this.title, required this.outputPath});
+  const _SignaturePage({
+    required this.title,
+    this.caption,
+    required this.outputPath,
+    this.declineLabel,
+  });
 
   final String title;
+
+  /// When set, a third choice under the box: the signer declines, and the
+  /// page returns [signatureDeclined] instead of a file.
+  final String? declineLabel;
+
+  /// A fuller line under the app bar — who is signing and what for — so the
+  /// title itself can stay short enough never to truncate.
+  final String? caption;
   final String outputPath;
 
   @override
@@ -51,8 +80,8 @@ class _SignaturePageState extends State<_SignaturePage> {
     if (!_hasInk || _saving) return;
     setState(() => _saving = true);
     try {
-      final boundary = _boundary.currentContext!.findRenderObject()
-          as RenderRepaintBoundary;
+      final boundary =
+          _boundary.currentContext!.findRenderObject() as RenderRepaintBoundary;
       // 2x so the signature stays legible when a direction is printed.
       final image = await boundary.toImage(pixelRatio: 2);
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -86,15 +115,23 @@ class _SignaturePageState extends State<_SignaturePage> {
         elevation: 0,
         actions: [
           TextButton(
-            onPressed: _strokes.isEmpty
-                ? null
-                : () => setState(_strokes.clear),
+            onPressed: _strokes.isEmpty ? null : () => setState(_strokes.clear),
             child: const Text('Clear'),
           ),
         ],
       ),
-      body: Column(
+      body: ContentWidth(
+          child: Column(
         children: [
+          if (widget.caption != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                widget.caption!,
+                style: TextStyle(
+                    color: AppColors.inkSoft, fontSize: 13.5, height: 1.35),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Text(
@@ -129,36 +166,63 @@ class _SignaturePageState extends State<_SignaturePage> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-            child: Row(
+            // The system navigation bar draws over the bottom edge, so the
+            // buttons sit above it rather than underneath it.
+            padding: EdgeInsets.fromLTRB(
+              16,
+              0,
+              16,
+              20 + MediaQuery.paddingOf(context).bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: SizedBox(
+                if (widget.declineLabel != null) ...[
+                  SizedBox(
                     height: 48,
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Cancel'),
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _saving
+                          ? null
+                          : () => Navigator.of(context).pop(signatureDeclined),
+                      icon: const Icon(Icons.do_not_disturb_alt_outlined,
+                          size: 18),
+                      label: Text(widget.declineLabel!),
                     ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: SizedBox(
-                    height: 48,
-                    child: FilledButton(
-                      // Disabled until something is drawn: an empty box saved
-                      // as a signature is worse than no signature, because it
-                      // looks like consent was given.
-                      onPressed: _hasInk && !_saving ? _save : null,
-                      child: Text(_saving ? 'Saving…' : 'Use signature'),
+                  const SizedBox(height: 10),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 48,
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: SizedBox(
+                        height: 48,
+                        child: FilledButton(
+                          // Disabled until something is drawn: an empty box
+                          // saved as a signature is worse than no signature,
+                          // because it looks like consent was given.
+                          onPressed: _hasInk && !_saving ? _save : null,
+                          child: Text(_saving ? 'Saving…' : 'Next'),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -188,8 +252,9 @@ class _SignaturePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_SignaturePainter oldDelegate) =>
-      oldDelegate.strokes != strokes;
+  bool shouldRepaint(_SignaturePainter oldDelegate) => true;
+  // Always: the strokes list is the same instance mutated in place, so an
+  // identity comparison here would never fire and the ink would never show.
 }
 
 /// Bytes of a signature file, for tests and for upload.

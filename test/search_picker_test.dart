@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fsa_app/core/theme/app_theme.dart';
-import 'package:fsa_app/features/eggs/presentation/search_picker.dart';
+import 'package:fsa_app/core/widgets/search_picker.dart';
 
 /// A record with a name and an address, so we can prove the address is not
 /// searched.
@@ -24,10 +24,12 @@ const _places = <_Place>[
 void main() {
   late TextEditingController controller;
   _Place? chosen;
+  String? addedName;
 
   setUp(() {
     controller = TextEditingController();
     chosen = null;
+    addedName = null;
   });
   tearDown(() => controller.dispose());
 
@@ -35,6 +37,7 @@ void main() {
     WidgetTester tester, {
     List<_Place> options = _places,
     int minQueryLength = 2,
+    bool canAdd = false,
   }) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1.0;
@@ -52,6 +55,10 @@ void main() {
               optionSubtitle: (p) => p.address,
               onSelected: (p) => chosen = p,
               minQueryLength: minQueryLength,
+              addNewLabel: canAdd ? 'Add new' : null,
+              onAddNew: canAdd
+                  ? (typed) async => addedName = typed
+                  : null,
             ),
           ),
         ),
@@ -285,7 +292,7 @@ void main() {
               options: _places,
               optionLabel: (p) => p.name,
               onSelected: (_) {},
-              addNewLabel: 'Add as new premises',
+              addNewLabel: 'Add new',
               onAddNew: (typed) async => asked = typed,
             ),
           ),
@@ -293,7 +300,7 @@ void main() {
       );
       await search(tester, 'Brand New Packhouse');
 
-      final button = find.textContaining('Add as new premises');
+      final button = find.textContaining('Add new');
       expect(button, findsOneWidget,
           reason: 'the inspector must be able to register it, not just type '
               'a name nobody else will ever see');
@@ -313,5 +320,294 @@ void main() {
 
     // "Nothing matched" would be misleading when nothing was ever downloaded.
     expect(find.textContaining('No records on this device'), findsOneWidget);
+  });
+
+  group('premises that are not on the list', () {
+    testWidgets('a name with no match offers to register it', (tester) async {
+      await pump(tester, canAdd: true);
+      await search(tester, 'Kroonstad Meat Market');
+
+      expect(find.textContaining('Add new'), findsOneWidget);
+      expect(find.textContaining('Kroonstad Meat Market'), findsWidgets);
+    });
+
+    testWidgets('registering hands over what was typed', (tester) async {
+      await pump(tester, canAdd: true);
+      await search(tester, 'Kroonstad Meat Market');
+
+      await tester.tap(find.textContaining('Add new'));
+      await tester.pumpAndSettle();
+
+      expect(addedName, 'Kroonstad Meat Market');
+    });
+
+    testWidgets('a screen that cannot register premises offers nothing',
+        (tester) async {
+      await pump(tester);
+      await search(tester, 'Kroonstad Meat Market');
+
+      expect(find.textContaining('Add new'), findsNothing);
+    });
+
+    testWidgets('the offer stands even when something matched',
+        (tester) async {
+      await pump(tester, canAdd: true);
+      // "Alpha Packers" matches, but the inspector may be at "Alpha Packers
+      // Two" — a near miss is not the same premises.
+      await search(tester, 'Alpha');
+
+      expect(find.text('Alpha Packers'), findsOneWidget);
+      expect(find.textContaining('Add new: "Alpha"'), findsOneWidget);
+    });
+
+    testWidgets('an exact match is not offered as a new one', (tester) async {
+      await pump(tester, canAdd: true);
+      await search(tester, 'Alpha Packers');
+
+      expect(find.textContaining('Add new'), findsNothing);
+    });
+
+    testWidgets('an empty directory can still register the first one',
+        (tester) async {
+      await pump(tester, options: const [], canAdd: true);
+      await search(tester, 'Kroonstad Meat Market');
+
+      await tester.tap(find.textContaining('Add new'));
+      await tester.pumpAndSettle();
+      expect(addedName, 'Kroonstad Meat Market');
+    });
+    testWidgets('searching never moves the form', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              controller: scroll,
+              child: Column(
+                children: [
+                  const SizedBox(height: 300),
+                  SearchPickerField<_Place>(
+                    label: 'Inspection facility name',
+                    controller: controller,
+                    options: _places,
+                    optionLabel: (p) => p.name,
+                    onSelected: (p) => chosen = p,
+                    addNewLabel: 'Add new',
+                    onAddNew: (typed) async => addedName = typed,
+                  ),
+                  const SizedBox(height: 1200),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      scroll.jumpTo(200);
+      await tester.pumpAndSettle();
+      final fieldBefore = tester.getRect(find.byType(TextField));
+
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Kroonstad Meat Market');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+
+      // The inspector's place on the form is kept: the field has not moved
+      // and the offer opens under it.
+      expect(scroll.offset, 200);
+      expect(tester.getRect(find.byType(TextField)), fieldBefore);
+      final offer = find.textContaining('Add new: "Kroonstad Meat Market"');
+      expect(offer, findsWidgets);
+      expect(tester.getRect(offer.first).top, greaterThan(fieldBefore.bottom));
+    });
+    testWidgets('the prompt reads naturally for a single record',
+        (tester) async {
+      await pump(tester, options: [_places.first], minQueryLength: 1);
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('1 letter of the name'), findsOneWidget);
+      expect(find.textContaining('search 1 record.'), findsOneWidget);
+    });
+
+    testWidgets('and in the plural for the usual directory', (tester) async {
+      await pump(tester);
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('2 letters of the name'), findsOneWidget);
+      expect(find.textContaining('search 7 records.'), findsOneWidget);
+    });
+    testWidgets('a long match list stays under the field and fits the screen',
+        (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      // A directory the size of the FSA's: hundreds of matches for two letters.
+      final many = List.generate(
+        400,
+        (i) => _Place('Shop ${i.toString().padLeft(3, '0')}', 'Street $i'),
+      );
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              controller: scroll,
+              child: Column(
+                children: [
+                  const SizedBox(height: 300),
+                  SearchPickerField<_Place>(
+                    label: 'Facility name',
+                    controller: controller,
+                    options: many,
+                    optionLabel: (p) => p.name,
+                    onSelected: (p) => chosen = p,
+                    addNewLabel: 'Add new',
+                    onAddNew: (typed) async => addedName = typed,
+                  ),
+                  const SizedBox(height: 1200),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final fieldBefore = tester.getRect(find.byType(TextField));
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'sh');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+
+      expect(scroll.offset, 0, reason: 'the form must not move');
+      expect(tester.getRect(find.byType(TextField)), fieldBefore);
+      // The list is cut to the room under the field, so its scroll box ends
+      // on screen and the matches scroll inside it.
+      final list = find.byType(ListView);
+      expect(list, findsOneWidget);
+      expect(tester.getRect(list).bottom, lessThanOrEqualTo(800));
+      expect(find.text('Shop 000'), findsOneWidget);
+    });
+    testWidgets('with the keyboard up the list is cut to the room above it',
+        (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final many = List.generate(
+        400,
+        (i) => _Place('Shop ${i.toString().padLeft(3, '0')}', 'Street $i'),
+      );
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              controller: scroll,
+              child: Column(
+                children: [
+                  const SizedBox(height: 100),
+                  SearchPickerField<_Place>(
+                    label: 'Producer',
+                    controller: controller,
+                    options: many,
+                    optionLabel: (p) => p.name,
+                    onSelected: (p) => chosen = p,
+                  ),
+                  const SizedBox(height: 1200),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      // The keyboard comes up: 400 of the 800 pixels are gone.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 400);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'sh');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+
+      expect(scroll.offset, 0, reason: 'the form must not move');
+      final list = find.byType(ListView);
+      expect(tester.getRect(list).bottom, lessThanOrEqualTo(400),
+          reason: 'the list ends above the keyboard');
+      expect(tester.getRect(list).height, greaterThanOrEqualTo(56),
+          reason: 'at least one row is always offered');
+      expect(find.text('Shop 000'), findsOneWidget);
+    });
+
+    testWidgets('a field just above the keyboard opens its list upward',
+        (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final scroll = ScrollController();
+      addTearDown(scroll.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              controller: scroll,
+              child: Column(
+                children: [
+                  // The field ends up a little above where the keyboard's top
+                  // edge will be — exactly the raw-meat product picker.
+                  const SizedBox(height: 300),
+                  SearchPickerField<_Place>(
+                    label: 'Raw Product Item',
+                    controller: controller,
+                    options: _places,
+                    optionLabel: (p) => p.name,
+                    onSelected: (p) => chosen = p,
+                    addNewLabel: 'Add new product',
+                    onAddNew: (typed) async => addedName = typed,
+                  ),
+                  const SizedBox(height: 1200),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      // The keyboard comes up under the field: 400 of 800 pixels gone.
+      tester.view.viewInsets = const FakeViewPadding(bottom: 400);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Kroonstad Meat Market');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+
+      final field = tester.getRect(find.byType(TextField));
+      // Flutter itself nudges a focused field clear of the keyboard by a few
+      // pixels; the picker adds nothing to that.
+      expect(scroll.offset, lessThan(20),
+          reason: 'the form is not thrown to the bottom');
+      final offer = find.textContaining('Add new product: "Kroonstad');
+      expect(offer, findsWidgets);
+      final offerRect = tester.getRect(offer.first);
+      expect(offerRect.bottom, lessThanOrEqualTo(field.top),
+          reason: 'no room below, so the list opens above the field');
+      expect(offerRect.top, greaterThanOrEqualTo(0));
+      expect(offerRect.bottom, lessThanOrEqualTo(400),
+          reason: 'and stays clear of the keyboard');
+    });
   });
 }

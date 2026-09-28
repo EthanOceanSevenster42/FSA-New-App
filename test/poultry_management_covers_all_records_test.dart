@@ -184,6 +184,14 @@ void main() {
       // The saved values are back on screen. A blank form here meant
       // completing the draft erased everything already entered.
       expect(find.text('Halfway House Poultry'), findsOneWidget);
+      // Every field carries its label on its own line, so the contact sits
+      // below the first screenful and has to be scrolled to before it is
+      // built at all.
+      await tester.scrollUntilVisible(
+        find.text('P. Person'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('P. Person'), findsOneWidget);
     });
   });

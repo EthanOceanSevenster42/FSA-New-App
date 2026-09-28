@@ -36,14 +36,18 @@ void main() {
       expect(EggRules.sizeFor(60, _bands)?.name, 'Extra Large');
     });
 
-    test('band boundaries are inclusive at both ends', () {
-      expect(EggRules.sizeFor(43, _bands)?.name, 'Medium');
+    test('a size is "more than" its floor — the floor itself is not in it',
+        () {
+      expect(EggRules.sizeFor(43.01, _bands)?.name, 'Medium');
       expect(EggRules.sizeFor(50.99, _bands)?.name, 'Medium');
-      expect(EggRules.sizeFor(51, _bands)?.name, 'Large');
+      expect(EggRules.sizeFor(51.5, _bands)?.name, 'Large');
+      // Exactly 51 g is not "more than 51 g"; this fixture's Large ceiling
+      // is 50.99, so it falls between bands.
+      expect(EggRules.sizeFor(51, _bands), isNull);
     });
 
     test('the top band has no upper limit', () {
-      expect(EggRules.sizeFor(66, _bands)?.name, 'Jumbo');
+      expect(EggRules.sizeFor(66.5, _bands)?.name, 'Jumbo');
       expect(EggRules.sizeFor(120, _bands)?.name, 'Jumbo');
     });
 
@@ -162,6 +166,39 @@ void main() {
 
     test('an unknown deviation id is ignored, not fatal', () {
       expect(grade({999})?.name, 'Grade A');
+    });
+
+    test('nothing in the reference can lower a grade: not determined', () {
+      // How the Agency's list actually ships - no deviation carries a
+      // downgrade, because the original never determined a grade at all,
+      // only counted deviations against their bands. The form used to fall
+      // through to the best grade, so a decayed sample read "Grade 1".
+      final undowngradeable = [
+        for (final d in _deviations)
+          DeviationRef(
+            id: d.id,
+            categoryId: d.categoryId,
+            description: d.description,
+            downgradesToGradeId: null,
+          ),
+      ];
+      expect(
+        EggRules.gradeForEgg(
+          tickedDeviationIds: {11, 12},
+          deviations: undowngradeable,
+          grades: _grades,
+        ),
+        isNull,
+      );
+      expect(
+        EggRules.gradeForEgg(
+          tickedDeviationIds: {},
+          deviations: undowngradeable,
+          grades: _grades,
+        ),
+        isNull,
+        reason: 'with no way to lower a grade, no egg can be graded at all',
+      );
     });
 
     test('no grades defined yields null rather than a guess', () {
@@ -333,18 +370,32 @@ void main() {
       expect(EggValidation.email('@nolocal.co.za'), isNotNull);
     });
 
-    test('best before must be after today', () {
+    test('any best-before date is accepted - past, today or future', () {
+      // The original refused anything before tomorrow, which made a pack
+      // already past its date impossible to record. The inspector writes
+      // down what the label says; that it has passed is a finding.
       final now = DateTime(2026, 7, 31);
-      expect(
-        EggValidation.bestBefore(DateTime(2026, 7, 30), now: now),
-        contains('prior to'),
-      );
-      expect(
-        EggValidation.bestBefore(DateTime(2026, 7, 31), now: now),
-        contains("today's date"),
-      );
-      expect(EggValidation.bestBefore(DateTime(2026, 8, 1), now: now), isNull);
+      for (final date in [
+        DateTime(2026, 7, 30),
+        DateTime(2026, 7, 31),
+        DateTime(2026, 8, 1),
+        DateTime(2019, 1, 1),
+      ]) {
+        expect(EggValidation.bestBefore(date, now: now), isNull,
+            reason: '$date must be accepted as written on the pack');
+      }
       expect(EggValidation.bestBefore(null, now: now), isNull);
+    });
+
+    test('a date up to and including today counts as passed', () {
+      final now = DateTime(2026, 7, 31);
+      expect(EggValidation.bestBeforeHasPassed(DateTime(2026, 7, 30), now: now),
+          isTrue);
+      expect(EggValidation.bestBeforeHasPassed(DateTime(2026, 7, 31), now: now),
+          isTrue, reason: 'a best-before is the last day the claim holds');
+      expect(EggValidation.bestBeforeHasPassed(DateTime(2026, 8, 1), now: now),
+          isFalse);
+      expect(EggValidation.bestBeforeHasPassed(null, now: now), isFalse);
     });
   });
 
@@ -366,6 +417,252 @@ void main() {
     test('all ungraded yields null', () {
       expect(EggRules.consignmentGrade([null, null]), isNull);
       expect(EggRules.consignmentGrade([]), isNull);
+    });
+  });
+
+  group('boundary weights take the lighter band', () {
+    // R.345 Table 2: every size is "more than" its floor. A weight sitting
+    // exactly on a boundary has not reached the band above. Display order
+    // must not influence this — the picker reads light-to-heavy.
+    const ladder = [
+      EggSizeBand(id: 1, name: 'Small', minMassG: 33, maxMassG: 43, sortOrder: 1),
+      EggSizeBand(
+          id: 2, name: 'Medium', minMassG: 43, maxMassG: 51, sortOrder: 2),
+      EggSizeBand(id: 3, name: 'Large', minMassG: 51, maxMassG: 59, sortOrder: 3),
+      EggSizeBand(
+          id: 6, name: 'Super Jumbo', minMassG: 72, maxMassG: null, sortOrder: 6),
+      EggSizeBand(
+          id: 7,
+          name: 'Mixed Size',
+          minMassG: 33,
+          maxMassG: null,
+          sortOrder: 7,
+          isMassBand: false),
+    ];
+
+    test('43 g is Small, not Medium — Medium is more than 43 g', () {
+      expect(EggRules.sizeFor(43, ladder)?.name, 'Small');
+      expect(EggRules.sizeFor(43.1, ladder)?.name, 'Medium');
+    });
+
+    test('51 g is Medium, not Large', () {
+      expect(EggRules.sizeFor(51, ladder)?.name, 'Medium');
+    });
+
+    test('33 g is not Small — Small is more than 33 g', () {
+      expect(EggRules.sizeFor(33, ladder), isNull);
+      expect(EggRules.sizeFor(33.1, ladder)?.name, 'Small');
+    });
+
+    test('mid-band and open-topped weights are unchanged', () {
+      expect(EggRules.sizeFor(47, ladder)?.name, 'Medium');
+      expect(EggRules.sizeFor(90, ladder)?.name, 'Super Jumbo');
+    });
+
+    test('a declaration is never derived from a weight', () {
+      expect(EggRules.sizeFor(35, ladder)?.name, 'Small');
+    });
+  });
+
+  group('automatic deviations (the original grading engine)', () {
+    const sj = EggSizeBand(
+        id: 21, name: 'Super Jumbo', minMassG: 72, maxMassG: null, sortOrder: 6);
+    const jumbo = EggSizeBand(
+        id: 22, name: 'Jumbo', minMassG: 66, maxMassG: 72, sortOrder: 5);
+    const small = EggSizeBand(
+        id: 23, name: 'Small', minMassG: 33, maxMassG: 43, sortOrder: 1);
+    const g1 = EggGradeRef(id: 31, name: 'Grade 1', rank: 1);
+    const g2 = EggGradeRef(id: 32, name: 'Grade 2', rank: 2);
+    const g3 = EggGradeRef(id: 33, name: 'Grade 3', rank: 3);
+    const devs = [
+      DeviationRef(
+          id: 1,
+          categoryId: 1,
+          description: 'Super Jumbo - <= 2g of Min. Weight',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 2,
+          categoryId: 1,
+          description: 'Jumbo - <= 2g of Min. Weight',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 6,
+          categoryId: 1,
+          description: 'Small - <= 2g of Min. Weight',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 34,
+          categoryId: 1,
+          description: 'Egg Weight Difference >= 2g',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 29,
+          categoryId: 15,
+          description:
+              'Pasteurised 65 units, Not more than 5 units lower than minimum',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 30,
+          categoryId: 15,
+          description:
+              'Haugh Value at least 55/35 units, Not more than 5 units lower '
+              'than minimum',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 36,
+          categoryId: 15,
+          description:
+              'Haugh Value at least 55/35 units, More than 5 units lower than '
+              'minimum',
+          downgradesToGradeId: null),
+      DeviationRef(
+          id: 37,
+          categoryId: 15,
+          description:
+              'Pasteurised 65 units, More than 5 units lower than minimum',
+          downgradesToGradeId: null),
+    ];
+
+    Set<int> weight(double mass, EggSizeBand size, EggGradeRef grade) =>
+        EggRules.autoWeightDeviationIds(
+          massG: mass,
+          declaredSize: size,
+          declaredGrade: grade,
+          deviations: devs,
+        );
+
+    Set<int> albumen(double hu, EggGradeRef grade, {bool past = false}) =>
+        EggRules.autoAlbumenDeviationIds(
+          haughUnit: hu,
+          declaredGrade: grade,
+          pasteurised: past,
+          deviations: devs,
+        );
+
+    test("within 2 g under the declared minimum ticks that size's own row",
+        () {
+      // "Jumbo" also matches "Super Jumbo - ..." by Contains; the original's
+      // LastOrDefault over the id order resolves it to the Jumbo row.
+      expect(weight(65, jumbo, g1), {2});
+    });
+
+    test('an egg exactly at the minimum is still ticked — weightDiff <= 0',
+        () {
+      expect(weight(66, jumbo, g1), {2});
+    });
+
+    test('more than 2 g under ticks "Egg Weight Difference >= 2g"', () {
+      expect(weight(63, jumbo, g1), {34});
+    });
+
+    test('above the minimum ticks nothing', () {
+      expect(weight(67, jumbo, g1), isEmpty);
+    });
+
+    test('Small is excluded from the within-2 g band, as the original excludes it',
+        () {
+      // PoultryEggManager.cs:1270 guards the within-band branch with
+      // `SmallId != model.SelectedPoultryEggSizeTypeId`, so a Small egg within
+      // 2 g of the minimum falls between the two branches and ticks nothing.
+      // This reverses the 2026-08-28 reading of R.345 Table 4 item 9(a);
+      // restored to the original's behaviour on Ethan's instruction,
+      // 2026-09-14.
+      expect(weight(33, small, g1), isEmpty);
+      expect(weight(32, small, g1), isEmpty);
+      expect(weight(31, small, g1), isEmpty);
+      // More than 2 g under still ticks the over-band row, for Small as for
+      // every other size.
+      expect(weight(30.9, small, g1), {34});
+      expect(weight(30, small, g1), {34});
+      expect(weight(33.1, small, g1), isEmpty);
+    });
+
+    test('Grade 3 skips the weight checks — except for Super Jumbo', () {
+      expect(weight(60, jumbo, g3), isEmpty);
+      expect(weight(71, sj, g3), {1});
+    });
+
+    test('fresh eggs compare against 55/35 with a 5-unit band', () {
+      expect(albumen(51, g1), {30}); // 4 under 55
+      expect(albumen(49, g1), {36}); // 6 under 55
+      expect(albumen(55, g1), isEmpty);
+      expect(albumen(31, g2), {30}); // 4 under 35
+      expect(albumen(20, g3), isEmpty); // Grade 3 reference is 0
+    });
+
+    test(
+        "pasteurised eggs compare against 65 — and exactly 5 under ticks "
+        "neither row, as the original's strict inequalities do", () {
+      expect(albumen(61, g1, past: true), {29});
+      expect(albumen(59, g1, past: true), {37});
+      expect(albumen(60, g1, past: true), isEmpty);
+    });
+
+    test('every automatic id is managed, so stale ticks get cleared', () {
+      expect(EggRules.autoManagedDeviationIds(devs),
+          {1, 2, 6, 34, 29, 30, 36, 37});
+    });
+
+    test('the below-70 average needs two readings before it can escalate',
+        () {
+      expect(
+        EggRules.additionalSamplesRequired(haughUnits: [60], sampledCount: 1),
+        0,
+      );
+      expect(
+        EggRules.additionalSamplesRequired(
+            haughUnits: [60, 62], sampledCount: 2),
+        6,
+      );
+    });
+  });
+
+  group('weighing at a retailer', () {
+    test('an ordinary inspection must carry weighed eggs', () {
+      expect(EggValidation.samplesRequired(weighingNotRequired: false), isTrue);
+    });
+
+    test('recording that no weighing was possible drops that demand', () {
+      // Without this the form asked for an egg from a block it had just taken
+      // off the screen, and the inspection could not be saved at all.
+      expect(EggValidation.samplesRequired(weighingNotRequired: true), isFalse);
+    });
+  });
+
+  group('what the count column says', () {
+    const tolerances = [
+      DeviationTolerance(
+          deviationId: 1, sizeId: 3, gradeId: 4, minimum: 0, maximum: 4),
+      DeviationTolerance(
+          deviationId: 2, sizeId: 3, gradeId: 4, minimum: 0, maximum: 100),
+      DeviationTolerance(
+          deviationId: 3, sizeId: 3, gradeId: 4, minimum: 60, maximum: 60),
+    ];
+    String label(int deviation, int count) => EggRules.toleranceLabel(
+          count: count,
+          deviationId: deviation,
+          sizeId: 3,
+          gradeId: 4,
+          tolerances: tolerances,
+        );
+
+    test('a band is named beside the count', () {
+      expect(label(1, 2), '2 of 4 allowed');
+    });
+    test('a band wider than the sample is no limit', () {
+      expect(label(2, 7), '7 - no limit');
+    });
+    test('a band pinned to one value says so', () {
+      expect(label(3, 1), '1 - exactly 60 allowed');
+    });
+    test('no band at all means any occurrence is a finding', () {
+      expect(label(99, 1), '1 - not permitted');
+      expect(
+        EggRules.isDeviationPermissible(
+            deviationId: 99, count: 1, sizeId: 3, gradeId: 4,
+            tolerances: tolerances),
+        isFalse,
+      );
     });
   });
 }

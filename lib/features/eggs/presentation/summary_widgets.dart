@@ -115,10 +115,16 @@ class SummarySection extends StatelessWidget {
     super.key,
     required this.title,
     required this.children,
+    this.accent,
   });
 
   final String title;
   final List<Widget> children;
+
+  /// Overrides the heading and border colour. A rejection and the deviations
+  /// behind it are red wherever they appear, so a summary that carries them
+  /// is not read as one more teal block of detail.
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -128,11 +134,11 @@ class SummarySection extends StatelessWidget {
           children: [
             Text(
               title.toUpperCase(),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 1.3,
-                color: AppColors.brandTeal,
+                color: accent ?? AppColors.brandTeal,
               ),
             ),
             const SizedBox(height: 8),
@@ -140,7 +146,7 @@ class SummarySection extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                border: Border.all(color: AppColors.border),
+                border: Border.all(color: accent ?? AppColors.border),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
@@ -195,8 +201,7 @@ class SummaryField extends StatelessWidget {
                   style: TextStyle(
                     fontSize: emphasise ? 15.5 : 13.5,
                     height: 1.35,
-                    fontWeight:
-                        emphasise ? FontWeight.w900 : FontWeight.w400,
+                    fontWeight: emphasise ? FontWeight.w900 : FontWeight.w400,
                     fontFamily: mono ? 'monospace' : null,
                     color: warn ? AppColors.brandRed : AppColors.ink,
                   ),

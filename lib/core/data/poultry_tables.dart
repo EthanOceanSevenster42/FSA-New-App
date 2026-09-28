@@ -113,8 +113,7 @@ class PoultryChecklistItems extends Table {
   /// Minimum lettering height in millimetres, from the original's "Std (mm)"
   /// column. Text, not a number: many rows state no requirement at all, and 0
   /// would read as "must be at least nothing".
-  TextColumn get minLetteringHeight =>
-      text().withDefault(const Constant(''))();
+  TextColumn get minLetteringHeight => text().withDefault(const Constant(''))();
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
@@ -182,10 +181,12 @@ class PoultryDirectionRemarks extends Table {
 class PoultryInspections extends Table {
   TextColumn get clientUuid => text()();
 
+  /// The store visit this record was captured under, empty when standalone.
+  TextColumn get visitUuid => text().withDefault(const Constant(''))();
+
   /// Who captured it. A shared handset must not show one inspector another's
   /// work, nor upload it under whichever account happens to be signed in.
-  TextColumn get inspectorUsername =>
-      text().withDefault(const Constant(''))();
+  TextColumn get inspectorUsername => text().withDefault(const Constant(''))();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   DateTimeColumn get inspectedAt => dateTime()();
 
@@ -196,10 +197,10 @@ class PoultryInspections extends Table {
   TextColumn get facilityTelephone => text().withDefault(const Constant(''))();
   TextColumn get companyRegNumber => text().withDefault(const Constant(''))();
   TextColumn get contactPerson => text().withDefault(const Constant(''))();
-  TextColumn get contactPersonEmail =>
-      text().withDefault(const Constant(''))();
+  TextColumn get contactPersonEmail => text().withDefault(const Constant(''))();
   TextColumn get managerName => text().withDefault(const Constant(''))();
   TextColumn get managerEmail => text().withDefault(const Constant(''))();
+
   /// Two, as the original captures: a direction is commonly copied to a
   /// branch and to head office.
   TextColumn get clientEmail => text().withDefault(const Constant(''))();
@@ -209,6 +210,10 @@ class PoultryInspections extends Table {
   /// facility name above it.
   TextColumn get producerTradingName =>
       text().withDefault(const Constant(''))();
+
+  /// "New Facility Name" — the original's entry beside the facility picker,
+  /// for a site that is not in the directory ("Use for new Facility").
+  TextColumn get newFacilityName => text().withDefault(const Constant(''))();
 
   IntColumn get meatTypeId => integer().nullable()();
   IntColumn get portionTypeId => integer().nullable()();
@@ -222,14 +227,23 @@ class PoultryInspections extends Table {
   /// Comma-separated [PoultryChecklistItems] ids that were ticked, i.e. found
   /// COMPLIANT. Anything active and absent from here is a finding.
   TextColumn get compliantItemIds => text().withDefault(const Constant(''))();
+
+  /// Grading ticks for each carcass, encoded as `1:4,5;2:4`.  The original
+  /// grades whole carcass consignments one carcass at a time; the overall
+  /// compliant list remains for backwards-compatible reporting.
+  TextColumn get gradingBySample => text().withDefault(const Constant(''))();
+
   TextColumn get restrictedParticularIds =>
       text().withDefault(const Constant(''))();
 
-  TextColumn get inspectionComments =>
-      text().withDefault(const Constant(''))();
+  TextColumn get inspectionComments => text().withDefault(const Constant(''))();
   TextColumn get directionComments => text().withDefault(const Constant(''))();
   TextColumn get directionRemarks => text().withDefault(const Constant(''))();
   IntColumn get directionRemarkTypeId => integer().nullable()();
+
+  /// 'seize' or 'inspect' once FSA-SOP-APS-001 Annexure C put the seizure
+  /// question; empty until.
+  TextColumn get seizureDecision => text().withDefault(const Constant(''))();
   BoolColumn get noClientSignaturePresent =>
       boolean().withDefault(const Constant(false))();
 

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/theme/app_theme.dart';
+import '../theme/app_theme.dart';
 
 /// Field label carrying a red asterisk when the field must be filled in.
 ///
@@ -110,8 +110,7 @@ class RequiredLegend extends StatelessWidget {
             Expanded(
               child: Text(
                 'Required before this $noun can be saved',
-                style: TextStyle(
-                    fontSize: 12.5, color: AppColors.muted),
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted),
               ),
             ),
           ],

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../../core/data/local_database.dart';
 import '../../../core/services/connectivity_service.dart';
 import 'eggs_repository.dart';
@@ -10,18 +12,24 @@ class SyncReport {
     required this.inspectionsSent,
     required this.directionsSent,
     required this.failures,
+    this.firstError,
   });
 
   const SyncReport.nothingToDo()
       : inspectionsSent = 0,
         directionsSent = 0,
-        failures = 0;
+        failures = 0,
+        firstError = null;
 
   final int inspectionsSent;
   final int directionsSent;
 
   /// Records that were tried and did not go up. They stay pending.
   final int failures;
+
+  /// Why the first of them did not go up, as the server or the network put
+  /// it — shown with the failure rather than swallowed (Ethan, 2026-09-24).
+  final String? firstError;
 
   int get sent => inspectionsSent + directionsSent;
   bool get didAnything => sent > 0 || failures > 0;
@@ -118,11 +126,25 @@ class EggsSyncService {
       // save path left everything captured earlier stuck: it retried every two
       // minutes into the same 400 and never recovered.
       for (final inspection in await repository.savedInspections()) {
-        if (inspection.isUploaded) continue;
         // Only finished work goes up; a draft is still being captured.
         if (inspection.status != 'completed') continue;
+        if (inspection.isUploaded) {
+          // The record is up, but an attachment may have failed on the pass
+          // that sent it — a rejected photograph or signature would
+          // otherwise sit on the handset with nothing left to carry it.
+          try {
+            await repository.uploadAttachments(
+              inspection.clientUuid,
+              token: token,
+            );
+          } on Object {
+            // Retried on the next pass; nothing is lost by staying quiet.
+          }
+          continue;
+        }
         final outcome = await _trySend(
-          (t) => repository.upload(inspection, token: t),
+          _uploadInspection(inspection.clientUuid),
+          heal: () => repository.repointLookupIds(inspection.clientUuid),
         );
         if (outcome == SendOutcome.sent) {
           inspections++;
@@ -148,6 +170,7 @@ class EggsSyncService {
         inspectionsSent: inspections,
         directionsSent: directions,
         failures: failures,
+        firstError: failures == 0 ? null : _lastError,
       );
       if (report.didAnything && !_reports.isClosed) _reports.add(report);
       return report;
@@ -161,16 +184,31 @@ class EggsSyncService {
   ///
   /// Returns true only when the server confirmed it. A false is not an error:
   /// the record is already on the device and the next pass will retry it.
-  Future<bool> sendNow(EggInspection inspection) =>
-      _sendOne((token) => repository.upload(inspection, token: token));
+  Future<bool> sendNow(EggInspection inspection) => _sendOne(
+        _uploadInspection(inspection.clientUuid),
+        heal: () => repository.repointLookupIds(inspection.clientUuid),
+      );
+
+  /// Uploads the inspection as it is stored *now*, not as it was when the
+  /// caller loaded it — a heal between the first attempt and the retry
+  /// changes the ids on the row, and the retry has to carry the new ones.
+  Future<void> Function(String token) _uploadInspection(String uuid) =>
+      (token) async {
+        final current = await repository.inspectionByUuid(uuid);
+        if (current == null) return;
+        await repository.upload(current, token: token);
+      };
 
   /// As [sendNow], for a direction.
   Future<bool> sendDirectionNow(EggDirection direction) => _sendOne(
         (token) => repository.uploadDirection(direction, token: token),
       );
 
-  Future<bool> _sendOne(Future<void> Function(String token) upload) async {
-    _lastOutcome = await _trySend(upload);
+  Future<bool> _sendOne(
+    Future<void> Function(String token) upload, {
+    Future<bool> Function()? heal,
+  }) async {
+    _lastOutcome = await _trySend(upload, heal: heal);
     return _lastOutcome == SendOutcome.sent;
   }
 
@@ -181,12 +219,22 @@ class EggsSyncService {
 
   RecordRejected? _lastRejection;
 
+  /// The last reason a send failed, whatever it was.
+  String? _lastError;
+
+  SendOutcome _failedWith(Object error, SendOutcome outcome) {
+    _lastError = '$error';
+    debugPrint('EggsSync: upload failed — $error');
+    return outcome;
+  }
+
   /// Why the server refused the last record, when it did.
   RecordRejected? get lastRejection => _lastRejection;
 
   Future<SendOutcome> _trySend(
-    Future<void> Function(String token) upload,
-  ) async {
+    Future<void> Function(String token) upload, {
+    Future<bool> Function()? heal,
+  }) async {
     if (!await connectivity.isOnline) return SendOutcome.offline;
 
     // Checked after connectivity: refreshing an expired token needs a network,
@@ -199,25 +247,36 @@ class EggsSyncService {
       await upload(token);
       return SendOutcome.sent;
     } on RecordRejected catch (e) {
-      // Almost always this device holding lookup rows from another server, so
-      // the ids it sends mean nothing here. Fix it and try again rather than
-      // handing the inspector a sync problem to solve in the field — they are
-      // standing at a consignment, not at a desk.
-      if (await _refreshReferenceOnce()) {
+      // Almost always this device holding lookup rows from another server, or
+      // the ids the rules shipped with, so the ids it sends mean nothing here.
+      // Refresh the tables, re-point the record at the rows they now hold,
+      // and try again rather than handing the inspector a sync problem to
+      // solve in the field — they are standing at a consignment, not at a desk.
+      final refreshed = await _refreshReferenceOnce();
+      var healed = false;
+      if (heal != null) {
+        try {
+          healed = await heal();
+        } on Object {
+          // The heal is best effort; a failure inside it must not turn a
+          // plain rejection into a crash of the whole pass.
+        }
+      }
+      if (refreshed || healed) {
         try {
           await upload(token);
           return SendOutcome.sent;
         } on RecordRejected catch (again) {
           _lastRejection = again;
-          return SendOutcome.rejected;
-        } on Object {
-          return SendOutcome.failed;
+          return _failedWith(again, SendOutcome.rejected);
+        } on Object catch (error) {
+          return _failedWith(error, SendOutcome.failed);
         }
       }
       _lastRejection = e;
-      return SendOutcome.rejected;
-    } on Object {
-      return SendOutcome.failed;
+      return _failedWith(e, SendOutcome.rejected);
+    } on Object catch (error) {
+      return _failedWith(error, SendOutcome.failed);
     }
   }
 
@@ -231,7 +290,9 @@ class EggsSyncService {
     if (_refreshed) return false;
     _refreshed = true;
     try {
-      await repository.clearReferenceData();
+      // A full sync rebuilds the tables from what the server sends, inside
+      // one transaction. Emptying them first and then failing to reach the
+      // server left the handset with nothing to inspect with.
       await repository.syncReference(full: true);
       return true;
     } on Object {

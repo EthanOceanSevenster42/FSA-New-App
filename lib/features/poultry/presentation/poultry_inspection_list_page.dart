@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/session/session_user.dart';
 import '../../../core/theme/app_theme.dart';
 import '../data/poultry_capture_repository.dart';
@@ -165,8 +167,7 @@ class _PoultryInspectionListPageState extends State<PoultryInspectionListPage> {
         _rows = _load();
       });
 
-  String _day(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/'
+  String _day(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   String get _dateLabel => _isSingleDay
@@ -310,7 +311,8 @@ class _PoultryInspectionListPageState extends State<PoultryInspectionListPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<List<_Row>>(
+      body: ContentWidth(
+          child: FutureBuilder<List<_Row>>(
         future: _rows,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -388,7 +390,7 @@ class _PoultryInspectionListPageState extends State<PoultryInspectionListPage> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -511,8 +513,7 @@ class _RecordCard extends StatelessWidget {
               // Which checklist this is — three kinds share the list, and a
               // card that does not say which invites sending the wrong one.
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppColors.brandTeal.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(20),
@@ -528,8 +529,7 @@ class _RecordCard extends StatelessWidget {
               ),
               const Spacer(),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: row.isUploaded
                       ? const Color(0xFFEAF5EB)
@@ -556,8 +556,7 @@ class _RecordCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             row.title,
-            style:
-                const TextStyle(fontWeight: FontWeight.w900, fontSize: 15.5),
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15.5),
           ),
           const SizedBox(height: 2),
           Text(

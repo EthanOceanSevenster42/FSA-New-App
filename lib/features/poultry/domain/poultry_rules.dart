@@ -112,6 +112,26 @@ class PoultryFinding {
 }
 
 abstract final class PoultryRules {
+  /// How many photographs a label or QUID record needs before it is
+  /// finished.
+  ///
+  /// The original will not let the label checklist be completed until two
+  /// have been taken: `NewPoultryLabelChecklistPage` counts to `[n / 2]` and
+  /// only then enables `switchIsLabelandPackListComplete`. The QUID screen
+  /// asks for its two only when a rejection is issued
+  /// (`quidMinRejectionPhotos`).
+  static const requiredPhotos = 2;
+
+  /// One more than the minimum. The extra shot is there for the view the
+  /// first two could not fit — a second container face, a smudged lot code —
+  /// and a ceiling keeps a record from arriving as an album the office has
+  /// to sift.
+  static const maxPhotos = requiredPhotos + 1;
+
+  /// Whether the record still owes the photographs it cannot be finished
+  /// without.
+  static bool photographsOutstanding(int taken) => taken < requiredPhotos;
+
   /// Grades permitted for [designationId] under [meatTypeId].
   ///
   /// Returns them in the order [grades] is given, so the form presents the
@@ -191,4 +211,159 @@ abstract final class PoultryRules {
     required Set<int> compliantItemIds,
   }) =>
       findings(items: items, compliantItemIds: compliantItemIds).isNotEmpty;
+
+  // --------------------------------------------------------------------
+  // FSA-SOP-APS-001, Annexure C (Poultry Meat — Non-Conformance Table,
+  // 11 June 2026). What each deviation leads to is the annexure's ruling,
+  // not the inspector's to pick (Ethan, 2026-09-26):
+  //
+  //   Container (Reg. 6) ................ immediate seizure / rectify at once
+  //   Packing (Reg. 7) .................. immediate seizure / rectify at once
+  //   Class designation omitted ......... immediate seizure
+  //   Class designation wrong ........... 30-day rectification
+  //   Grade designation omitted ......... immediate seizure
+  //   Grade designation wrong ........... 30-day rectification
+  //   Packer (Reg. 11) .................. 30-day rectification
+  //   Country of origin (Reg. 11(4)) .... 30-day rectification
+  //   Production lot (Reg. 12) .......... immediate seizure
+  //   Fresh / chilled / frozen .......... 30-day rectification
+  //   Giblets / trimmed ................. 30-day rectification
+  //   Restricted particulars (Reg. 13) .. 30-day rectification
+  //   Poultry species ................... 30-day rectification
+  //   QUID / quality standards .......... immediate seizure
+  //
+  // A grading or portion row failed is the carcass not meeting the grade it
+  // is marked with — an incorrect grade designation — and takes the 30
+  // days. Whether the class or grade designation was omitted or merely
+  // wrong is the inspector's answer when that row is unticked.
+  // --------------------------------------------------------------------
+
+  static bool _isLabelRow(PoultryChecklistItemRef item) =>
+      item.kind == PoultryChecklistKind.labelInner ||
+      item.kind == PoultryChecklistKind.labelOuter;
+
+  /// "Class or Other Designation Indication" on either label.
+  static bool isClassRow(PoultryChecklistItemRef item) =>
+      _isLabelRow(item) && item.description.toLowerCase().contains('class');
+
+  /// "Grade Designation" on either label.
+  static bool isGradeRow(PoultryChecklistItemRef item) =>
+      _isLabelRow(item) &&
+      item.description.toLowerCase().startsWith('grade designation');
+
+  /// "Number and Code to Identify Production Lot" on either label.
+  static bool isLotRow(PoultryChecklistItemRef item) =>
+      _isLabelRow(item) &&
+      item.description.toLowerCase().contains('production lot');
+
+  /// What the annexure prescribes for one deviation.
+  static PoultryAction actionFor(
+    PoultryChecklistItemRef item, {
+    required bool classOmitted,
+    required bool gradeOmitted,
+  }) {
+    switch (item.kind) {
+      case PoultryChecklistKind.container:
+      case PoultryChecklistKind.pack:
+        return PoultryAction.seizeOrRectifyNow;
+      case PoultryChecklistKind.labelInner:
+      case PoultryChecklistKind.labelOuter:
+        if (isLotRow(item)) return PoultryAction.seize;
+        if (isClassRow(item)) {
+          return classOmitted
+              ? PoultryAction.seize
+              : PoultryAction.rectify30Days;
+        }
+        if (isGradeRow(item)) {
+          return gradeOmitted
+              ? PoultryAction.seize
+              : PoultryAction.rectify30Days;
+        }
+        return PoultryAction.rectify30Days;
+      case PoultryChecklistKind.grading:
+      case PoultryChecklistKind.portion:
+      case PoultryChecklistKind.labelGrading:
+      case PoultryChecklistKind.labelPortion:
+        return PoultryAction.rectify30Days;
+    }
+  }
+
+  /// Days the annexure allows to put a deviation right, counted from the
+  /// inspection. A deviation it seizes on has none; should the inspector
+  /// carry on instead of seizing, the rejection runs from today.
+  static int daysFor(PoultryAction action) => switch (action) {
+        PoultryAction.seize => 0,
+        PoultryAction.seizeOrRectifyNow => 0,
+        PoultryAction.rectify30Days => 30,
+      };
+
+  /// The deviations the annexure seizes on.
+  static List<PoultryChecklistItemRef> seizureFindings({
+    required Iterable<PoultryChecklistItemRef> deviations,
+    required bool classOmitted,
+    required bool gradeOmitted,
+  }) =>
+      [
+        for (final item in deviations)
+          if (actionFor(item,
+                  classOmitted: classOmitted, gradeOmitted: gradeOmitted) !=
+              PoultryAction.rectify30Days)
+            item,
+      ];
+
+  /// Whether the seizure question has to be put.
+  static bool seizureRequired({
+    required Iterable<PoultryChecklistItemRef> deviations,
+    required bool classOmitted,
+    required bool gradeOmitted,
+  }) =>
+      seizureFindings(
+        deviations: deviations,
+        classOmitted: classOmitted,
+        gradeOmitted: gradeOmitted,
+      ).isNotEmpty;
+
+  /// The rectification period the rejection carries: the shortest the
+  /// annexure gives any of the deviations. Null while nothing is wrong.
+  static int? rectificationDays({
+    required Iterable<PoultryChecklistItemRef> deviations,
+    required bool classOmitted,
+    required bool gradeOmitted,
+  }) {
+    int? shortest;
+    for (final item in deviations) {
+      final d = daysFor(actionFor(item,
+          classOmitted: classOmitted, gradeOmitted: gradeOmitted));
+      if (shortest == null || d < shortest) shortest = d;
+    }
+    return shortest;
+  }
+
+  /// "Correct by/on" — the inspection date plus the period, as a date.
+  static DateTime? correctByDate({
+    required DateTime inspectedAt,
+    required int? days,
+  }) =>
+      days == null
+          ? null
+          : DateTime(inspectedAt.year, inspectedAt.month, inspectedAt.day)
+              .add(Duration(days: days));
+
+  /// How the period reads on the form and the sheet.
+  static String periodLabel(int days) => switch (days) {
+        0 => 'Rectify immediately',
+        30 => '30-day rectification notice',
+        _ => '$days-day rectification notice',
+      };
+}
+
+/// What FSA-SOP-APS-001 Annexure C prescribes for a deviation.
+enum PoultryAction {
+  /// Seized under section 8 of the APS Act, no period given.
+  seize,
+
+  /// The container and packing rows: "Immediate seizure / Rectify
+  /// immediately".
+  seizeOrRectifyNow,
+  rectify30Days,
 }

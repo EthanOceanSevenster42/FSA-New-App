@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/services/connectivity_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../updates/data/app_update_service.dart';
+import '../../updates/presentation/app_update_dialog.dart';
 import '../../../core/session/session_store.dart';
 import '../../../core/theme/theme_controller.dart';
 import '../../../core/session/session_user.dart';
@@ -17,7 +19,7 @@ import '../domain/auth_service.dart';
 /// Sign-in screen.
 ///
 /// The visual
-/// design follows the Food Safety Agency brand (red #DE2F1B, teal #007890,
+/// design follows the Food Safety Agency brand (red #EC343C, teal #007890,
 /// Lato) rather than the vivid purple the old app shipped.
 ///
 /// Rebuild discipline matters here because the page carries a full-bleed
@@ -33,13 +35,24 @@ class LoginPage extends StatefulWidget {
     required this.appVersion,
     required this.loadHomeSummary,
     required this.openFeature,
+    this.runServerSync,
     this.sessionStore,
     this.themeController,
     this.resumeAs,
     this.checkForUpdates,
     this.downloadUpdates,
+    this.submitFeedback,
+    this.onSessionActive,
+    this.onSessionEnded,
     required this.onSignedIn,
   });
+
+  /// Fired whenever a session becomes active — a fresh sign-in or a resumed
+  /// one — with the user it belongs to. Background sync hangs off this.
+  final void Function(SessionUser user)? onSessionActive;
+
+  /// Fired when the inspector signs out, so background work stops.
+  final VoidCallback? onSessionEnded;
 
   /// Fired once a sign-in succeeds, so feature modules can warm their
   /// reference data while the inspector still has signal. Must not block the
@@ -53,6 +66,10 @@ class LoginPage extends StatefulWidget {
 
   /// Resolves a feature to its page, or null when not built yet.
   final Widget? Function(AppFeature, SessionUser) openFeature;
+
+  /// Runs the full server handshake and reports as a popup over home.
+  final Future<void> Function(BuildContext context, String username)?
+      runServerSync;
 
   /// Remembers who signed in, so the app does not ask again after Android
   /// kills it in the background. Optional, so the page can be tested without
@@ -70,6 +87,7 @@ class LoginPage extends StatefulWidget {
   /// reference records rather than downloading them unasked.
   final Future<String?> Function()? checkForUpdates;
   final Future<int> Function()? downloadUpdates;
+  final Future<void> Function(String kind, String details)? submitFeedback;
 
   final AppConfig config;
   final AuthService authService;
@@ -95,14 +113,29 @@ class _LoginPageState extends State<LoginPage> {
   StreamSubscription<bool>? _connectivitySub;
   bool _precached = false;
 
+  /// Looks for a newer build once, at sign-in.
+  ///
+  /// The handsets have no Play Store account, so a build that fixes a
+  /// blocked submission would otherwise have to be carried to each device
+  /// by hand. Sign-in is the one moment where interrupting costs nothing:
+  /// there is no capture on the screen to lose.
+  final _updates = AppUpdateService();
+  bool _updateOffered = false;
+
   @override
   void initState() {
     super.initState();
     final resume = widget.resumeAs;
     if (resume != null) {
+      // A restored session must receive the same directory refresh as a fresh
+      // sign-in.  Otherwise a new APK/server address can leave clients and
+      // facilities empty until the inspector signs out and back in.
+      widget.onSignedIn();
       // Straight past the sign-in screen. Deferred a frame because the
       // Navigator is not usable until the first build has run.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await _offerUpdate();
         if (mounted) _openHome(resume);
       });
     }
@@ -124,8 +157,8 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _watchConnectivity() async {
     _isOnline.value = await widget.connectivityService.isOnline;
-    _connectivitySub =
-        widget.connectivityService.onStatusChanged.listen((v) => _isOnline.value = v);
+    _connectivitySub = widget.connectivityService.onStatusChanged
+        .listen((v) => _isOnline.value = v);
   }
 
   @override
@@ -145,6 +178,35 @@ class _LoginPageState extends State<LoginPage> {
   /// containing stray spaces keep working.
   static String _stripWhitespace(String value) =>
       value.replaceAll(RegExp(r'\s'), '');
+
+  /// Offers the published build if it is newer than this one.
+  ///
+  /// Silent when the app is current, when the server cannot be reached, or
+  /// when anything goes wrong — an inspector out of signal is never held up
+  /// by an update check.
+  ///
+  /// The flag guards only the length of this call, so that the resumed-session
+  /// path and a sign-in cannot raise two dialogs over each other on the way to
+  /// the home screen. It is deliberately *not* a once-per-launch latch: an
+  /// inspector who is told "sign out and back in to pick up the new version"
+  /// has to actually get a check each time they do it, and a resumed session
+  /// never returns through the sign-in path that could otherwise clear it.
+  /// Re-checking cannot nag, because a build turned down with LATER stays
+  /// declined in AppUpdateService and is not offered again.
+  /// [respectDeclined] is false for a fresh sign-in, so that signing out and
+  /// back in always asks again; a restored session leaves it true and honours
+  /// what the inspector already turned down. See [AppUpdateService.check].
+  Future<void> _offerUpdate({bool respectDeclined = true}) async {
+    if (_updateOffered) return;
+    _updateOffered = true;
+    try {
+      final update = await _updates.check(respectDeclined: respectDeclined);
+      if (!mounted || update == null) return;
+      await showAppUpdate(context, _updates, update);
+    } finally {
+      _updateOffered = false;
+    }
+  }
 
   Future<void> _signIn() async {
     if (_isBusy.value) return;
@@ -191,6 +253,11 @@ class _LoginPageState extends State<LoginPage> {
         // screen still leaves a session to come back to.
         await widget.sessionStore?.save(user);
         if (!mounted) return;
+        // A deliberate sign-in asks again even about a build turned down
+        // earlier: it is the gesture inspectors are given for picking up a
+        // release, so it must not be a dead end.
+        await _offerUpdate(respectDeclined: false);
+        if (!mounted) return;
         await _openHome(user);
         // Returning here means the user signed out; clear the password so the
         // next person at the handset cannot simply press Sign in again.
@@ -220,6 +287,7 @@ class _LoginPageState extends State<LoginPage> {
   /// Opens the home screen, whether the inspector just signed in or the app
   /// resumed a session after Android killed it in the background.
   Future<void> _openHome(SessionUser user) async {
+    widget.onSessionActive?.call(user);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => PopScope(
@@ -245,9 +313,12 @@ class _LoginPageState extends State<LoginPage> {
             connectivity: widget.connectivityService,
             loadSummary: widget.loadHomeSummary,
             openFeature: widget.openFeature,
+            runServerSync: widget.runServerSync,
             checkForUpdates: widget.checkForUpdates,
             downloadUpdates: widget.downloadUpdates,
+            submitFeedback: widget.submitFeedback,
             onSignOut: () async {
+              widget.onSessionEnded?.call();
               // Signing out is deliberate, so the remembered session goes with
               // it — otherwise the next launch would walk straight back in.
               await widget.sessionStore?.clear();
@@ -324,7 +395,6 @@ class _LoginPageState extends State<LoginPage> {
               'Added $written new user${written == 1 ? '' : 's'}.',
     );
   }
-
 
   Future<void> _alert(String title, String message) => showDialog<void>(
         context: context,
@@ -602,21 +672,50 @@ class _Background extends StatelessWidget {
   }
 }
 
-/// Scrolling container whose bottom padding tracks the soft keyboard.
+/// Scrolling container that seats the sign-in card and tracks the soft
+/// keyboard.
 ///
 /// Isolated so that `viewInsets` changes rebuild only this widget rather than
 /// the whole page — [MediaQuery.viewInsetsOf] scopes the dependency.
+///
+/// On a handset the card takes the full width and the page scrolls. A tablet
+/// screen is far wider and taller than a single column of fields needs, so
+/// the card is held to a readable width and centred; stretched across the top
+/// it reads as a banner and leaves the photograph bare underneath.
 class _KeyboardInsetPadding extends StatelessWidget {
   const _KeyboardInsetPadding({required this.child});
+
+  /// Widest the card is allowed to get, in logical pixels. Roughly a large
+  /// handset — past it the fields are wider than they are useful.
+  static const double _maxCardWidth = 480;
+
+  static const EdgeInsets _padding =
+      EdgeInsets.symmetric(horizontal: 18, vertical: 20);
 
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
-    return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(18, 20, 18, 20 + bottom),
-      child: child,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // What is left for the card once the padding and the keyboard have
+        // taken their share. The card is centred in it, and scrolls when it
+        // does not fit.
+        final free = constraints.maxHeight - _padding.vertical - bottom;
+        return SingleChildScrollView(
+          padding: _padding.copyWith(bottom: _padding.bottom + bottom),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: free > 0 ? free : 0),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _maxCardWidth),
+                child: child,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -644,7 +743,7 @@ class _Masthead extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        Container(width: 36, height: 3, color: AppColors.brandRed),
+        Container(width: 36, height: 3, color: AppColors.brandPrimary),
         const SizedBox(height: 10),
         const Text(
           'INSPECTOR',
@@ -688,7 +787,7 @@ class _FieldLabel extends StatelessWidget {
         child: Text(
           text,
           style: TextStyle(
-            color: AppColors.ink,
+            color: AppColors.of(context).ink,
             fontSize: 14,
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,

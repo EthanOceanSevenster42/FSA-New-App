@@ -60,16 +60,27 @@ void main() {
     expect(of(PoultryChecklistKind.pack), hasLength(6));
   });
 
-  test('wording is carried through verbatim, typos included', () async {
+  test("wording is the original's, bar the corrections the FSA asked for",
+      () async {
     await loadAsset();
     final items = await repo.checklistItems();
     final descriptions = items.map((i) => i.description).toList();
 
-    // An inspector comparing this screen against the paper form should read
-    // the same words. "Abarations and Custs" is what the original shows;
-    // silently correcting it would make the two disagree.
-    expect(descriptions, contains('Abarations and Custs in the Skin'));
+    // Wording is carried through verbatim so an inspector comparing this
+    // screen against the paper form reads the same words — "Fleshiness", not
+    // the "Freshness" it is often misread as.
     expect(descriptions, contains('Fleshiness: General'));
+
+    // Two exceptions, corrected at the FSA's request on 2026-08-20 and
+    // listed in the seed's SPELLING_CORRECTIONS so it stays visible that
+    // these are ours rather than the original's.
+    expect(descriptions, contains('Abrasions and Cuts in the Skin'));
+    expect(descriptions, isNot(contains('Abarations and Custs in the Skin')));
+    expect(
+      descriptions.any((d) => d.contains('specififed')),
+      isFalse,
+      reason: 'the portions row now reads "specified"',
+    );
 
     // Portion and pack rows cite a regulation; grading rows do not.
     final portion = items

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
 import '../data/fruitveg_repository.dart';
@@ -50,7 +52,8 @@ class _FruitVegInspectionListPageState
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<List<FvInspection>>(
+      body: ContentWidth(
+          child: FutureBuilder<List<FvInspection>>(
         future: _items,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -141,7 +144,7 @@ class _FruitVegInspectionListPageState
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w700,
-                            color: AppColors.brandRed,
+                            color: AppColors.brandPrimary,
                           ),
                         ),
                       ),
@@ -151,7 +154,7 @@ class _FruitVegInspectionListPageState
             },
           );
         },
-      ),
+      )),
     );
   }
 }

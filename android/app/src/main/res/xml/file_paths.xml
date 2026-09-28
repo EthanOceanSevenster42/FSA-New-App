@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What a downloaded document may be shared from: the phone's Downloads
+     folder, which is the only place this app writes files for the inspector
+     to keep. -->
+<paths>
+    <external-path name="downloads" path="Download/" />
+    <!-- Where a downloaded app update is kept until the installer has
+         read it. Private to the app and cleared by Android. -->
+    <cache-path name="updates" path="updates/" />
+</paths>

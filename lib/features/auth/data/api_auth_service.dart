@@ -92,15 +92,15 @@ class ApiAuthService implements AuthService {
   /// In the composed [OfflineCapableAuthService] the repository handles sync,
   /// so this path is only used when the API client is wired up on its own.
   @override
+
   /// Always 0: this service talks only to the server and owns no local
   /// store. The offline-capable wrapper is what holds synced users.
   Future<int> localUserCount() async => 0;
 
   @override
   Future<int> syncUsers() async {
-    final response = await _client
-        .get(_uri('/api/auth/sync-users/'))
-        .timeout(timeout);
+    final response =
+        await _client.get(_uri('/api/auth/sync-users/')).timeout(timeout);
 
     if (response.statusCode != 200) {
       throw http.ClientException(

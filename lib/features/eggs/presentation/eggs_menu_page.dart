@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/services/photo_storage.dart';
 import '../../../core/session/session_user.dart';
@@ -154,11 +156,11 @@ class _EggsMenuPageState extends State<EggsMenuPage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(many
-            ? 'Discard ${drafts.length} unfinished directions?'
-            : 'Discard the unfinished direction?'),
+            ? 'Discard ${drafts.length} unfinished rejections?'
+            : 'Discard the unfinished rejection?'),
         content: Text(
           many
-              ? 'All ${drafts.length} unfinished directions on this device '
+              ? 'All ${drafts.length} unfinished rejections on this device '
                   'will be deleted. This cannot be undone.'
               : 'Everything entered so far will be deleted. This cannot be '
                   'undone.',
@@ -186,8 +188,8 @@ class _EggsMenuPageState extends State<EggsMenuPage> {
       ..showSnackBar(
         SnackBar(
           content: Text(removed == 1
-              ? 'Unfinished direction discarded.'
-              : '$removed unfinished directions discarded.'),
+              ? 'Unfinished rejection discarded.'
+              : '$removed unfinished rejections discarded.'),
           backgroundColor: AppColors.ink,
         ),
       );
@@ -300,13 +302,15 @@ class _EggsMenuPageState extends State<EggsMenuPage> {
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(
-        title: const Text('Eggs', style: TextStyle(fontWeight: FontWeight.w900)),
+        title:
+            const Text('Eggs', style: TextStyle(fontWeight: FontWeight.w900)),
         backgroundColor: AppColors.surface,
         foregroundColor: AppColors.ink,
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_MenuState>(
+      body: ContentWidth(
+          child: FutureBuilder<_MenuState>(
         future: _state,
         builder: (context, snap) {
           final s = snap.data;
@@ -333,15 +337,19 @@ class _EggsMenuPageState extends State<EggsMenuPage> {
                     s.drafts.length,
                   ),
                   onResume: () => _resume(s.drafts.first),
-                  onDiscard: () => _discardDrafts(s.drafts),
+                  // Removing captured work is the office's call; an
+                  // inspector resumes the draft instead.
+                  onDiscard: widget.user.canRemoveRecords
+                      ? () => _discardDrafts(s.drafts)
+                      : null,
                 ),
                 const SizedBox(height: 14),
               ],
               if (s != null && s.directionDrafts.isNotEmpty) ...[
                 _ResumeBanner(
                   title: s.directionDrafts.length == 1
-                      ? 'Unfinished direction'
-                      : '${s.directionDrafts.length} unfinished directions',
+                      ? 'Unfinished rejection'
+                      : '${s.directionDrafts.length} unfinished rejections',
                   subtitle: _draftSubtitle(
                     s.directionDrafts.first.clientName,
                     '',
@@ -375,17 +383,18 @@ class _EggsMenuPageState extends State<EggsMenuPage> {
               const SizedBox(height: 10),
               _MenuButton(
                 icon: Icons.gavel_outlined,
-                title: 'Direction Management',
+                title: 'Rejection Management',
                 subtitle: s == null
-                    ? 'Quality and labelling directions'
+                    ? 'Quality and labelling rejections'
                     : '${s.directionCount} issued · '
                         '${s.pendingDirections} awaiting upload',
                 onTap: _openDirections,
+                accent: AppColors.brandRed,
               ),
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -516,7 +525,10 @@ class _ResumeBanner extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onResume;
-  final VoidCallback onDiscard;
+
+  /// Null when the signed-in role may not remove work: the button is shown
+  /// but dead, so an inspector can see the action exists and who has it.
+  final VoidCallback? onDiscard;
 
   @override
   Widget build(BuildContext context) {
@@ -532,8 +544,7 @@ class _ResumeBanner extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.history, size: 20,
-                  color: AppColors.noticeForeground),
+              Icon(Icons.history, size: 20, color: AppColors.noticeForeground),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -602,6 +613,7 @@ class _MenuButton extends StatelessWidget {
     required this.subtitle,
     required this.onTap,
     this.primary = false,
+    this.accent,
   });
 
   final IconData icon;
@@ -610,10 +622,14 @@ class _MenuButton extends StatelessWidget {
   final VoidCallback onTap;
   final bool primary;
 
+  /// Overrides the icon's colour on an ordinary tile. Rejections carry the
+  /// app's red, as every other rejection screen does.
+  final Color? accent;
+
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: primary ? AppColors.brandRed : AppColors.surface,
+      color: primary ? AppColors.brandPrimary : AppColors.surface,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -623,13 +639,14 @@ class _MenuButton extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: primary ? AppColors.brandRed : AppColors.border,
+              color: primary ? AppColors.brandPrimary : AppColors.border,
             ),
           ),
           child: Row(
             children: [
               Icon(icon,
-                  size: 26, color: primary ? Colors.white : AppColors.ink),
+                  size: 26,
+                  color: primary ? Colors.white : (accent ?? AppColors.ink)),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -649,8 +666,7 @@ class _MenuButton extends StatelessWidget {
                         subtitle,
                         style: TextStyle(
                           fontSize: 12.5,
-                          color:
-                              primary ? Colors.white70 : AppColors.muted,
+                          color: primary ? Colors.white70 : AppColors.muted,
                         ),
                       ),
                     ],

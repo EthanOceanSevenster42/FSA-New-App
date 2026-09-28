@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:http/http.dart' as http;
 
@@ -71,6 +73,41 @@ class PoultryCaptureRepository {
             ..where((t) => t.clientUuid.equals(uuid)))
           .getSingleOrNull();
 
+  /// The registration number already recorded for this visit, or empty.
+  ///
+  /// It is a fact about the premises, not about the product, and the three
+  /// poultry records each ask for it — so an inspector doing a grading and a
+  /// label checklist at one abattoir was typing it twice. The first record to
+  /// capture it answers for the rest of the visit. It stays editable: the
+  /// answer is carried, not locked.
+  Future<String> registrationNumberForVisit(String visitUuid) async {
+    if (visitUuid.isEmpty) return '';
+
+    final label = await (database.select(database.poultryLabelInspections)
+          ..where((t) => t.visitUuid.equals(visitUuid))
+          ..where((t) => t.registrationNumber.isNotValue(''))
+          ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)])
+          ..limit(1))
+        .getSingleOrNull();
+    if (label != null) return label.registrationNumber;
+
+    final grading = await (database.select(database.poultryInspections)
+          ..where((t) => t.visitUuid.equals(visitUuid))
+          ..where((t) => t.companyRegNumber.isNotValue(''))
+          ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)])
+          ..limit(1))
+        .getSingleOrNull();
+    if (grading != null) return grading.companyRegNumber;
+
+    final quid = await (database.select(database.poultryQuidInspections)
+          ..where((t) => t.visitUuid.equals(visitUuid))
+          ..where((t) => t.companyRegNumber.isNotValue(''))
+          ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)])
+          ..limit(1))
+        .getSingleOrNull();
+    return quid?.companyRegNumber ?? '';
+  }
+
   Future<void> uploadLabelInspection(
     PoultryLabelInspection i, {
     required String token,
@@ -93,12 +130,10 @@ class PoultryCaptureRepository {
         'contact_person_email': i.contactPersonEmail,
         'product_details': i.productDetails,
         'selected_direction_for_followup': i.selectedDirectionForFollowup,
-        'meat_type': i.meatTypeId,
-        'portion_type': i.portionTypeId,
-        'designation_class': i.designationClassId,
-        'alternative_designation_class': i.altDesignationClassId,
-        'grade': i.gradeId,
-        'sample_number': i.sampleNumber,
+        // Meat type, portion type, designation, grade and sample number are
+        // not sent: they belong to the grading inspection, which is a record
+        // of its own. The server's columns for them stay nullable, so a
+        // labelling record simply leaves them empty.
         'outer_labels_present': i.outerLabelsPresent,
         'restricted_particulars': idsOf(i.restrictedParticularIds),
         'restricted_particulars_text': i.restrictedParticularsText,
@@ -106,6 +141,9 @@ class PoultryCaptureRepository {
         'non_conformance_comments': i.nonConformanceComments,
         'direction_remarks': i.directionRemarks,
         'direction_remark_type': i.directionRemarkTypeId,
+        'class_omitted': i.classOmitted,
+        'grade_omitted': i.gradeOmitted,
+        'seizure_decision': i.seizureDecision,
         'manager_name': i.managerName,
         'manager_email': i.managerEmail,
         'client_email': i.clientEmail,
@@ -124,7 +162,9 @@ class PoultryCaptureRepository {
   // ------------------------------------------------------------------ QUID
 
   Future<void> saveQuidInspection(PoultryQuidInspectionsCompanion row) =>
-      database.into(database.poultryQuidInspections).insertOnConflictUpdate(row);
+      database
+          .into(database.poultryQuidInspections)
+          .insertOnConflictUpdate(row);
 
   Future<List<PoultryQuidInspection>> quidInspections(String username) async {
     final rows = await (database.select(database.poultryQuidInspections)
@@ -151,6 +191,29 @@ class PoultryCaptureRepository {
             ..where((t) => t.inspectionUuid.equals(inspectionUuid)))
           .get();
 
+  /// The injectors a QUID set-up listed, in the order they were added.
+  Future<List<PoultryQuidInjector>> quidInjectors(String inspectionUuid) =>
+      (database.select(database.poultryQuidInjectors)
+            ..where((t) => t.inspectionUuid.equals(inspectionUuid))
+            ..orderBy([(t) => OrderingTerm(expression: t.position)]))
+          .get();
+
+  /// Replaced wholesale, as the samples are: the set-up screen owns the list
+  /// and its positions are what the carcasses are assigned against.
+  Future<void> replaceQuidInjectors(
+    String inspectionUuid,
+    List<PoultryQuidInjectorsCompanion> rows,
+  ) async {
+    await database.transaction(() async {
+      await (database.delete(database.poultryQuidInjectors)
+            ..where((t) => t.inspectionUuid.equals(inspectionUuid)))
+          .go();
+      for (final row in rows) {
+        await database.into(database.poultryQuidInjectors).insert(row);
+      }
+    });
+  }
+
   Future<void> replaceQuidSamples(
     String inspectionUuid,
     List<PoultryQuidSamplesCompanion> rows,
@@ -173,6 +236,7 @@ class PoultryCaptureRepository {
     required String token,
   }) async {
     final samples = await quidSamples(i.clientUuid);
+    final injectors = await quidInjectors(i.clientUuid);
     await _post(
       'quid-inspections',
       token: token,
@@ -210,13 +274,23 @@ class PoultryCaptureRepository {
         'quid_determination_complete': i.quidDeterminationComplete,
         'repeat_quid_determination': i.repeatQuidDetermination,
         'set_injector_quid_percent': i.setInjectorQuidPercent,
+        // The date on the record being verified. It was captured on the
+        // handset and stopped there, so the office had a verification with
+        // no date against it.
+        'document_date': i.documentDate?.toIso8601String().split('T').first,
         'document_name': i.documentName,
         'document_verified': i.documentVerified,
         'document_deviation_present': i.documentDeviationPresent,
         'document_deviation_comment': i.documentDeviationComment,
+        'verification_records_json': i.verificationRecordsJson,
+        'direction_required': i.directionRequired,
+        'direction_reason': i.directionReason,
+        'correct_by_date':
+            i.correctByDate?.toIso8601String().split('T').first,
         'direction_remark_type': i.directionRemarkTypeId,
         'direction_remarks': i.directionRemarks,
         'direction_action': i.directionAction,
+        'seizure_decision': i.seizureDecision,
         'manager_name': i.managerName,
         'manager_email': i.managerEmail,
         'client_email': i.clientEmail,
@@ -234,6 +308,29 @@ class PoultryCaptureRepository {
               'after_mass_g': s.afterMassG,
               'final_mass_g': s.finalMassG,
               'pickup_percent': s.pickupPercent,
+              // The injector weighings and this carcass's own determination.
+              // Both were captured and neither travelled, so the office was
+              // reading averages it could not check.
+              'before_mass_g': s.beforeMassG,
+              'injector_after_mass_g': s.injectorAfterMassG,
+              'gain_g': s.gainG,
+              'injector_rate_percent': s.injectorRatePercent,
+              'quid_final_mass_g': s.quidFinalMassG,
+              'quid_gain_g': s.quidGainG,
+              'quid_percent': s.quidPercent,
+              'assigned_injector': s.assignedInjector,
+              'iteration': s.iteration,
+            },
+        ],
+        // The set-up's injector list. The finding compares what an injector
+        // was set to against what its carcasses gained, so without it the
+        // office has one half of the comparison.
+        'injectors': [
+          for (final inj in injectors)
+            {
+              'position': inj.position,
+              'name': inj.name,
+              'quid_percent': inj.quidPercent,
             },
         ],
       },
@@ -287,6 +384,8 @@ class PoultryCaptureRepository {
         'comments': d.comments,
         'action_taken': d.actionTaken,
         'non_conformance_ids': d.nonConformanceIds,
+        'correct_by_date':
+            d.correctByDate?.toIso8601String().split('T').first,
         'latitude': d.latitude,
         'longitude': d.longitude,
       },
@@ -301,11 +400,56 @@ class PoultryCaptureRepository {
   Future<int> addPhoto(PoultryPhotosCompanion row) =>
       database.into(database.poultryPhotos).insert(row);
 
-  Future<List<PoultryPhoto>> photosFor(String recordUuid) =>
+  /// The photographs on [recordUuid], oldest first — all of them, or only
+  /// those of one [kind]. A QUID record holds two kinds: the `quid` shots
+  /// its rejection needs and a `document` shot per verification record.
+  Future<List<PoultryPhoto>> photosFor(String recordUuid, {String? kind}) =>
       (database.select(database.poultryPhotos)
-            ..where((t) => t.recordUuid.equals(recordUuid))
+            ..where((t) => kind == null
+                ? t.recordUuid.equals(recordUuid)
+                : t.recordUuid.equals(recordUuid) & t.kind.equals(kind))
             ..orderBy([(t) => OrderingTerm(expression: t.capturedAt)]))
           .get();
+
+  /// Removes a QUID determination and everything captured under it — the
+  /// set-up's injectors, the carcasses weighed, its photographs and
+  /// signatures. "Abandon Checklist" on the weighing screen, which the
+  /// original answers by invalidating the sample and set-up data.
+  Future<void> deleteQuidInspection(String uuid) async {
+    final photos = await photosFor(uuid);
+    final signatures = await signaturesFor(uuid);
+    await database.transaction(() async {
+      await (database.delete(database.poultryQuidSamples)
+            ..where((t) => t.inspectionUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultryQuidInjectors)
+            ..where((t) => t.inspectionUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultryPhotos)
+            ..where((t) => t.recordUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultrySignatures)
+            ..where((t) => t.recordUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultryQuidInspections)
+            ..where((t) => t.clientUuid.equals(uuid)))
+          .go();
+    });
+    // The files go after the rows: a row that outlives its file is a
+    // photograph lost, a file that outlives its row is only space.
+    for (final path in [
+      for (final p in photos) p.filePath,
+      for (final s in signatures) s.filePath,
+    ]) {
+      if (path.trim().isEmpty) continue;
+      try {
+        final file = File(path);
+        if (file.existsSync()) file.deleteSync();
+      } on FileSystemException {
+        // Left behind; nothing refers to it any more.
+      }
+    }
+  }
 
   Future<void> deletePhoto(int id) =>
       (database.delete(database.poultryPhotos)..where((t) => t.id.equals(id)))
@@ -358,6 +502,16 @@ class PoultryCaptureRepository {
     final failures = <Object>[];
     for (final photo in await photosFor(recordUuid)) {
       if (photo.isUploaded) continue;
+      // An attachment whose file is gone cannot be sent, and trying costs
+      // the whole sync: the server refuses it as "no file was submitted",
+      // the attempt is counted a failure, and the same row is tried again
+      // on every pass for ever. It is marked done so the queue drains —
+      // the photograph is already lost, and saying so once is better than
+      // failing the sync until someone notices.
+      if (!_hasFile(photo.filePath)) {
+        await _markPhotoSent(photo.id);
+        continue;
+      }
       try {
         await uploadPhoto(photo, token: token);
       } on Object catch (e) {
@@ -366,6 +520,10 @@ class PoultryCaptureRepository {
     }
     for (final signature in await signaturesFor(recordUuid)) {
       if (signature.isUploaded) continue;
+      if (!_hasFile(signature.filePath)) {
+        await _markSignatureSent(signature.id);
+        continue;
+      }
       try {
         await uploadSignature(signature, token: token);
       } on Object catch (e) {
@@ -381,6 +539,19 @@ class PoultryCaptureRepository {
     }
   }
 
+  /// Whether the attachment still has something to send.
+  static bool _hasFile(String path) =>
+      path.trim().isNotEmpty && File(path).existsSync();
+
+  Future<void> _markPhotoSent(int id) =>
+      (database.update(database.poultryPhotos)..where((t) => t.id.equals(id)))
+          .write(const PoultryPhotosCompanion(isUploaded: Value(true)));
+
+  Future<void> _markSignatureSent(int id) =>
+      (database.update(database.poultrySignatures)
+            ..where((t) => t.id.equals(id)))
+          .write(const PoultrySignaturesCompanion(isUploaded: Value(true)));
+
   /// Sends a photograph. Multipart, and the record need not exist yet.
   Future<void> uploadPhoto(PoultryPhoto photo, {required String token}) async {
     await _upload(
@@ -394,6 +565,7 @@ class PoultryCaptureRepository {
       },
       filePath: photo.filePath,
       fileField: 'image',
+      partFilename: 'photo_${photo.kind}.jpg',
     );
     await (database.update(database.poultryPhotos)
           ..where((t) => t.id.equals(photo.id)))
@@ -418,6 +590,7 @@ class PoultryCaptureRepository {
       // validation on a field that is legitimately blank.
       filePath: signature.declined ? null : signature.filePath,
       fileField: 'image',
+      partFilename: 'signature_${signature.role}.png',
     );
     await (database.update(database.poultrySignatures)
           ..where((t) => t.id.equals(signature.id)))
@@ -430,6 +603,7 @@ class PoultryCaptureRepository {
     required Map<String, String> fields,
     required String fileField,
     String? filePath,
+    String? partFilename,
   }) async {
     final uri = Uri.parse('$baseUrl/api/poultry/$collection/');
     final request = http.MultipartRequest('POST', uri)
@@ -438,12 +612,18 @@ class PoultryCaptureRepository {
 
     if (filePath != null && filePath.isNotEmpty) {
       request.files.add(
-        await http.MultipartFile.fromPath(fileField, filePath),
+        // A short part-filename, whatever the file is called on disk: the
+        // server's FileField caps the stored name at 100 characters, and
+        // the visit sign-off's copies carry two uuids in theirs.
+        await http.MultipartFile.fromPath(fileField, filePath,
+            filename: partFilename),
       );
     }
 
+    // Files get far longer than [timeout]: a photo on a slow uplink to the
+    // live server took minutes (Ethan, 2026-09-24).
     final response = await http.Response.fromStream(
-      await _client.send(request).timeout(timeout),
+      await _client.send(request).timeout(const Duration(minutes: 5)),
     );
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw http.ClientException(

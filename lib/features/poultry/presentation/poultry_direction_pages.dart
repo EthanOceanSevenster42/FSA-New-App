@@ -1,5 +1,7 @@
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/responsive.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/data/local_database.dart';
@@ -8,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../data/poultry_capture_repository.dart';
 import '../data/poultry_repository.dart';
 import '../domain/poultry_rules.dart';
+import '../../../core/widgets/search_picker.dart';
 import 'poultry_form_widgets.dart';
 
 /// Poultry Direction Management.
@@ -57,8 +60,7 @@ class _PoultryDirectionManagementPageState
 
   Future<List<PoultryDirection>> _load() async {
     _token = await widget.captureRepository.storedToken();
-    final all =
-        await widget.captureRepository.directions(widget.user.userName);
+    final all = await widget.captureRepository.directions(widget.user.userName);
     return all
         .where((d) => PoultryCaptureRepository.withinDays(
               d.issuedAt.toLocal(),
@@ -72,8 +74,7 @@ class _PoultryDirectionManagementPageState
         _rows = _load();
       });
 
-  String _day(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/'
+  String _day(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   String get _dateLabel => _isSingleDay
@@ -118,10 +119,9 @@ class _PoultryDirectionManagementPageState
     }
     setState(() => _uploading.add(direction.clientUuid));
     try {
-      await widget.captureRepository
-          .uploadDirection(direction, token: token);
+      await widget.captureRepository.uploadDirection(direction, token: token);
       if (!mounted) return;
-      _toast('Direction sent.');
+      _toast('Rejection sent.');
     } on Object catch (e) {
       if (!mounted) return;
       _toast('Send failed. $e');
@@ -147,7 +147,7 @@ class _PoultryDirectionManagementPageState
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text(
-          'Poultry Direction Management',
+          'Poultry Rejection Management',
           style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
         ),
         backgroundColor: AppColors.surface,
@@ -157,10 +157,14 @@ class _PoultryDirectionManagementPageState
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _newDirection,
+        // Red, as everything to do with a rejection is.
+        backgroundColor: AppColors.brandRed,
+        foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
-        label: const Text('New direction'),
+        label: const Text('New rejection'),
       ),
-      body: FutureBuilder<List<PoultryDirection>>(
+      body: ContentWidth(
+          child: FutureBuilder<List<PoultryDirection>>(
         future: _rows,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -203,7 +207,7 @@ class _PoultryDirectionManagementPageState
               ),
               const SizedBox(height: 18),
               Text(
-                'DIRECTION LIST',
+                'REJECTION LIST',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w900,
@@ -217,8 +221,8 @@ class _PoultryDirectionManagementPageState
                   padding: const EdgeInsets.symmetric(vertical: 28),
                   child: Text(
                     _isSingleDay
-                        ? 'No directions issued on the selected date.'
-                        : 'No directions issued between the selected dates.',
+                        ? 'No rejections issued on the selected date.'
+                        : 'No rejections issued between the selected dates.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: AppColors.muted, height: 1.4),
                   ),
@@ -235,7 +239,7 @@ class _PoultryDirectionManagementPageState
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -258,9 +262,19 @@ class PoultryDirectionForm extends StatefulWidget {
 }
 
 class _DirectionReference {
-  _DirectionReference({required this.remarks, required this.nonConformances});
+  _DirectionReference({
+    required this.remarks,
+    required this.clients,
+    required this.facilities,
+  });
+
   final List<PoultryDesignationRef> remarks;
-  final List<PoultryChecklistItemRef> nonConformances;
+
+  /// The client and premises directories, shared with the egg module. A
+  /// direction is served on a client, and picking one fills the details the
+  /// way the egg direction form does.
+  final List<EggClient> clients;
+  final List<EggFacility> facilities;
 }
 
 class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
@@ -285,7 +299,8 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
 
   Future<_DirectionReference> _load() async => _DirectionReference(
         remarks: await widget.repository.directionRemarks(),
-        nonConformances: const [],
+        clients: await widget.repository.clients(),
+        facilities: await widget.repository.facilities(),
       );
 
   @override
@@ -335,7 +350,7 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text(
-          'New Direction',
+          'New Rejection',
           style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
         ),
         backgroundColor: AppColors.surface,
@@ -343,7 +358,8 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_DirectionReference>(
+      body: ContentWidth(
+          child: FutureBuilder<_DirectionReference>(
         future: _reference,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -358,15 +374,45 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
               children: [
                 poultrySection('Client'),
-                poultryField(_facilityName, 'Facility name', required: true),
-                poultryField(_clientName, 'Client Name'),
+                SearchPickerField<EggFacility>(
+                  label: 'Facility name',
+                  controller: _facilityName,
+                  options: reference.facilities,
+                  optionLabel: (f) => f.name,
+                  optionSubtitle: (f) => f.physicalAddress,
+                  isRequired: true,
+                  onSelected: (f) =>
+                      setState(() => _facilityName.text = f.name),
+                  emptyHint: 'No facilities on this device yet. Open the '
+                      'Server Sync with a network connection to download the directory.',
+                ),
+                // Picking a known client fills the address a direction is
+                // actually sent to, instead of retyping it at the roadside.
+                SearchPickerField<EggClient>(
+                  label: 'Client Name',
+                  controller: _clientName,
+                  options: reference.clients,
+                  optionLabel: (c) => c.name,
+                  optionSubtitle: (c) => [
+                    if (c.tradingName.trim().isNotEmpty) 't/a ${c.tradingName}',
+                    c.physicalAddress,
+                  ].where((part) => part.trim().isNotEmpty).join(' · '),
+                  onSelected: (c) => setState(() {
+                    _clientName.text = c.name;
+                    if (c.email.trim().isNotEmpty) {
+                      _clientEmail.text = c.email;
+                    }
+                  }),
+                  emptyHint: 'No clients on this device yet. Open Server Sync '
+                      'with a network connection to download the directory.',
+                ),
                 poultryField(
                   _clientEmail,
                   'Email address #1',
                   keyboard: TextInputType.emailAddress,
                 ),
 
-                poultrySection('Direction Form'),
+                poultrySection('Rejection Form'),
                 poultryDropdown(
                   label: 'Grading Non-Conformance Remarks',
                   value: _remarkTypeId,
@@ -374,24 +420,25 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
                   onChanged: (v) => setState(() => _remarkTypeId = v),
                 ),
                 poultryField(_remarks, 'List of Added Remarks', lines: 2),
-                poultryField(
-                    _comments, 'Comments/Remarks on Direction', lines: 3),
-                poultryField(
-                    _action, 'Batch No. and/or Quantity Removed'),
+                poultryField(_comments, 'Comments/Remarks on Rejection',
+                    lines: 3),
+                poultryField(_action, 'Batch No. and/or Quantity Removed'),
 
                 const SizedBox(height: 20),
                 SizedBox(
                   height: 48,
                   child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.brandRed),
                     onPressed: _saving ? null : _save,
-                    child: Text(_saving ? 'Saving…' : 'Issue direction'),
+                    child: Text(_saving ? 'Saving…' : 'Issue rejection'),
                   ),
                 ),
               ],
             ),
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -519,8 +566,7 @@ class _DirectionCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: d.isUploaded
                       ? const Color(0xFFEAF5EB)
@@ -552,6 +598,16 @@ class _DirectionCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(d.remarks, style: const TextStyle(fontSize: 13.5)),
+            ),
+          if (d.correctByDate != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'Correct by ${d.correctByDate!.day.toString().padLeft(2, '0')}/'
+                '${d.correctByDate!.month.toString().padLeft(2, '0')}/'
+                '${d.correctByDate!.year}',
+                style: TextStyle(fontSize: 13, color: AppColors.muted),
+              ),
             ),
           if (!d.isUploaded) ...[
             const SizedBox(height: 10),

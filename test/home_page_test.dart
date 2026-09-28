@@ -60,14 +60,22 @@ void main() {
     await tester.pumpWidget(_wrap());
     await tester.pumpAndSettle();
 
+    // All capturing goes through the grouped Inspection flow; the
+    // standalone commodity tiles are parked.
+    expect(find.text('Inspection'), findsOneWidget);
     for (final title in [
       'Eggs',
       'Poultry Products',
       'Processed Meat',
       'Raw Processed Meat',
-      'SAPA',
     ]) {
-      expect(find.text(title), findsOneWidget, reason: '$title missing');
+      expect(find.text(title), findsNothing,
+          reason: '$title should be parked behind Inspection');
+    }
+
+    // Unbuilt features are removed outright, not shown greyed out.
+    for (final title in ['SAPA', 'Product Scanning', 'Information']) {
+      expect(find.text(title), findsNothing, reason: '$title should be gone');
     }
   });
 
@@ -185,6 +193,10 @@ void main() {
     // Enabling a feature before its screens exist sends an inspector to a dead
     // end, so this list is updated deliberately as each one lands.
     final built = kAppFeatures.where((f) => f.available).map((f) => f.title);
-    expect(built, ['Eggs', 'Poultry Products']);
+    expect(built, [
+      'Inspection',
+      'Inspection Management',
+      'Server Sync',
+    ]);
   });
 }

@@ -2,12 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/session/session_user.dart';
 import '../../../core/theme/app_theme.dart';
 import '../data/poultry_capture_repository.dart';
 import '../data/poultry_repository.dart';
 import 'poultry_direction_pages.dart';
-import 'poultry_inspection_form.dart';
 import 'poultry_inspection_list_page.dart';
 import 'poultry_label_checklist_form.dart';
 import 'poultry_quid_continue_page.dart';
@@ -15,7 +16,9 @@ import 'poultry_quid_setup_form.dart';
 
 /// Poultry landing page.
 ///
-/// Six entries, matching the original. Its seventh, "Seizure Management", is
+/// Five entries. The original has six: its two poultry record tiles are one
+/// here — labelling, with grading to follow when the inspector says so on
+/// that form (Ethan, 2026-09-23). Its seventh, "Seizure Management", is
 /// `IsVisible="False"` in `PoultryMenuPage.xaml` and its handler says only
 /// "This is a future feature" — so it is absent here too rather than shown as
 /// something an inspector might wait for.
@@ -62,14 +65,6 @@ class _PoultryMenuPageState extends State<PoultryMenuPage> {
     );
     if (mounted) setState(() {});
   }
-
-  Future<void> _newInspection() => _open(
-        PoultryInspectionForm(
-          repository: widget.repository,
-          captureRepository: widget.captureRepository,
-          inspectorName: widget.user.userName,
-        ),
-      );
 
   Future<void> _newLabelChecklist() => _open(
         PoultryLabelChecklistForm(
@@ -129,7 +124,8 @@ class _PoultryMenuPageState extends State<PoultryMenuPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<int>(
+      body: ContentWidth(
+          child: FutureBuilder<int>(
         future: _rules,
         builder: (context, snap) {
           final ready = (snap.data ?? 0) > 0;
@@ -161,16 +157,10 @@ class _PoultryMenuPageState extends State<PoultryMenuPage> {
                 ),
               // The original's order, top to bottom.
               _Tile(
-                title: 'New Label/Container Checklist',
-                subtitle: 'Lettering, container and grading requirements',
+                title: 'New Labelling and Grading Checklist',
+                subtitle: 'Label and container first; grading can follow',
                 icon: Icons.label_outline,
                 onTap: ready ? _newLabelChecklist : null,
-              ),
-              _Tile(
-                title: 'New Grading and Classification Checklist',
-                subtitle: 'Classify a sample and record deviations',
-                icon: Icons.assignment_outlined,
-                onTap: ready ? _newInspection : null,
               ),
               _Tile(
                 title: 'Setup QUID Checklist',
@@ -185,10 +175,11 @@ class _PoultryMenuPageState extends State<PoultryMenuPage> {
                 onTap: _continueQuid,
               ),
               _Tile(
-                title: 'Direction Management',
-                subtitle: 'Issue, review and send directions',
+                title: 'Rejection Management',
+                subtitle: 'Issue, review and send rejections',
                 icon: Icons.gavel_outlined,
                 onTap: _directions,
+                accent: AppColors.brandRed,
               ),
               _Tile(
                 title: 'Inspection Management',
@@ -199,7 +190,7 @@ class _PoultryMenuPageState extends State<PoultryMenuPage> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -210,12 +201,17 @@ class _Tile extends StatelessWidget {
     required this.subtitle,
     required this.icon,
     required this.onTap,
+    this.accent,
   });
 
   final String title;
   final String subtitle;
   final IconData icon;
   final VoidCallback? onTap;
+
+  /// Overrides the icon's colour. Rejections carry the app's red, the same
+  /// red the DEVIATION side of every checklist slide uses.
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) {
@@ -239,7 +235,9 @@ class _Tile extends StatelessWidget {
                 Icon(
                   icon,
                   size: 24,
-                  color: enabled ? AppColors.brandTeal : AppColors.muted,
+                  color: enabled
+                      ? (accent ?? AppColors.brandTeal)
+                      : AppColors.muted,
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -263,8 +261,7 @@ class _Tile extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (enabled)
-                  Icon(Icons.chevron_right, color: AppColors.muted),
+                if (enabled) Icon(Icons.chevron_right, color: AppColors.muted),
               ],
             ),
           ),

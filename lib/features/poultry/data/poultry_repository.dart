@@ -5,8 +5,16 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 
+import 'dart:io';
+
 import '../../../core/data/local_database.dart';
+import '../../../core/documents/direction_pdf.dart';
+import '../../../core/documents/fsa_checklist_pdf.dart';
+import '../../../core/documents/fsa_documents.dart';
+import '../../../core/documents/quid_checklist_pdf.dart';
 import '../domain/poultry_rules.dart';
+import '../domain/quid_determination.dart';
+import '../domain/quid_flow.dart';
 
 /// Poultry reference data and captured grading inspections.
 ///
@@ -53,8 +61,7 @@ class PoultryRepository {
 
   /// Pulls reference data from the server, from [cursorKey] onwards.
   Future<int> syncReference({bool fromScratch = false}) async {
-    final cursor =
-        fromScratch ? null : await database.readSyncState(cursorKey);
+    final cursor = fromScratch ? null : await database.readSyncState(cursorKey);
     final uri = Uri.parse('$baseUrl/api/poultry/reference/').replace(
       queryParameters: {
         if (cursor != null && cursor.isNotEmpty) 'since': cursor,
@@ -91,8 +98,7 @@ class PoultryRepository {
         ((data[key] as List<dynamic>?) ?? const [])
             .cast<Map<String, dynamic>>();
 
-    String stamp(Map<String, dynamic> j) =>
-        j['updated_at'] as String? ?? '';
+    String stamp(Map<String, dynamic> j) => j['updated_at'] as String? ?? '';
 
     await database.transaction(() async {
       for (final j in rows('meat_types')) {
@@ -436,21 +442,39 @@ class PoultryRepository {
           ..where((t) => t.isActive.equals(true)))
         .get();
     return [
-      for (final r in rows)
-        PoultryDesignationRef(id: r.id, name: r.remarkText),
+      for (final r in rows) PoultryDesignationRef(id: r.id, name: r.remarkText),
     ];
   }
 
   Future<List<PoultryDesignationRef>> restrictedParticulars() async {
-    final rows =
-        await (database.select(database.poultryRestrictedParticulars)
-              ..where((t) => t.isActive.equals(true)))
-            .get();
+    final rows = await (database.select(database.poultryRestrictedParticulars)
+          ..where((t) => t.isActive.equals(true)))
+        .get();
     return [
       for (final r in rows)
         PoultryDesignationRef(id: r.id, name: r.description),
     ];
   }
+
+  // -------------------------------------------------------------- directory
+
+  /// The premises directory, shared with the egg module.
+  ///
+  /// One directory, not one per commodity: the abattoir an egg inspector
+  /// visited last week is the same building a poultry inspector stands in
+  /// today, and a second copy would just be the same names spelled
+  /// differently. The rows are synced by the egg reference feed, which the
+  /// home screen already keeps fresh.
+  Future<List<EggFacility>> facilities() =>
+      (database.select(database.eggFacilities)
+            ..where((t) => t.isActive.equals(true))
+            ..orderBy([(t) => OrderingTerm(expression: t.name)]))
+          .get();
+
+  Future<List<EggClient>> clients() => (database.select(database.eggClients)
+        ..where((t) => t.isActive.equals(true))
+        ..orderBy([(t) => OrderingTerm(expression: t.name)]))
+      .get();
 
   // ------------------------------------------------------------------- capture
 
@@ -484,8 +508,7 @@ class PoultryRepository {
             ..where((t) => t.clientUuid.equals(uuid)))
           .getSingleOrNull();
 
-  Future<String?> storedToken() =>
-      database.readSyncState('auth.accessToken');
+  Future<String?> storedToken() => database.readSyncState('auth.accessToken');
 
   // -------------------------------------------------------------------- upload
 
@@ -541,21 +564,19 @@ class PoultryRepository {
         'product_details': i.productDetails,
         'sample_number': i.sampleNumber,
         'grade': i.gradeId,
-        'restricted_particulars': _ids(i.restrictedParticularIds),
+        // Restricted particulars are not sent: they are read off the label,
+        // and the Label/Container checklist is the record that carries them.
         'compliant_item_ids': i.compliantItemIds,
+        'grading_by_sample': i.gradingBySample,
         'inspection_comments': i.inspectionComments,
         'direction_comments': i.directionComments,
         'direction_remarks': i.directionRemarks,
         'direction_remark_type': i.directionRemarkTypeId,
+        'seizure_decision': i.seizureDecision,
         'no_client_signature_present': i.noClientSignaturePresent,
         'latitude': i.latitude,
         'longitude': i.longitude,
       };
-
-  static List<int> _ids(String csv) => [
-        for (final part in csv.split(','))
-          if (int.tryParse(part.trim()) != null) int.parse(part.trim()),
-      ];
 
   // ------------------------------------------------ bulk status corrections
 
@@ -591,5 +612,672 @@ class PoultryRepository {
     return targets.length;
   }
 
+  /// The direction served off a poultry record — SOP-APS-001.
+  ///
+  /// The notice itself, not the checklist behind it: the deviations cited,
+  /// the date they must be put right by, and the two signatures. Poultry
+  /// raised directions, uploaded them as data and rendered nothing, so the
+  /// person it was served on had no sheet to read and the office had to
+  /// draw one itself — the same gap raw had before it grew this.
+  ///
+  /// Built from whichever record the direction was raised off: a grading
+  /// inspection cites the carcass and packing rows, a label/container
+  /// checklist the marking ones, and only the lists that record actually
+  /// worked are judged.
+  Future<File?> buildDirection(String uuid, {Directory? into}) async {
+    final direction = await (database.select(database.poultryDirections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (direction == null) return null;
+    final grading = await (database.select(database.poultryInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    final label = await (database.select(database.poultryLabelInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (grading == null && label == null) return null;
+
+    final inspectorUsername =
+        grading?.inspectorUsername ?? label?.inspectorUsername ?? '';
+    final ctx = await _documentContext(uuid, inspectorUsername);
+    final inspectedAt =
+        grading?.inspectedAt ?? label?.inspectedAt ?? direction.issuedAt;
+    final product = grading?.productDetails.isNotEmpty ?? false
+        ? grading!.productDetails
+        : (label?.productDetails ?? '');
+
+    // Only the lists the record in hand worked. Judging a grading
+    // inspection against the marking rows would cite deviations on a
+    // notice for requirements nobody was asked about.
+    final kinds = <PoultryChecklistKind>{
+      if (grading != null) ...[
+        PoultryChecklistKind.grading,
+        PoultryChecklistKind.portion,
+        PoultryChecklistKind.pack,
+      ],
+      if (label != null) ...[
+        PoultryChecklistKind.labelInner,
+        PoultryChecklistKind.labelOuter,
+        PoultryChecklistKind.container,
+      ],
+    };
+    final ticked = <int>{
+      if (grading != null) ..._tickedIds(grading.compliantItemIds),
+      if (label != null) ..._tickedIds(label.compliantItemIds),
+    };
+    final items = await checklistItems();
+    final findings = PoultryRules.findings(
+      items: [
+        for (final item in items)
+          if (kinds.contains(item.kind)) item,
+      ],
+      compliantItemIds: ticked,
+    );
+
+    final reasonId = grading?.reasonId ?? label?.reasonId;
+    final reasons = await inspectionReasons();
+    final reason = reasonId == null
+        ? ''
+        : reasons
+            .where((r) => r.id == reasonId)
+            .map((r) => r.name)
+            .firstWhere((_) => true, orElse: () => '');
+
+    return DirectionPdf.write(
+      out: _poultryDocumentFile(
+          grading?.facilityName ?? label?.facilityName ?? '',
+          'Poultry-Rejection',
+          uuid,
+          into),
+      control: FsaDocuments.poultryDirection,
+      natureOfInspection: 'Poultry Meat Classification and Grading',
+      facilityName: grading?.facilityName ?? label?.facilityName ?? '',
+      // Whoever signed for the client, falling back to the name the
+      // direction was made out to.
+      ownerOrRepresentative: ctx.authorisedPersonName.isNotEmpty
+          ? ctx.authorisedPersonName
+          : direction.clientName,
+      physicalAddress: grading?.facilityAddress ?? label?.facilityAddress ?? '',
+      emailAddress: direction.clientEmail.isNotEmpty
+          ? direction.clientEmail
+          : (grading?.contactPersonEmail ?? label?.contactPersonEmail ?? ''),
+      dateOfVisit: inspectedAt,
+      inspectionReason: reason,
+      // Poultry directions carry no number of their own on the handset —
+      // unlike raw, whose reference is built at save time. Left empty
+      // rather than invented: a number the office cannot trace back is
+      // worse than none.
+      latestReference: '',
+      originalReference: '',
+      subjectFields: [
+        (
+          label: 'Producer',
+          value:
+              grading?.producerTradingName ?? label?.producerTradingName ?? ''
+        ),
+        (label: 'Product Details', value: product),
+        (
+          label: 'Sample #',
+          value: grading?.sampleNumber ?? label?.sampleNumber ?? ''
+        ),
+      ],
+      deviations: [
+        for (final f in findings)
+          DirectionDeviation(
+            product: product,
+            nature: f.item.description,
+            regulation: f.item.regulationReference,
+          ),
+      ],
+      // FSA-SOP-APS-001 Annexure C: the period the deviations carry,
+      // counted from the inspection date.
+      correctByDate: direction.correctByDate == null
+          ? ''
+          : _poultryYmd(direction.correctByDate!),
+      actionsAndRemark: [
+        if (direction.remarks.trim().isNotEmpty) direction.remarks.trim(),
+        if (direction.comments.trim().isNotEmpty) direction.comments.trim(),
+        if (direction.actionTaken.trim().isNotEmpty)
+          direction.actionTaken.trim(),
+      ].join('\n'),
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName.isNotEmpty
+          ? ctx.authorisedPersonName
+          : direction.clientName,
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+      pleaseNote: 'Failure to rectify by the date above may result in '
+          'further action under the Act.',
+    );
+  }
+
+  /// The grading checklist for one poultry inspection — SOP-APS-PM-003.
+  ///
+  /// Poultry was the one commodity that sent the office no paperwork at
+  /// all: eggs, PMP and raw each render theirs, and a poultry record
+  /// arrived with an invoice and nothing to read. Produced from what the
+  /// inspector actually ticked, like every other sheet.
+  Future<File?> buildGradingChecklist(String uuid, {Directory? into}) async {
+    final i = await (database.select(database.poultryInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (i == null) return null;
+    final ticked = _tickedIds(i.compliantItemIds);
+    if (ticked.isEmpty) return null;
+
+    final ctx = await _documentContext(uuid, i.inspectorUsername);
+    final items = await checklistItems();
+    const titles = {
+      PoultryChecklistKind.grading: 'QUALITY STANDARDS FOR CARCASSES',
+      PoultryChecklistKind.portion: 'QUALITY STANDARDS FOR PORTIONS',
+      // Answered on this inspection, so printed on this document. It was
+      // being captured here and printed on the labelling sheet instead.
+      PoultryChecklistKind.pack: 'PACKING REQUIREMENTS',
+    };
+    return FsaChecklistPdf.write(
+      out: _poultryDocumentFile(
+          i.facilityName, 'Poultry-Grading-Checklist', uuid, into),
+      control: FsaDocuments.poultryGrading,
+      facilityName: i.facilityName,
+      leftFields: [
+        (label: 'Date of Inspection:', value: _poultryYmd(i.inspectedAt)),
+        (label: 'Facility Name:', value: i.facilityName),
+        (label: 'Telephone:', value: i.facilityTelephone),
+        (label: 'Contact Person:', value: i.contactPerson),
+      ],
+      rightFields: [
+        (label: 'Producer/Trading Name:', value: i.producerTradingName),
+        (label: 'Product Details:', value: i.productDetails),
+        (label: 'Sample #:', value: i.sampleNumber),
+      ],
+      sections: _poultrySections(items, titles, ticked),
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName,
+      comments: i.inspectionComments,
+      remarks: i.directionComments,
+      photoPaths: ctx.photoPaths,
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+      documentTitle: 'Poultry Grading Verification Checklist',
+    );
+  }
+
+  /// The labelling checklist for one poultry record — SOP-APS-PM-002.
+  Future<File?> buildPoultryLabellingChecklist(String uuid,
+      {Directory? into}) async {
+    final i = await (database.select(database.poultryLabelInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (i == null) return null;
+    final ticked = _tickedIds(i.compliantItemIds);
+    if (ticked.isEmpty) return null;
+
+    final ctx = await _documentContext(uuid, i.inspectorUsername);
+    final items = await checklistItems();
+    // Packing (Reg. 7) is not here. It is answered on the grading
+    // inspection — the original puts it on that page — and this document
+    // prints every row of every kind it lists, marking anything unticked as
+    // a deviation. Listing a kind the Label/Container checklist never
+    // captures put six deviations nobody had been asked about on the sheet
+    // the office reads, on every record.
+    const titles = {
+      PoultryChecklistKind.labelInner: 'MARKING — INNER LABEL',
+      PoultryChecklistKind.labelOuter: 'MARKING — OUTER PACKAGING',
+      PoultryChecklistKind.container: 'CONTAINERS & OUTER CONTAINERS',
+    };
+    return FsaChecklistPdf.write(
+      out: _poultryDocumentFile(
+          i.facilityName, 'Poultry-Labelling-Checklist', uuid, into),
+      control: FsaDocuments.poultryLabelling,
+      facilityName: i.facilityName,
+      leftFields: [
+        (label: 'Date of Inspection:', value: _poultryYmd(i.inspectedAt)),
+        (label: 'Facility Name:', value: i.facilityName),
+        (label: 'Telephone:', value: i.facilityTelephone),
+        (label: 'Contact Person:', value: i.contactPerson),
+      ],
+      rightFields: [
+        (label: 'Producer/Trading Name:', value: i.producerTradingName),
+        (label: 'Product Details:', value: i.productDetails),
+        (label: 'Registration Number:', value: i.registrationNumber),
+      ],
+      sections: _poultrySections(items, titles, ticked),
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName,
+      comments: i.nonConformanceComments,
+      remarks: '',
+      photoPaths: ctx.photoPaths,
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+      documentTitle: 'Poultry Labelling Verification Checklist',
+    );
+  }
+
+  /// The QUID determination checklist for one QUID inspection —
+  /// SOP-APS-PM-001.
+  ///
+  /// QUID was reaching the office as figures with no sheet: it is a member
+  /// kind of its own, and neither the record view nor the upload bundle had a
+  /// case for it. Laid out as the Agency's own report does it — the chilling
+  /// table for the declared method, the injector table where the product is
+  /// injected, and the determination of QUID, each with its average.
+  ///
+  /// Null until carcasses have been weighed: a sheet of empty masses is not a
+  /// record of a determination.
+  /// The rejection a QUID determination ended in, as the sheet served on
+  /// the facility. Null while the determination raised none.
+  ///
+  /// The rejection is captured on the weighing screen itself — the
+  /// injector over its limit, the remarks, the date to correct by and the
+  /// batch removed — and went up as fields on the record only, so neither
+  /// Inspection Management nor the office had a document of it.
+  Future<File?> buildQuidRejection(String uuid, {Directory? into}) async {
+    final i = await (database.select(database.poultryQuidInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (i == null || !i.directionRequired) return null;
+    final samples = await (database.select(database.poultryQuidSamples)
+          ..where((t) => t.inspectionUuid.equals(uuid)))
+        .get();
+    final injectors = await (database.select(database.poultryQuidInjectors)
+          ..where((t) => t.inspectionUuid.equals(uuid))
+          ..orderBy([(t) => OrderingTerm(expression: t.position)]))
+        .get();
+    // Judged as the screen and the checklist judge it.
+    final verdicts = quidVerdicts(
+      injectors: [
+        for (final inj in injectors)
+          (position: inj.position, name: inj.name, quidPercent: inj.quidPercent),
+      ],
+      weighings: [
+        for (final s in quidLastRound(samples, (s) => s.iteration))
+          (
+            assignedInjector: int.tryParse(s.assignedInjector),
+            quidPercent: s.quidPercent,
+          ),
+      ],
+      isWholeCarcass: i.isWholeCarcass,
+    );
+    final ctx = await _documentContext(uuid, i.inspectorUsername);
+    final reasons = await inspectionReasons();
+    final reason = reasons
+        .where((r) => r.id == i.reasonId)
+        .map((r) => r.name)
+        .firstWhere((_) => true, orElse: () => '');
+    final remarkTypes = await directionRemarks();
+    final remarkType = remarkTypes
+        .where((r) => r.id == i.directionRemarkTypeId)
+        .map((r) => r.name)
+        .firstWhere((_) => true, orElse: () => '');
+    final product = i.productDetails.trim().isNotEmpty
+        ? i.productDetails.trim()
+        : (i.isWholeCarcass ? 'Whole carcasses' : 'Cuts/portions');
+    final failed = [
+      for (final v in verdicts)
+        if (v.passes == false)
+          DirectionDeviation(
+            product: product,
+            nature: '${v.name.isEmpty ? 'Injector ${v.position}' : v.name}: '
+                'average QUID ${v.averagePercent}% exceeds the permitted '
+                '${v.limitPercent.toStringAsFixed(3)}% over '
+                '${v.sampleCount} carcasses.',
+            regulation: 'SOP-APS-PM-001',
+          ),
+    ];
+    return DirectionPdf.write(
+      out: _poultryDocumentFile(
+          i.facilityName, 'Poultry-QUID-Rejection', uuid, into),
+      control: FsaDocuments.poultryDirection,
+      natureOfInspection: 'Poultry QUID Verification',
+      facilityName: i.facilityName,
+      ownerOrRepresentative: ctx.authorisedPersonName.isNotEmpty
+          ? ctx.authorisedPersonName
+          : (i.managerName.trim().isNotEmpty
+              ? i.managerName.trim()
+              : i.contactPerson),
+      physicalAddress: i.facilityAddress,
+      emailAddress: i.managerEmail.trim().isNotEmpty
+          ? i.managerEmail.trim()
+          : (i.clientEmail.trim().isNotEmpty
+              ? i.clientEmail.trim()
+              : i.contactPersonEmail),
+      dateOfVisit: i.inspectedAt,
+      inspectionReason: reason,
+      latestReference: '',
+      originalReference: '',
+      subjectFields: [
+        (label: 'Producer', value: i.producerTradingName),
+        (label: 'Product Details', value: product),
+        (label: 'Chilling Method', value: i.isWaterChilled ? 'Water' : 'Air'),
+        (
+          label: 'Portion Type',
+          value: i.isWholeCarcass ? 'Whole Carcass' : 'Cuts/Portions'
+        ),
+      ],
+      deviations: [
+        ...failed,
+        // A rejection with no injector failed — the water pick-up over 7%
+        // on the second round — states the weighing's own reason.
+        if (failed.isEmpty && i.directionReason.trim().isNotEmpty)
+          DirectionDeviation(product: product, nature: i.directionReason.trim()),
+      ],
+      correctByDate:
+          i.correctByDate == null ? '' : _poultryYmd(i.correctByDate!),
+      actionsAndRemark: [
+        if (remarkType.isNotEmpty) remarkType,
+        if (i.directionRemarks.trim().isNotEmpty) i.directionRemarks.trim(),
+        if (i.directionAction.trim().isNotEmpty)
+          'Batch No. and/or quantity removed: ${i.directionAction.trim()}',
+      ].join('\n'),
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName,
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+    );
+  }
+
+  Future<File?> buildQuidChecklist(String uuid, {Directory? into}) async {
+    final i = await (database.select(database.poultryQuidInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (i == null) return null;
+    final samples = await (database.select(database.poultryQuidSamples)
+          ..where((t) => t.inspectionUuid.equals(uuid)))
+        .get();
+
+    bool has(String v) => v.trim().isNotEmpty;
+    final chilling = samples
+        .where((s) => has(s.initialMassG) || has(s.finalMassG))
+        .toList();
+    final injected = samples
+        .where((s) => has(s.beforeMassG) || has(s.injectorAfterMassG))
+        .toList();
+    // Carcasses that were weighed off the process, which is what a QUID
+    // determination is made from.
+    final determinedCarcasses = samples.where((s) => has(s.quidFinalMassG)).toList();
+    if (chilling.isEmpty && injected.isEmpty) return null;
+
+    final ctx = await _documentContext(uuid, i.inspectorUsername);
+    final injectors = await (database.select(database.poultryQuidInjectors)
+          ..where((t) => t.inspectionUuid.equals(uuid))
+          ..orderBy([(t) => OrderingTerm(expression: t.position)]))
+        .get();
+    // Judged exactly as the screen judges it: one calculation, so the sheet
+    // the office files cannot disagree with what the inspector was shown.
+    final verdicts = quidVerdicts(
+      injectors: [
+        for (final inj in injectors)
+          (position: inj.position, name: inj.name, quidPercent: inj.quidPercent),
+      ],
+      // The last round decides; a failed first round stays listed below.
+      weighings: [
+        for (final s in quidLastRound(samples, (s) => s.iteration))
+          (
+            assignedInjector: int.tryParse(s.assignedInjector),
+            quidPercent: s.quidPercent,
+          ),
+      ],
+      isWholeCarcass: i.isWholeCarcass,
+    );
+    final determined = quidMean([
+      for (final s in quidLastRound(samples, (s) => s.iteration)) s.quidPercent
+    ]);
+    final reasons = await inspectionReasons();
+    final reason = reasons
+        .where((r) => r.id == i.reasonId)
+        .map((r) => r.name)
+        .firstWhere((_) => true, orElse: () => '');
+    // The QUID record answers whole carcass or portions with a switch of its
+    // own rather than a portion-type row.
+    final portionType = i.isWholeCarcass ? 'Whole Carcass' : 'Cuts/Portions';
+
+    return QuidChecklistPdf.write(
+      out: _poultryDocumentFile(
+          i.facilityName, 'Poultry-QUID-Checklist', uuid, into),
+      control: FsaDocuments.poultryQuid,
+      facilityName: i.facilityName,
+      dateOfInspection: _poultryYmd(i.inspectedAt),
+      reasonForInspection: reason,
+      registrationNumber: i.companyRegNumber,
+      portionType: portionType,
+      allowableQuidPercent: i.dispensationQuidPercent,
+      isWaterChilled: i.isWaterChilled,
+      chilling: [
+        for (final s in chilling)
+          QuidCarcass(
+            number: s.carcassNumber,
+            initialMassG: s.initialMassG,
+            finalMassG: s.finalMassG,
+            percent: s.pickupPercent,
+          ),
+      ],
+      averagePickupPercent: i.isWaterChilled
+          ? i.averageWaterChillPickup
+          : i.averageInjectorPickup,
+      iterationNumber: i.iterationNumber,
+      // One block per injector on the set-up list, as the paper sheet is
+      // ruled: the carcasses it injected beside the carcasses its QUID was
+      // determined on, each with its own average, and the finding made
+      // against that injector's own setting.
+      injectors: [
+        for (final v in verdicts)
+          QuidInjectorBlock(
+            name: v.name.isEmpty ? 'Injector ${v.position}' : v.name,
+            setPercent: v.setPercent,
+            injection: [
+              for (final s in injected
+                  .where((s) => s.assignedInjector == '${v.position}'))
+                QuidInjectorCarcass(
+                  // The injector has its own rate column: `pickupPercent`
+                  // is the chilling reading, and printing it here would put
+                  // the chiller's figure under the injector's heading.
+                  number: s.carcassNumber,
+                  beforeMassG: s.beforeMassG,
+                  afterMassG: s.injectorAfterMassG,
+                  gainG: s.gainG,
+                  ratePercent: s.injectorRatePercent,
+                ),
+            ],
+            averageRatePercent: quidMean([
+              for (final s in injected
+                  .where((s) => s.assignedInjector == '${v.position}'))
+                s.injectorRatePercent,
+            ]),
+            averageQuidPercent: v.averagePercent,
+            passes: v.passes,
+            verdict: switch (v.passes) {
+              true => 'PASS — average ${v.averagePercent}% against a limit '
+                  'of ${v.limitPercent.toStringAsFixed(3)}% '
+                  '(${v.sampleCount} carcasses).',
+              false => 'FAIL — average ${v.averagePercent}% against a limit '
+                  'of ${v.limitPercent.toStringAsFixed(3)}% '
+                  '(${v.sampleCount} carcasses).',
+              null => v.sampleCount == 0
+                  ? ''
+                  : 'No finding: $quidMinimumSampleSet carcasses are needed '
+                      'and ${v.sampleCount} were weighed.',
+            },
+            determination: [
+              for (final s in determinedCarcasses
+                  .where((s) => s.assignedInjector == '${v.position}'))
+                QuidDeterminedCarcass(
+                  sampleNumber: s.carcassNumber,
+                  initialMassG: s.initialMassG,
+                  finalMassG: s.quidFinalMassG,
+                  setPercent: v.setPercent,
+                  calculatedPercent: s.quidPercent,
+                ),
+            ],
+          ),
+        // Carcasses injected but tied to no injector on the set-up list — a
+        // record from before injectors were listed, which named one
+        // injector for the whole run. Printed under that name rather than
+        // dropped.
+        if (injected.any((s) =>
+            !injectors.any((inj) => '${inj.position}' == s.assignedInjector)))
+          QuidInjectorBlock(
+            name: i.injectorName.trim().isEmpty ? 'Injector' : i.injectorName,
+            setPercent: i.setInjectorQuidPercent,
+            injection: [
+              for (final s in injected.where((s) => !injectors
+                  .any((inj) => '${inj.position}' == s.assignedInjector)))
+                QuidInjectorCarcass(
+                  number: s.carcassNumber,
+                  beforeMassG: s.beforeMassG,
+                  afterMassG: s.injectorAfterMassG,
+                  gainG: s.gainG,
+                  ratePercent: s.injectorRatePercent,
+                ),
+            ],
+            averageRatePercent: i.averageInjectorPickup,
+          ),
+      ],
+      averageQuidPercent: determined,
+      // The consignment totals behind that average.
+      quidInitialMassG: i.quidInitialMassG,
+      quidAfterMassG: i.quidAfterMassG,
+      quidGainMassG: i.quidGainMassG,
+      verificationDate:
+          i.documentDate == null ? '' : _poultryYmd(i.documentDate!),
+      documentName: i.documentName,
+      documentVerified: i.documentVerified ? 'YES' : 'NO',
+      documentDeviationPresent: i.documentDeviationPresent ? 'YES' : 'NO',
+      documentDeviationComment: i.documentDeviationComment,
+      // Every record verified at the line, and whether its document was
+      // photographed. Only the first used to reach the sheet.
+      verificationRecords: [
+        for (final r
+            in QuidVerificationRecord.decode(i.verificationRecordsJson))
+          QuidVerifiedRecord(
+            date: r.date == null ? '' : _poultryYmd(r.date!),
+            name: r.documentName,
+            verified: r.verified ? 'YES' : 'NO',
+            deviationPresent: r.deviationPresent ? 'YES' : 'NO',
+            comment: r.deviationComment,
+            photographed: r.hasPhoto ? 'YES' : 'NO',
+          ),
+      ],
+      // The rejection the weighing ended in, which the sheet never showed.
+      rejectionReason: i.directionRequired ? i.directionReason : '',
+      rejectionRemarks: i.directionRequired
+          ? [
+              if (i.seizureDecision == 'seize')
+                'Seizure under section 8 of the APS Act '
+                    '(FSA-SOP-APS-001 Annexure C).',
+              i.directionRemarks,
+            ].where((s) => s.trim().isNotEmpty).join('\n')
+          : '',
+      rejectionCorrectBy: i.directionRequired && i.correctByDate != null
+          ? _poultryYmd(i.correctByDate!)
+          : '',
+      rejectionAction: i.directionRequired ? i.directionAction : '',
+      // The verdict, not just the figures: one injector over its limit is a
+      // non-conformance on the consignment, however well the others ran.
+      withinPermissibleLimit: switch (verdicts.map((v) => v.passes).toList()) {
+        final judged when judged.every((p) => p == null) => '',
+        final judged when judged.contains(false) => 'NO',
+        _ => 'YES',
+      },
+      comments: '',
+      remarks: '',
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName,
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+    );
+  }
+
+  /// Every block the checklist has, in the order the sheet prints them. A
+  /// requirement the inspector did not tick is a deviation, as on every
+  /// other commodity's sheet.
+  List<FsaChecklistSection> _poultrySections(
+    List<PoultryChecklistItemRef> items,
+    Map<PoultryChecklistKind, String> titles,
+    Set<int> ticked,
+  ) {
+    final sections = <FsaChecklistSection>[];
+    for (final entry in titles.entries) {
+      final rows = items.where((r) => r.kind == entry.key).toList();
+      if (rows.isEmpty) continue;
+      sections.add(FsaChecklistSection(
+        title: entry.value,
+        rows: [
+          for (final r in rows)
+            FsaChecklistRow(
+              requirement: r.description,
+              regulation: r.regulationReference,
+              deviation:
+                  ticked.contains(r.id) ? FsaDeviation.no : FsaDeviation.yes,
+            ),
+        ],
+      ));
+    }
+    return sections;
+  }
+
+  Set<int> _tickedIds(String csv) => csv
+      .split(',')
+      .map((s) => int.tryParse(s.trim()))
+      .whereType<int>()
+      .toSet();
+
+  /// The signatures, photographs and names a printed sheet carries.
+  Future<_PoultryDocumentContext> _documentContext(
+      String uuid, String inspectorUsername) async {
+    final signatures = await (database.select(database.poultrySignatures)
+          ..where((t) => t.recordUuid.equals(uuid)))
+        .get();
+    String pathOf(String role) => signatures
+        .where((s) => s.role == role && !s.declined && s.filePath.isNotEmpty)
+        .map((s) => s.filePath)
+        .firstWhere((_) => true, orElse: () => '');
+    final client = signatures.where((s) => s.role == 'client').toList();
+    final user = await database.findUser(inspectorUsername);
+    final full =
+        user == null ? '' : '${user.firstName} ${user.lastName}'.trim();
+    final photos = await (database.select(database.poultryPhotos)
+          ..where((t) => t.recordUuid.equals(uuid)))
+        .get();
+    return _PoultryDocumentContext(
+      inspectorName: full.isEmpty ? inspectorUsername : full,
+      authorisedPersonName: client.isEmpty ? '' : client.first.signedName,
+      inspectorSignaturePath: pathOf('inspector'),
+      authorisedPersonSignaturePath: pathOf('client'),
+      photoPaths: [for (final p in photos) p.filePath],
+    );
+  }
+
+  File _poultryDocumentFile(
+      String facility, String kind, String uuid, Directory? into) {
+    final dir = into ?? Directory.systemTemp;
+    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
+    final slug = facility
+        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
+  }
+
+  static String _poultryYmd(DateTime d) => '${d.year}/'
+      '${d.month.toString().padLeft(2, '0')}/'
+      '${d.day.toString().padLeft(2, '0')}';
+
   void dispose() => _client.close();
+}
+
+/// What a printed poultry sheet needs beyond the record itself.
+class _PoultryDocumentContext {
+  const _PoultryDocumentContext({
+    required this.inspectorName,
+    required this.authorisedPersonName,
+    required this.inspectorSignaturePath,
+    required this.authorisedPersonSignaturePath,
+    required this.photoPaths,
+  });
+
+  final String inspectorName;
+  final String authorisedPersonName;
+  final String inspectorSignaturePath;
+  final String authorisedPersonSignaturePath;
+  final List<String> photoPaths;
 }

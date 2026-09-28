@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/session/session_user.dart';
 import '../../../core/theme/app_theme.dart';
@@ -34,6 +36,7 @@ class EggDirectionListPage extends StatefulWidget {
 
 class _EggDirectionListPageState extends State<EggDirectionListPage> {
   late Future<List<EggDirection>> _items;
+
   /// Inclusive at both ends, compared by calendar day. Matches Egg
   /// Inspection Management, so the two pages filter the same way.
   DateTimeRange _range = DateTimeRange(
@@ -113,8 +116,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     if (mounted) _refresh();
   }
 
-  String _day(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/'
+  String _day(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   /// One date when both ends are the same day, so the ordinary case does not
@@ -132,7 +134,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     final ok = await confirmStatusChange(
       context,
       title: 'Re-queue $_dateLabel?',
-      message: 'Every direction issued $_scopeWording will be marked as not '
+      message: 'Every rejection issued $_scopeWording will be marked as not '
           'yet sent, so it uploads again next time you send. Nothing is '
           'deleted.',
       confirmLabel: 'Re-queue',
@@ -144,9 +146,9 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     if (!mounted) return;
     setState(() => _busy = false);
     _toast(changed == 0
-        ? 'Nothing changed — every direction for $_dateLabel was already '
+        ? 'Nothing changed — every rejection for $_dateLabel was already '
             'waiting to send.'
-        : '$changed ${changed == 1 ? "direction" : "directions"} re-queued.');
+        : '$changed ${changed == 1 ? "rejection" : "rejections"} re-queued.');
     // Start a pass now, so the status moves while they are looking
     // at it rather than up to two minutes later.
     unawaited(widget.syncService?.syncNow() ?? Future<void>.value());
@@ -157,7 +159,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     final ok = await confirmStatusChange(
       context,
       title: 'Mark $_dateLabel as sent?',
-      message: 'Every direction issued $_scopeWording will be treated as '
+      message: 'Every rejection issued $_scopeWording will be treated as '
           'already on the server and will not be uploaded. Only do this when '
           'you know the server has them.',
       confirmLabel: 'Mark as sent',
@@ -169,9 +171,9 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     if (!mounted) return;
     setState(() => _busy = false);
     _toast(changed == 0
-        ? 'Nothing changed — every direction for $_dateLabel was already '
+        ? 'Nothing changed — every rejection for $_dateLabel was already '
             'marked as sent.'
-        : '$changed ${changed == 1 ? "direction" : "directions"} marked as '
+        : '$changed ${changed == 1 ? "rejection" : "rejections"} marked as '
             'sent.');
     _refresh();
   }
@@ -189,7 +191,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
     try {
       await widget.repository.uploadDirection(direction, token: token);
       if (!mounted) return;
-      _toast('Direction sent.');
+      _toast('Rejection sent.');
     } on Object catch (e) {
       if (!mounted) return;
       _toast('Send failed. $e');
@@ -215,7 +217,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text(
-          'Egg Direction Management',
+          'Egg Rejection Management',
           style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
         ),
         backgroundColor: AppColors.surface,
@@ -225,20 +227,24 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _newDirection,
+        // Serving a rejection is the one destructive thing an inspector
+        // does to a consignment, and it carries the app's red everywhere it
+        // is shown — the same red the DEVIATION side of every checklist
+        // slide already uses. In teal it read like any other action.
         backgroundColor: AppColors.brandRed,
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
-        label: const Text('New direction'),
+        label: const Text('New rejection'),
       ),
-      body: FutureBuilder<List<EggDirection>>(
+      body: ContentWidth(
+          child: FutureBuilder<List<EggDirection>>(
         future: _items,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
           final rows = snap.data ?? const <EggDirection>[];
-          final completed =
-              rows.where((d) => d.status == 'completed').length;
+          final completed = rows.where((d) => d.status == 'completed').length;
           final uploaded = rows.where((d) => d.isUploaded).length;
           final pending = rows.length - uploaded;
 
@@ -298,7 +304,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
                   onMarkSent: _markSent,
                 ),
               Text(
-                'DIRECTIONS FOR SELECTED PERIOD',
+                'REJECTIONS FOR SELECTED PERIOD',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w900,
@@ -312,8 +318,8 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
                   padding: const EdgeInsets.symmetric(vertical: 28),
                   child: Text(
                     _isSingleDay
-                        ? 'No directions issued on the selected date.'
-                        : 'No directions issued between the selected dates.',
+                        ? 'No rejections issued on the selected date.'
+                        : 'No rejections issued between the selected dates.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: AppColors.muted, height: 1.4),
                   ),
@@ -332,7 +338,7 @@ class _EggDirectionListPageState extends State<EggDirectionListPage> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -467,8 +473,7 @@ class _DirectionCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: d.isUploaded
                       ? const Color(0xFFEAF5EB)
@@ -503,8 +508,7 @@ class _DirectionCard extends StatelessWidget {
               ),
             ),
           _row('Covers', directionParts(d)),
-          _row('Number',
-              d.directionNumber.isEmpty ? '—' : d.directionNumber),
+          _row('Number', d.directionNumber.isEmpty ? '—' : d.directionNumber),
           _row('Producer',
               d.producerSupplier.isEmpty ? '—' : d.producerSupplier),
           if (d.qualityPart)

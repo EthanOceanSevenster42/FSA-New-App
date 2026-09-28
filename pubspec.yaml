@@ -1,7 +1,7 @@
 name: fsa_app
 description: Food Safety Agency inspector application.
 publish_to: "none"
-version: 1.0.1+85
+version: 1.0.1+2176
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -21,6 +21,11 @@ dependencies:
   geolocator: ^14.0.2
   uuid: ^4.6.0
   camera: ^0.12.0+2
+  pdf: ^3.13.0
+  printing: ^5.15.0
+  share_plus: ^12.0.2
+  file_saver: ^0.4.0
+  image: ^4.10.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -51,8 +56,24 @@ flutter:
     # backend's `export_egg_reference` command.
     - assets/reference/
   fonts:
-    # Lato is the typeface used across foodsafetyacademy.co.za. Bundled rather
-    # than fetched at runtime — inspectors work offline.
+    # Poppins is the app's typeface. Bundled rather than fetched at runtime —
+    # inspectors work offline.
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Poppins-ExtraBold.ttf
+          weight: 800
+        - asset: assets/fonts/Poppins-Black.ttf
+          weight: 900
+    # Lato stays for the printed forms: the FSA's documents are set in it, and
+    # a form is not the place to change typeface.
     - family: Lato
       fonts:
         - asset: assets/fonts/Lato-Regular.ttf

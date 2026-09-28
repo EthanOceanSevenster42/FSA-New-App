@@ -136,8 +136,7 @@ class FruitVegRepository {
                 commodityId: j['commodity'] as int,
                 defectGroupId: j['defect_group'] as int,
                 gradeId: j['grade'] as int,
-                maxPercentage:
-                    double.parse(j['max_percentage'].toString()),
+                maxPercentage: double.parse(j['max_percentage'].toString()),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
             );
@@ -154,9 +153,7 @@ class FruitVegRepository {
             );
       });
       written += await _write(rows('inspection_points'), (j) async {
-        await database
-            .into(database.fvInspectionPoints)
-            .insertOnConflictUpdate(
+        await database.into(database.fvInspectionPoints).insertOnConflictUpdate(
               FvInspectionPointsCompanion.insert(
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
@@ -214,11 +211,10 @@ class FruitVegRepository {
             ..orderBy([(t) => OrderingTerm(expression: t.name)]))
           .get();
 
-  Future<List<FvCountry>> countries() =>
-      (database.select(database.fvCountries)
-            ..where((t) => t.isActive.equals(true))
-            ..orderBy([(t) => OrderingTerm(expression: t.name)]))
-          .get();
+  Future<List<FvCountry>> countries() => (database.select(database.fvCountries)
+        ..where((t) => t.isActive.equals(true))
+        ..orderBy([(t) => OrderingTerm(expression: t.name)]))
+      .get();
 
   Future<List<FvGrade>> grades() => (database.select(database.fvGrades)
         ..where((t) => t.isActive.equals(true))

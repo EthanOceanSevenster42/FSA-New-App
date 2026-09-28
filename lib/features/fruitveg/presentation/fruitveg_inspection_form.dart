@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/responsive.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -9,8 +13,10 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/compliance_slider.dart';
 import '../data/fruitveg_repository.dart';
 import '../domain/grading_engine.dart';
+import '../../../core/widgets/picker_menu_field.dart';
 
 /// Fruit & Vegetable inspection capture.
 ///
@@ -29,8 +35,7 @@ class FruitVegInspectionForm extends StatefulWidget {
   final String inspectorName;
 
   @override
-  State<FruitVegInspectionForm> createState() =>
-      _FruitVegInspectionFormState();
+  State<FruitVegInspectionForm> createState() => _FruitVegInspectionFormState();
 }
 
 class _DefectLine {
@@ -115,15 +120,28 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
   void initState() {
     super.initState();
     _loadReference();
+    unawaited(_captureLocation(silent: true));
   }
 
   @override
   void dispose() {
     _page.dispose();
     for (final c in [
-      _clientName, _clientAddress, _contactPerson, _contactNumber,
-      _marketPlace, _description, _containers, _barcode, _grn, _boe,
-      _sampleWeight, _containerWeight, _sampleUnits, _brix, _remarks,
+      _clientName,
+      _clientAddress,
+      _contactPerson,
+      _contactNumber,
+      _marketPlace,
+      _description,
+      _containers,
+      _barcode,
+      _grn,
+      _boe,
+      _sampleWeight,
+      _containerWeight,
+      _sampleUnits,
+      _brix,
+      _remarks,
       _overrideReason,
     ]) {
       c.dispose();
@@ -147,17 +165,15 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     _group = g;
     _commodity = null;
     _cultivar = null;
-    _commodities = g == null
-        ? []
-        : await widget.repository.commodities(groupId: g.id);
+    _commodities =
+        g == null ? [] : await widget.repository.commodities(groupId: g.id);
     if (mounted) setState(() {});
   }
 
   Future<void> _onCommodityChanged(FvCommodity? c) async {
     _commodity = c;
     _cultivar = null;
-    _cultivars =
-        c == null ? [] : await widget.repository.cultivars(c.id);
+    _cultivars = c == null ? [] : await widget.repository.cultivars(c.id);
     if (mounted) setState(() {});
   }
 
@@ -199,15 +215,16 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     if (shot == null) return;
 
     final dir = await getApplicationDocumentsDirectory();
-    final target =
-        '${dir.path}/fv_${_uuid}_${kind}_${_photos.length}.jpg';
+    final target = '${dir.path}/fv_${_uuid}_${kind}_${_photos.length}.jpg';
     await File(shot.path).copy(target);
     if (mounted) {
       setState(() => _photos.add(_CapturedPhoto(kind: kind, path: target)));
     }
   }
 
-  Future<void> _captureLocation() async {
+  /// Taken in the background as the form opens. Where the inspector is
+  /// standing is not a decision they make, so it is not a button they press.
+  Future<void> _captureLocation({bool silent = false}) async {
     try {
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -215,7 +232,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        _toast('Location permission denied.');
+        if (!silent) _toast('Location permission denied.');
         return;
       }
       final pos = await Geolocator.getCurrentPosition(
@@ -226,7 +243,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
       );
       if (mounted) setState(() => _position = pos);
     } on Object catch (e) {
-      _toast('Could not get a location fix. $e');
+      if (!silent) _toast('Could not get a location fix. $e');
     }
   }
 
@@ -252,6 +269,10 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     final issue = _blockingIssue();
     if (issue != null) {
       _toast(issue);
+      return;
+    }
+    if (_photos.isEmpty) {
+      _toast('Capture at least one inspection photo before saving.');
       return;
     }
     setState(() => _saving = true);
@@ -337,7 +358,9 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+          body:
+              ContentWidth(child: Center(child: CircularProgressIndicator())));
     }
 
     return Scaffold(
@@ -364,12 +387,13 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           ],
         ),
       ),
-      body: Column(
+      body: ContentWidth(
+          child: Column(
         children: [
           LinearProgressIndicator(
             value: (_step + 1) / _titles.length,
             backgroundColor: AppColors.surfaceAlt,
-            color: AppColors.brandRed,
+            color: AppColors.brandPrimary,
             minHeight: 3,
           ),
           Expanded(
@@ -389,7 +413,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           ),
           _navBar(),
         ],
-      ),
+      )),
     );
   }
 
@@ -452,7 +476,15 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
   // --- Steps --------------------------------------------------------------
 
   Widget _pad(List<Widget> children) => ListView(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+        // Clear the system navigation bar: the save button is the last
+        // thing on the page, and the bar was drawing over it and taking
+        // the tap.
+        padding: EdgeInsets.fromLTRB(
+          16,
+          18,
+          16,
+          24 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: children,
       );
 
@@ -593,8 +625,8 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
               ),
               IconButton(
                 onPressed: () => setState(() => _defects.removeAt(index)),
-                icon: const Icon(Icons.delete_outline,
-                    color: AppColors.brandRed),
+                icon:
+                    const Icon(Icons.delete_outline, color: AppColors.brandPrimary),
               ),
             ],
           ),
@@ -680,22 +712,29 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           ),
           const SizedBox(height: 6),
           for (final r in items)
-            CheckboxListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              activeColor: AppColors.brandRed,
-              value: _failedRequirements.contains(r.id),
-              title: Text(
-                r.description,
-                style: const TextStyle(fontSize: 14),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      r.description,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ComplianceSlider(
+                    compliant: !_failedRequirements.contains(r.id),
+                    onChanged: (isCompliant) => setState(() {
+                      if (isCompliant) {
+                        _failedRequirements.remove(r.id);
+                      } else {
+                        _failedRequirements.add(r.id);
+                      }
+                    }),
+                  ),
+                ],
               ),
-              onChanged: (v) => setState(() {
-                if (v ?? false) {
-                  _failedRequirements.add(r.id);
-                } else {
-                  _failedRequirements.remove(r.id);
-                }
-              }),
             ),
         ],
       );
@@ -717,14 +756,14 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           ),
           subtitle: Text(
             _position == null
-                ? 'Not captured'
+                ? 'Waiting for a fix — the inspection saves without one'
                 : '${_position!.latitude.toStringAsFixed(5)}, '
                     '${_position!.longitude.toStringAsFixed(5)}',
             style: const TextStyle(fontSize: 12.5),
           ),
-          trailing: TextButton(
-            onPressed: _captureLocation,
-            child: Text(_position == null ? 'Capture' : 'Update'),
+          trailing: Icon(
+            _position == null ? Icons.location_disabled : Icons.check_circle,
+            color: _position == null ? AppColors.muted : AppColors.brandTeal,
           ),
         ),
       ]);
@@ -847,18 +886,11 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           ),
         const SizedBox(height: 18),
       ],
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        activeThumbColor: AppColors.brandRed,
+      YesNoQuestion(
+        label: 'Override the determined class',
+        bold: true,
+        helper: 'Requires a reason, and is recorded against your name.',
         value: _override,
-        title: const Text(
-          'Override the determined class',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        subtitle: const Text(
-          'Requires a reason, and is recorded against your name.',
-          style: TextStyle(fontSize: 12),
-        ),
         onChanged: (v) => setState(() => _override = v),
       ),
       if (_override) ...[
@@ -875,7 +907,8 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           maxLines: 2,
         ),
       ],
-      _TextField(label: 'Conditions / remarks', controller: _remarks, maxLines: 3),
+      _TextField(
+          label: 'Conditions / remarks', controller: _remarks, maxLines: 3),
       const SizedBox(height: 8),
       Text(
         'Inspector: ${widget.inspectorName}',
@@ -933,23 +966,13 @@ class _DropdownField<T> extends StatelessWidget {
   final String? hint;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 14),
-        child: DropdownButtonFormField<T>(
-          initialValue: value,
-          isExpanded: true,
-          decoration: InputDecoration(labelText: label, helperText: hint),
-          items: [
-            for (final item in items)
-              DropdownMenuItem<T>(
-                value: item,
-                child: Text(
-                  itemLabel(item),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-          ],
-          onChanged: items.isEmpty ? null : onChanged,
-        ),
+  Widget build(BuildContext context) => PickerMenuField<T>(
+        label: label,
+        value: value,
+        options: [
+          for (final item in items) (value: item, text: itemLabel(item)),
+        ],
+        onChanged: onChanged,
+        hint: hint,
       );
 }

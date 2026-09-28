@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../../core/theme/app_theme.dart';
+import '../theme/app_theme.dart';
 import 'required_label.dart';
 
 /// A text field that offers matching records as you type.
@@ -87,6 +87,18 @@ class SearchPickerField<T> extends StatefulWidget {
 class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
   final _focus = FocusNode();
 
+  /// The text field itself, measured after each frame. The form is never
+  /// scrolled for the inspector; instead the list floats over the form,
+  /// anchored to the field, below it when there is room and above it when
+  /// the keyboard has taken the room below.
+  final _fieldKey = GlobalKey();
+  final _link = LayerLink();
+  final _overlay = OverlayPortalController();
+
+  double _fieldWidth = 0;
+  bool _openAbove = false;
+  double _panelMaxHeight = 300;
+
   /// Lower-cased names, index-aligned with `widget.options`. Built once.
   late List<String> _haystack;
 
@@ -103,7 +115,9 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
     _focus.addListener(() {
       // Keep the list up while the field has focus; collapse once it loses it,
       // so the rest of the form is not permanently pushed down the screen.
-      if (mounted) setState(() => _open = _focus.hasFocus);
+      if (!mounted) return;
+      setState(() => _open = _focus.hasFocus);
+      _syncOverlay();
     });
   }
 
@@ -204,6 +218,74 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
     });
   }
 
+  void _syncOverlay() {
+    if (_open && !_overlay.isShowing) {
+      _overlay.show();
+    } else if (!_open && _overlay.isShowing) {
+      _overlay.hide();
+    }
+  }
+
+  /// Decides which side of the field the list opens on, and how tall it may
+  /// be, from where the field actually sits on screen this frame.
+  ///
+  /// Searching used to scroll the whole form to make room, which read as
+  /// losing one's place; leaving the form still and always opening downward
+  /// put the matches under the keyboard whenever the field sat low. So the
+  /// list behaves like a menu: below when there is room, above when there is
+  /// not, and the field never moves.
+  void _measurePlacement() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_open) return;
+      final field = _fieldKey.currentContext;
+      if (field == null || !field.mounted) return;
+      final box = field.findRenderObject();
+      if (box is! RenderBox || !box.hasSize) return;
+
+      // Read straight off the view, not through MediaQuery: inside a Scaffold
+      // that shrinks for the keyboard the inset reads as zero, and the
+      // nearest Scrollable's box proved an unreliable stand-in. The view
+      // knows the screen, the keyboard and the status bar for certain.
+      final view = MediaQueryData.fromView(View.of(field));
+      final bottom = view.size.height - view.viewInsets.bottom;
+      final top = view.padding.top;
+      final fieldTop = box.localToGlobal(Offset.zero).dy;
+      final fieldBottom = fieldTop + box.size.height;
+      final roomBelow = bottom - fieldBottom - _gap;
+      final roomAbove = fieldTop - top - _gap;
+
+      // One row, the "add new" line and the count is the least worth
+      // showing; below that, the other side is the better home if it has
+      // more room.
+      final above = roomBelow < _minPanel && roomAbove > roomBelow;
+      final room = above ? roomAbove : roomBelow;
+      final maxHeight =
+          room.clamp(_minPanel * 0.8, widget.maxListHeight + _chrome);
+
+      if (above != _openAbove ||
+          (maxHeight - _panelMaxHeight).abs() > 1 ||
+          (box.size.width - _fieldWidth).abs() > 1) {
+        setState(() {
+          _openAbove = above;
+          _panelMaxHeight = maxHeight;
+          _fieldWidth = box.size.width;
+        });
+      }
+    });
+  }
+
+  /// Space between the field and the list.
+  static const _gap = 6.0;
+
+  /// The "add new" row and the match-count footer, roughly.
+  static const _chrome = 100.0;
+
+  /// One match row plus the chrome.
+  static const _minPanel = 56.0 + _chrome;
+
+  double get _listHeight =>
+      (_panelMaxHeight - _chrome).clamp(56.0, widget.maxListHeight);
+
   bool get _searching => _query.length >= widget.minQueryLength;
 
   void _choose(T option) {
@@ -218,13 +300,17 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
 
   @override
   Widget build(BuildContext context) {
+    if (_open) _measurePlacement();
     return LabelledField(
       label: widget.label,
       isRequired: widget.isRequired,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
+      child: CompositedTransformTarget(
+        link: _link,
+        child: OverlayPortal(
+          controller: _overlay,
+          overlayChildBuilder: (_) => _floatingPanel(),
+          child: TextField(
+            key: _fieldKey,
             controller: widget.controller,
             focusNode: _focus,
             style: const TextStyle(fontSize: 15.5),
@@ -245,30 +331,87 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
                     ),
             ),
           ),
-          if (_open) _suggestions(),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _addNewButton() {
+  /// The matches, floating over the form and glued to the field.
+  ///
+  /// Drawn in the app's overlay so it covers whatever is under it instead of
+  /// pushing the form about, and follows the field if the form scrolls.
+  Widget _floatingPanel() {
+    if (!_open) return const SizedBox.shrink();
+    return CompositedTransformFollower(
+      link: _link,
+      showWhenUnlinked: false,
+      targetAnchor: _openAbove ? Alignment.topLeft : Alignment.bottomLeft,
+      followerAnchor: _openAbove ? Alignment.bottomLeft : Alignment.topLeft,
+      offset: Offset(0, _openAbove ? -_gap : _gap),
+      child: Align(
+        alignment: _openAbove ? Alignment.bottomLeft : Alignment.topLeft,
+        child: SizedBox(
+          width: _fieldWidth > 0 ? _fieldWidth : null,
+          child: Material(
+            color: AppColors.surface,
+            elevation: 6,
+            borderRadius: BorderRadius.circular(12),
+            clipBehavior: Clip.antiAlias,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: _panelMaxHeight),
+              child: SingleChildScrollView(
+                // Only ever scrolls when even one row will not fit; the
+                // match list itself scrolls inside its own box.
+                physics: const ClampingScrollPhysics(),
+                child: _suggestions(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The "add new" row, drawn the way the office system draws it: a
+  /// highlighted line directly under the field, quoting what was typed —
+  /// not a button parked below the list, which reads as a separate act.
+  Widget _addNewRow({bool rounded = false}) {
     final typed = widget.controller.text.trim();
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          onPressed: typed.isEmpty
-              ? null
-              : () async {
-                  _focus.unfocus();
-                  setState(() => _open = false);
-                  await widget.onAddNew!(typed);
-                },
-          icon: const Icon(Icons.add, size: 18),
-          label: Text(
-            '${widget.addNewLabel ?? 'Add'} "$typed"',
-            overflow: TextOverflow.ellipsis,
+    if (typed.isEmpty) return const SizedBox.shrink();
+    return Material(
+      color: AppColors.noticeBackground,
+      borderRadius: rounded ? BorderRadius.circular(12) : null,
+      child: InkWell(
+        borderRadius: rounded ? BorderRadius.circular(12) : null,
+        onTap: () async {
+          _focus.unfocus();
+          setState(() => _open = false);
+          await widget.onAddNew!(typed);
+        },
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            border: Border.all(color: AppColors.noticeBorder),
+            borderRadius: rounded ? BorderRadius.circular(12) : null,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.add_circle,
+                  size: 18, color: AppColors.noticeForeground),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '${widget.addNewLabel ?? 'Add new'}: "$typed"',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.noticeForeground,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -277,15 +420,30 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
 
   Widget _suggestions() {
     if (widget.options.isEmpty) {
-      return _note(
-        widget.emptyHint ??
-            'No records on this device yet. Sync to download them.',
+      // A handset that has never synced still has to be able to work: the
+      // inspector is standing at the premises, and refusing to register one
+      // because the directory is empty is the worst moment to say no.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _note(
+            widget.emptyHint ??
+                'No records on this device yet. Sync to download them.',
+          ),
+          if (widget.onAddNew != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _addNewRow(rounded: true),
+            ),
+        ],
       );
     }
     if (!_searching) {
+      final letters = widget.minQueryLength == 1 ? 'letter' : 'letters';
+      final records = widget.options.length == 1 ? 'record' : 'records';
       return _note(
-        'Type at least ${widget.minQueryLength} letters of the name to '
-        'search ${widget.options.length} records.',
+        'Type at least ${widget.minQueryLength} $letters of the name to '
+        'search ${widget.options.length} $records.',
       );
     }
     // The debounce has not fired yet, so the list still belongs to an older
@@ -299,14 +457,17 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _note('No name contains "$_query".'),
-          if (widget.onAddNew != null) _addNewButton(),
+          if (widget.onAddNew != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _addNewRow(rounded: true),
+            ),
         ],
       );
     }
 
     final count = _matches.length;
     return Container(
-      margin: const EdgeInsets.only(top: 6),
       decoration: BoxDecoration(
         border: Border.all(color: AppColors.border),
         borderRadius: BorderRadius.circular(12),
@@ -315,27 +476,28 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
         mainAxisSize: MainAxisSize.min,
         children: [
           ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: widget.maxListHeight),
+            constraints: BoxConstraints(maxHeight: _listHeight),
             child: ListView.separated(
               // Builder, not a Column: a search can match hundreds of names and
               // only the visible rows should be built.
               shrinkWrap: true,
               padding: EdgeInsets.zero,
               itemCount: count,
-              separatorBuilder: (_, __) => Divider(
-                  height: 1, thickness: 1, color: AppColors.border),
+              separatorBuilder: (_, __) =>
+                  Divider(height: 1, thickness: 1, color: AppColors.border),
               itemBuilder: (context, i) => _row(_matches[i]),
             ),
           ),
           // Offered even when there are matches: "Sunrise Poultry" matching
           // "Sunrise Poultry Farm" does not mean the inspector is at either.
-          if (widget.onAddNew != null && !_exactMatch) _addNewButton(),
+          if (widget.onAddNew != null && !_exactMatch) _addNewRow(),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
             decoration: BoxDecoration(
               color: AppColors.surfaceAlt,
-              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(11)),
+              borderRadius:
+                  const BorderRadius.vertical(bottom: Radius.circular(11)),
             ),
             child: Text(
               _exactMatch
@@ -377,8 +539,7 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
                         subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12, color: AppColors.muted),
+                        style: TextStyle(fontSize: 12, color: AppColors.muted),
                       ),
                     ),
                 ],
@@ -392,7 +553,6 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
   }
 
   Widget _note(String text) => Container(
-        margin: const EdgeInsets.only(top: 6),
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         decoration: BoxDecoration(
@@ -402,8 +562,8 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
         ),
         child: Text(
           text,
-          style: TextStyle(
-              fontSize: 12.5, color: AppColors.muted, height: 1.35),
+          style:
+              TextStyle(fontSize: 12.5, color: AppColors.muted, height: 1.35),
         ),
       );
 }

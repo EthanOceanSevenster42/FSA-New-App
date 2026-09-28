@@ -8,6 +8,7 @@ import '../../../core/services/connectivity_service.dart';
 import '../../../core/session/session_user.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/theme_controller.dart';
+import '../../../core/widgets/responsive.dart';
 import '../domain/app_feature.dart';
 import '../domain/home_summary.dart';
 
@@ -27,8 +28,10 @@ class HomePage extends StatefulWidget {
     this.themeController,
     required this.loadSummary,
     required this.openFeature,
+    this.runServerSync,
     this.checkForUpdates,
     this.downloadUpdates,
+    this.submitFeedback,
   });
 
   final String userName;
@@ -53,12 +56,17 @@ class HomePage extends StatefulWidget {
   /// Downloads whatever [checkForUpdates] reported, returning how many rows
   /// were written.
   final Future<int> Function()? downloadUpdates;
+  final Future<void> Function(String kind, String details)? submitFeedback;
 
   /// Returns a route for a built feature, or null if it is not built yet.
   /// Injected so the home screen has no dependency on any feature module.
   /// Takes the signed-in user so a feature can show only what that role may
   /// act on, without reaching for a global.
   final Widget? Function(AppFeature, SessionUser) openFeature;
+
+  /// Runs the full server handshake and reports as a popup over this screen.
+  final Future<void> Function(BuildContext context, String username)?
+      runServerSync;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -130,8 +138,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _watchConnectivity() async {
     _isOnline.value = await widget.connectivity.isOnline;
-    _connectivitySub = widget.connectivity.onStatusChanged
-        .listen((v) => _isOnline.value = v);
+    _connectivitySub =
+        widget.connectivity.onStatusChanged.listen((v) => _isOnline.value = v);
   }
 
   @override
@@ -151,6 +159,16 @@ class _HomePageState extends State<HomePage> {
       .toList();
 
   Future<void> _open(AppFeature feature) async {
+    // Server Sync is not a destination: it runs right here and reports as a
+    // popup, then the drawer's job is done.
+    if (feature.id == 8 && widget.runServerSync != null) {
+      final scaffold = _scaffoldKey.currentState;
+      if (scaffold?.isDrawerOpen ?? false) scaffold!.closeDrawer();
+      await widget.runServerSync!(context, widget.userName);
+      if (mounted) setState(() {});
+      return;
+    }
+
     // Close the drawer through the Scaffold, never through the Navigator.
     //
     // A drawer is not a route. This used to pop when `canPop()` was true —
@@ -209,9 +227,11 @@ class _HomePageState extends State<HomePage> {
           tools: _visible(FeatureGroup.tools),
           onSelect: _open,
           onSignOut: widget.onSignOut,
+          onFeedback: _openFeedback,
           themeController: widget.themeController,
         ),
-        body: SafeArea(
+        body: ContentWidth(
+            child: SafeArea(
           bottom: false,
           child: Column(
             children: [
@@ -223,7 +243,7 @@ class _HomePageState extends State<HomePage> {
               ),
               Expanded(
                 child: RefreshIndicator(
-                  color: AppColors.brandRed,
+                  color: AppColors.brandPrimary,
                   onRefresh: () async {
                     setState(() => _summary = widget.loadSummary());
                     await _summary;
@@ -253,14 +273,11 @@ class _HomePageState extends State<HomePage> {
                       const SizedBox(height: 26),
                       const _SectionLabel('Start an inspection'),
                       const SizedBox(height: 12),
-                      GridView.count(
-                        crossAxisCount: 2,
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        // Tuned against a 360dp viewport (the A06 baseline).
-                        childAspectRatio: 1.45,
+                      AppTileGrid(
+                        // Tile height as drawn against a 360dp viewport (the
+                        // A06 baseline). Fixed, so a wide screen adds columns
+                        // rather than inflating every tile.
+                        rowHeight: 112,
                         children: [
                           for (final f in _visible(FeatureGroup.inspections))
                             _CommodityTile(feature: f, onTap: () => _open(f)),
@@ -281,9 +298,128 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
-        ),
+        )),
       ),
     );
+  }
+
+  Future<void> _openFeedback() async {
+    _scaffoldKey.currentState?.closeDrawer();
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    if (!mounted) return;
+    final kind = ValueNotifier('Support ticket');
+    final details = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (sheetContext) {
+        final keyboardHeight = MediaQuery.viewInsetsOf(sheetContext).bottom;
+        final keyboardOpen = keyboardHeight > 0;
+        return Dialog(
+          insetPadding: EdgeInsets.fromLTRB(
+            20,
+            keyboardOpen ? 12 : 32,
+            20,
+            keyboardOpen ? 12 : 32,
+          ),
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.all(20),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(2))),
+              SizedBox(height: keyboardOpen ? 6 : 18),
+              if (!keyboardOpen) ...[
+                const Icon(Icons.support_agent_outlined,
+                    size: 38, color: AppColors.brandTeal),
+                const SizedBox(height: 8),
+              ],
+              const Text('Feedback & Change Request',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              if (!keyboardOpen) ...[
+                const SizedBox(height: 4),
+                Text('Tell the support team what you need.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppColors.muted)),
+              ],
+              SizedBox(height: keyboardOpen ? 10 : 18),
+              ValueListenableBuilder<String>(
+                valueListenable: kind,
+                builder: (_, value, __) => Row(children: [
+                  for (final option in const [
+                    ('Support ticket', Icons.support_agent_outlined),
+                    ('Change request', Icons.lightbulb_outline)
+                  ])
+                    Expanded(
+                        child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: OutlinedButton.icon(
+                        onPressed: () => kind.value = option.$1,
+                        icon: Icon(option.$2),
+                        label: Text(option.$1, textAlign: TextAlign.center),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: value == option.$1
+                              ? AppColors.brandTeal
+                              : AppColors.ink,
+                          backgroundColor: value == option.$1
+                              ? AppColors.brandTeal.withValues(alpha: 0.08)
+                              : null,
+                          minimumSize: Size(0, keyboardOpen ? 48 : 64),
+                        ),
+                      ),
+                    )),
+                ]),
+              ),
+              SizedBox(height: keyboardOpen ? 18 : 24),
+              TextField(
+                  controller: details,
+                  style: const TextStyle(fontSize: 14, height: 1.35),
+                  minLines: keyboardOpen ? 2 : 4,
+                  maxLines: keyboardOpen ? 3 : 8,
+                  decoration: const InputDecoration(
+                      labelStyle: TextStyle(fontSize: 14),
+                      labelText: 'Describe the issue or request')),
+              const SizedBox(height: 14),
+              SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.send_outlined),
+                    label: const Text('Send feedback'),
+                    onPressed: () async {
+                      final text = details.text.trim();
+                      if (text.isEmpty) return;
+                      final submit = widget.submitFeedback;
+                      if (submit == null) return;
+                      try {
+                        await submit(
+                          kind.value == 'Change request' ? 'change' : 'support',
+                          text,
+                        );
+                      } on Object catch (error) {
+                        if (!sheetContext.mounted) return;
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          SnackBar(
+                              content: Text('Could not send ticket. $error')),
+                        );
+                        return;
+                      }
+                      if (sheetContext.mounted) {
+                        Navigator.of(sheetContext).pop();
+                      }
+                      if (mounted) _toast('Feedback sent to support.');
+                    },
+                  )),
+            ]),
+          ),
+        );
+      },
+    );
+    // The dialog owns these controllers for its full visual lifetime. They
+    // must not be disposed while its exit animation still reads them.
   }
 }
 
@@ -425,7 +561,7 @@ class _Header extends StatelessWidget {
                   height: 46,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: AppColors.brandRed,
+                    color: AppColors.brandPrimary,
                     borderRadius: BorderRadius.circular(23),
                   ),
                   child: Text(
@@ -534,20 +670,15 @@ class _SummaryGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = summary;
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 1.55,
+    return AppTileGrid(
+      rowHeight: 104,
       children: [
         _StatCard(
           icon: Icons.assignment_turned_in_outlined,
           label: 'Inspections today',
           value: loading ? '' : '${s?.inspectionsToday ?? 0}',
           hint: 'captured today',
-          accent: AppColors.brandRed,
+          accent: AppColors.brandPrimary,
         ),
         _StatCard(
           icon: Icons.cloud_upload_outlined,
@@ -556,7 +687,7 @@ class _SummaryGrid extends StatelessWidget {
           hint: (s?.pendingUpload ?? 0) == 0
               ? 'everything is sent'
               : 'waiting to send',
-          accent: AppColors.brandRed,
+          accent: AppColors.brandPrimary,
         ),
         _StatCard(
           icon: Icons.people_alt_outlined,
@@ -576,7 +707,6 @@ class _SummaryGrid extends StatelessWidget {
       ],
     );
   }
-
 }
 
 class _StatCard extends StatelessWidget {
@@ -658,7 +788,7 @@ class _SectionLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
         children: [
-          Container(width: 4, height: 18, color: AppColors.brandRed),
+          Container(width: 4, height: 18, color: AppColors.brandPrimary),
           const SizedBox(width: 10),
           Text(
             text.toUpperCase(),
@@ -666,7 +796,7 @@ class _SectionLabel extends StatelessWidget {
               fontSize: 12.5,
               fontWeight: FontWeight.w900,
               letterSpacing: 1.5,
-              color: AppColors.ink,
+              color: AppColors.of(context).ink,
             ),
           ),
         ],
@@ -701,8 +831,8 @@ class _CommodityTile extends StatelessWidget {
                 feature.icon,
                 size: 24,
                 color: enabled
-                    ? AppColors.brandRed
-                    : AppColors.brandRed.withValues(alpha: 0.45),
+                    ? AppColors.brandPrimary
+                    : AppColors.brandPrimary.withValues(alpha: 0.45),
               ),
               const Spacer(),
               Text(
@@ -746,6 +876,7 @@ class _Sidebar extends StatelessWidget {
     required this.tools,
     required this.onSelect,
     required this.onSignOut,
+    required this.onFeedback,
     this.themeController,
   });
 
@@ -756,6 +887,7 @@ class _Sidebar extends StatelessWidget {
   final List<AppFeature> tools;
   final void Function(AppFeature) onSelect;
   final VoidCallback onSignOut;
+  final VoidCallback onFeedback;
   final ThemeController? themeController;
 
   @override
@@ -779,7 +911,7 @@ class _Sidebar extends StatelessWidget {
                     height: 40,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: AppColors.brandRed,
+                      color: AppColors.brandPrimary,
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
@@ -834,6 +966,14 @@ class _Sidebar extends StatelessWidget {
                   const _DrawerHeading('Tools'),
                   for (final f in tools)
                     _DrawerItem(feature: f, onTap: () => onSelect(f)),
+                  Divider(height: 18, color: AppColors.border),
+                  ListTile(
+                    leading: const Icon(Icons.support_agent_outlined),
+                    title: const Text('Feedback & Change Request'),
+                    subtitle:
+                        const Text('Support ticket or improvement request'),
+                    onTap: onFeedback,
+                  ),
                 ],
               ),
             ),
@@ -843,12 +983,12 @@ class _Sidebar extends StatelessWidget {
             ],
             Divider(height: 1, color: AppColors.border),
             ListTile(
-              leading: const Icon(Icons.logout, color: AppColors.brandRed),
+              leading: const Icon(Icons.logout, color: AppColors.brandPrimary),
               title: const Text(
                 'Sign out',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
-                  color: AppColors.brandRed,
+                  color: AppColors.brandPrimary,
                 ),
               ),
               onTap: onSignOut,
@@ -881,7 +1021,7 @@ class _DrawerHeading extends StatelessWidget {
             fontSize: 11,
             fontWeight: FontWeight.w900,
             letterSpacing: 1.4,
-            color: AppColors.muted,
+            color: AppColors.of(context).muted,
           ),
         ),
       );
@@ -901,9 +1041,7 @@ class _DrawerItem extends StatelessWidget {
       leading: Icon(
         feature.icon,
         size: 22,
-        color: enabled
-            ? AppColors.ink
-            : AppColors.muted.withValues(alpha: 0.7),
+        color: enabled ? AppColors.ink : AppColors.muted.withValues(alpha: 0.7),
       ),
       title: Text(
         feature.title,

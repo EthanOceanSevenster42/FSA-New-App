@@ -1,6 +1,9 @@
 import 'dart:io';
 
+import 'package:image/image.dart' as img;
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fsa_app/core/services/photo_shrink.dart';
 import 'package:fsa_app/core/services/photo_storage.dart';
 
 /// Where evidence photographs are kept and how they get there.
@@ -24,6 +27,61 @@ void main() {
 
   File captured(String name, {int bytes = 2048}) =>
       File('${cache.path}/$name')..writeAsBytesSync(List.filled(bytes, 7));
+
+  group('bringing a photograph down to size', () {
+    /// A camera-sized JPEG: a soft gradient so it does not compress to
+    /// nothing, at a size no label needs.
+    File cameraShot(String name, {int width = 4000, int height = 3000}) {
+      final picture = img.Image(width: width, height: height);
+      for (var y = 0; y < height; y += 1) {
+        for (var x = 0; x < width; x += 1) {
+          picture.setPixelRgb(x, y, (x * 7 + y) & 255, (x + y * 3) & 255,
+              (x ^ y) & 255);
+        }
+      }
+      return File('${cache.path}/$name')
+        ..writeAsBytesSync(img.encodeJpg(picture, quality: 95));
+    }
+
+    test('a full-frame shot is shrunk to the inspection size', () async {
+      final source = cameraShot('IMG_BIG.jpg');
+      final before = source.lengthSync();
+      expect(before, greaterThan(PhotoShrink.leaveAloneBelow),
+          reason: 'the seed must be a camera-sized file');
+
+      final path = await storage.adopt(source, name: 'label_big.jpg');
+
+      final after = File(path).lengthSync();
+      expect(after, lessThan(before ~/ 4));
+      final shrunk = img.decodeImage(File(path).readAsBytesSync())!;
+      expect(shrunk.width, PhotoShrink.maxEdge);
+      expect(shrunk.height, 1200);
+      expect(File('$path.shrinking').existsSync(), isFalse);
+    });
+
+    test('a tall shot keeps its orientation and its long side', () async {
+      final source = cameraShot('IMG_TALL.jpg', width: 2400, height: 3600);
+      final path = await storage.adopt(source, name: 'label_tall.jpg');
+      final shrunk = img.decodeImage(File(path).readAsBytesSync())!;
+      expect(shrunk.height, PhotoShrink.maxEdge);
+      expect(shrunk.width, 1067);
+    });
+
+    test('a small file is left exactly as it was', () async {
+      final source = File('${cache.path}/small.jpg')
+        ..writeAsBytesSync(List.generate(5000, (i) => i & 255));
+      final path = await storage.adopt(source, name: 'small.jpg');
+      expect(File(path).readAsBytesSync(),
+          List.generate(5000, (i) => i & 255));
+    });
+
+    test('a large file that is not a picture is left alone', () async {
+      final junk = List.generate(PhotoShrink.leaveAloneBelow + 10, (i) => i & 255);
+      final source = File('${cache.path}/junk.jpg')..writeAsBytesSync(junk);
+      final path = await storage.adopt(source, name: 'junk.jpg');
+      expect(File(path).lengthSync(), junk.length);
+    });
+  });
 
   group('adopting a captured photo', () {
     test('moves the file into private storage', () async {

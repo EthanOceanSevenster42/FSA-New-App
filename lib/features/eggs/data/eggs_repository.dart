@@ -2,12 +2,19 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 
 import '../../../core/data/local_database.dart';
 import '../../../core/session/session_store.dart';
 import '../domain/egg_rules.dart';
+import '../../../core/documents/direction_pdf.dart';
+import '../../../core/documents/fsa_checklist_pdf.dart';
+import '../../../core/documents/fsa_documents.dart';
+import 'egg_weighing_checklist_pdf.dart';
+import '../../visits/domain/facility_type_match.dart';
+import '../../visits/domain/inspection_reason_match.dart';
 
 /// What the server holds that this device does not.
 class ReferenceUpdates {
@@ -138,7 +145,14 @@ class EggsRepository {
   /// re-pointed by the inspector picking the client and facility again.
   Future<void> clearReferenceData() async {
     await database.transaction(() async {
-      for (final TableInfo<Table, dynamic> t in [
+      await _emptyReferenceTables();
+      await database.writeSyncState(cursorKey, '');
+    });
+  }
+
+  /// Every lookup table the reference feed owns. Captured inspections and
+  /// their samples are not on this list and are never touched.
+  List<TableInfo<Table, dynamic>> get _referenceTables => [
         database.eggClients,
         database.eggFacilities,
         database.eggSuppliers,
@@ -153,11 +167,13 @@ class EggsRepository {
         database.eggRequirements,
         database.eggRestrictedParticulars,
         database.eggDirectionRemarks,
-      ]) {
-        await database.delete(t).go();
-      }
-      await database.writeSyncState(cursorKey, '');
-    });
+      ];
+
+  /// Must run inside a transaction, so the tables are never seen empty.
+  Future<void> _emptyReferenceTables() async {
+    for (final t in _referenceTables) {
+      await database.delete(t).go();
+    }
   }
 
   final String baseUrl;
@@ -165,17 +181,54 @@ class EggsRepository {
   final Duration timeout;
   final http.Client _client;
 
+  /// The pass currently running, if any.
+  ///
+  /// Reference syncs must not overlap. Sign-in asks for a full one while the
+  /// background pass asks for an incremental one, and interleaved they
+  /// destroy the tables: the full pass clears the rows, the incremental
+  /// pass writes its handful and advances the cursor, and the clear lands
+  /// last — leaving sizes and grades empty with a cursor that says there is
+  /// nothing left to fetch. The second caller waits for the first instead.
+  Future<int>? _referenceSyncInFlight;
+
   Future<int> syncReference({bool full = false}) async {
+    final running = _referenceSyncInFlight;
+    if (running != null) return running;
+    final pass = _syncReference(full: full);
+    _referenceSyncInFlight = pass;
+    try {
+      return await pass;
+    } finally {
+      _referenceSyncInFlight = null;
+    }
+  }
+
+  Future<int> _syncReference({bool full = false}) async {
     // Ids from another server are worse than no ids: they upload as valid and
     // are rejected as unknown.
     if (await referenceIsForeign) {
-      await clearReferenceData();
+      // Ask for everything, but do NOT empty the tables first. The write
+      // below replaces them inside its own transaction once the new rows are
+      // in hand; wiping here and then failing to reach the server left the
+      // handset with no rules at all — "Not yet" in every picker and no way
+      // to open an inspection — which is worse than rules from the wrong
+      // server, and is what an inspector out of signal actually hit.
       full = true;
     }
+    // Self-heal: rules missing means an interrupted pass emptied them, and
+    // an incremental fetch against an advanced cursor would never bring them
+    // back. Ask for everything instead.
+    if (!full && !await hasReferenceData) full = true;
     final cursor = full ? null : await database.readSyncState(cursorKey);
+    // No cursor means the server is sending everything it has — so what it
+    // sends is the whole truth, and the tables are rebuilt from it rather
+    // than merged into. Merging is what left the bundled rules' rows standing
+    // beside the server's ("Jumbo" twice) when the two landed together on a
+    // first launch, and what kept rows the server had since deleted.
+    final everything = cursor == null || cursor.isEmpty;
     final uri = Uri.parse('$baseUrl/api/eggs/reference/').replace(
       queryParameters: {
-        if (cursor != null && cursor.isNotEmpty) 'since': cursor,
+        if (!everything) 'since': cursor,
       },
     );
 
@@ -189,8 +242,9 @@ class EggsRepository {
 
     final written = await _writeReference(
       jsonDecode(response.body) as Map<String, dynamic>,
+      replace: everything,
+      recordOrigin: baseUrl,
     );
-    await database.writeSyncState(referenceOriginKey, baseUrl);
     return written;
   }
 
@@ -208,12 +262,25 @@ class EggsRepository {
   /// Clients and facilities are deliberately not bundled: thousands of rows
   /// that change weekly would be stale before the build shipped. Those arrive
   /// on the sync path.
+  /// Writes a reference payload read from disk rather than the asset bundle.
+  ///
+  /// The bundle is the only thing that makes a brand-new handset usable, so
+  /// the tests read the real exported file through the same writer the app
+  /// uses — a test cannot then pass against a path the app does not take.
+  @visibleForTesting
+  Future<int> writeReferenceForTest(Map<String, dynamic> body) =>
+      _writeReference(body, advanceCursor: false);
+
   Future<int> seedRulesFromBundle() async {
     if (await hasReferenceData) return 0;
 
     final raw = await rootBundle.loadString(bundledRulesAsset);
     return _writeReference(
       jsonDecode(raw) as Map<String, dynamic>,
+      // Checked again inside the write: a first sync racing this seed may
+      // have filled the tables in the meantime, and the bundle's ids must
+      // never land on top of the server's.
+      onlyIfEmpty: true,
       // Deliberately does NOT advance the sync cursor.
       //
       // One cursor governs every collection, so adopting the bundle's stamp
@@ -235,9 +302,13 @@ class EggsRepository {
   Future<int> _writeReference(
     Map<String, dynamic> body, {
     bool advanceCursor = true,
+    bool replace = false,
+    bool onlyIfEmpty = false,
+    String? recordOrigin,
   }) async {
     final data = (body['data'] as Map<String, dynamic>?) ?? const {};
     var written = 0;
+    var skipped = false;
 
     List<Map<String, dynamic>> rows(String key) =>
         ((data[key] as List<dynamic>?) ?? const [])
@@ -247,14 +318,18 @@ class EggsRepository {
         v == null ? null : double.tryParse(v.toString());
 
     await database.transaction(() async {
+      if (onlyIfEmpty && await hasReferenceData) {
+        skipped = true;
+        return;
+      }
+      if (replace) await _emptyReferenceTables();
       for (final j in rows('clients')) {
         await database.into(database.eggClients).insertOnConflictUpdate(
               EggClientsCompanion.insert(
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
                 tradingName: Value(j['trading_name'] as String? ?? ''),
-                physicalAddress:
-                    Value(j['physical_address'] as String? ?? ''),
+                physicalAddress: Value(j['physical_address'] as String? ?? ''),
                 contactPerson: Value(j['contact_person'] as String? ?? ''),
                 telephone: Value(j['telephone'] as String? ?? ''),
                 email: Value(j['email'] as String? ?? ''),
@@ -273,6 +348,7 @@ class EggsRepository {
                 id: Value(j['id'] as int),
                 directionType: j['direction_type'] as String,
                 remarkText: j['text'] as String,
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
@@ -284,8 +360,7 @@ class EggsRepository {
               EggSuppliersCompanion.insert(
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
-                physicalAddress:
-                    Value(j['physical_address'] as String? ?? ''),
+                physicalAddress: Value(j['physical_address'] as String? ?? ''),
                 contactPerson: Value(j['contact_person'] as String? ?? ''),
                 telephone: Value(j['telephone'] as String? ?? ''),
                 email: Value(j['email'] as String? ?? ''),
@@ -301,8 +376,7 @@ class EggsRepository {
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
                 facilityTypeId: Value(j['facility_type'] as int?),
-                physicalAddress:
-                    Value(j['physical_address'] as String? ?? ''),
+                physicalAddress: Value(j['physical_address'] as String? ?? ''),
                 telephone: Value(j['telephone'] as String? ?? ''),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
@@ -390,7 +464,11 @@ class EggsRepository {
                 id: Value(j['id'] as int),
                 kind: j['kind'] as String,
                 description: j['description'] as String,
+                // The wording the original shows on screen, where it differs
+                // from the wording it files against the record.
+                screenLabel: Value(j['screen_label'] as String? ?? ''),
                 regulation: Value(j['regulation'] as String? ?? ''),
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
@@ -404,6 +482,7 @@ class EggsRepository {
               EggRestrictedParticularsCompanion.insert(
                 id: Value(j['id'] as int),
                 keyword: j['keyword'] as String,
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 note: Value(j['note'] as String? ?? ''),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
@@ -417,6 +496,7 @@ class EggsRepository {
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
                 eggCount: j['egg_count'] as int,
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
@@ -428,6 +508,7 @@ class EggsRepository {
               EggFacilityTypesCompanion.insert(
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
@@ -441,14 +522,19 @@ class EggsRepository {
               EggInspectionReasonsCompanion.insert(
                 id: Value(j['id'] as int),
                 name: j['name'] as String,
+                sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
               ),
             );
         written++;
       }
+      if (recordOrigin != null) {
+        await database.writeSyncState(referenceOriginKey, recordOrigin);
+      }
     });
 
+    if (skipped) return 0;
     if (advanceCursor) {
       final nextCursor = body['cursor'] as String?;
       if (nextCursor != null) {
@@ -493,6 +579,17 @@ class EggsRepository {
 
   // --- Reads --------------------------------------------------------------
 
+  /// Whether this device holds any egg reference data at all.
+  ///
+  /// Deliberately a cheap check on one table rather than a survey of them
+  /// all. It answers two questions that both want the same thing: whether
+  /// the bundle may be written (it must never land on top of the server's
+  /// rows, so anything here means no), and whether data of unknown origin
+  /// exists to be re-fetched.
+  ///
+  /// It is not a check that the rules are complete. A device left with some
+  /// tables and not others is a bug in whatever emptied them, not something
+  /// to paper over by seeding the bundle over the top.
   Future<bool> get hasReferenceData async =>
       (await database.select(database.eggSizes).get()).isNotEmpty;
 
@@ -520,8 +617,7 @@ class EggsRepository {
           ..orderBy([(t) => OrderingTerm(expression: t.rank)]))
         .get();
     return [
-      for (final r in rows)
-        EggGradeRef(id: r.id, name: r.name, rank: r.rank),
+      for (final r in rows) EggGradeRef(id: r.id, name: r.name, rank: r.rank),
     ];
   }
 
@@ -546,16 +642,19 @@ class EggsRepository {
             ..orderBy([(t) => OrderingTerm(expression: t.sortOrder)]))
           .get();
 
-  Future<List<EggDeviation>> deviationsFor(int categoryId) =>
-      (database.select(database.eggDeviations)
-            ..where((t) =>
-                t.isActive.equals(true) & t.categoryId.equals(categoryId)))
-          .get();
+  Future<List<EggDeviation>> deviationsFor(int categoryId) => (database
+          .select(database.eggDeviations)
+        ..where(
+            (t) => t.isActive.equals(true) & t.categoryId.equals(categoryId)))
+      .get();
 
   Future<List<EggRequirement>> requirements(String kind) =>
       (database.select(database.eggRequirements)
             ..where((t) => t.isActive.equals(true) & t.kind.equals(kind))
-            ..orderBy([(t) => OrderingTerm(expression: t.description)]))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.description),
+            ]))
           .get();
 
   Future<List<EggSupplier>> suppliers() =>
@@ -618,8 +717,8 @@ class EggsRepository {
           ),
         );
     return (await (database.select(database.eggSuppliers)
-              ..where((t) => t.id.equals(id)))
-            .getSingle());
+          ..where((t) => t.id.equals(id)))
+        .getSingle());
   }
 
   /// Every requirement, grouped into the three labelling checklists.
@@ -670,25 +769,38 @@ class EggsRepository {
   Future<List<EggRestrictedParticular>> restrictedParticulars() =>
       (database.select(database.eggRestrictedParticulars)
             ..where((t) => t.isActive.equals(true))
-            ..orderBy([(t) => OrderingTerm(expression: t.keyword)]))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.keyword),
+            ]))
           .get();
 
   Future<List<EggTraySize>> traySizes() =>
       (database.select(database.eggTraySizes)
             ..where((t) => t.isActive.equals(true))
-            ..orderBy([(t) => OrderingTerm(expression: t.eggCount)]))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.eggCount),
+            ]))
           .get();
 
   Future<List<EggFacilityType>> facilityTypes() =>
       (database.select(database.eggFacilityTypes)
             ..where((t) => t.isActive.equals(true))
-            ..orderBy([(t) => OrderingTerm(expression: t.name)]))
+            // Seed order, as the original's picker presents them.
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.name),
+            ]))
           .get();
 
   Future<List<EggInspectionReason>> reasons() =>
       (database.select(database.eggInspectionReasons)
             ..where((t) => t.isActive.equals(true))
-            ..orderBy([(t) => OrderingTerm(expression: t.name)]))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.name),
+            ]))
           .get();
 
   Future<List<EggGrade>> grades() => (database.select(database.eggGrades)
@@ -710,9 +822,11 @@ class EggsRepository {
   Future<List<EggDirectionRemark>> directionRemarks(String directionType) =>
       (database.select(database.eggDirectionRemarks)
             ..where((t) =>
-                t.isActive.equals(true) &
-                t.directionType.equals(directionType))
-            ..orderBy([(t) => OrderingTerm(expression: t.remarkText)]))
+                t.isActive.equals(true) & t.directionType.equals(directionType))
+            ..orderBy([
+              (t) => OrderingTerm(expression: t.sortOrder),
+              (t) => OrderingTerm(expression: t.remarkText),
+            ]))
           .get();
 
   // --- Directions ---------------------------------------------------------
@@ -787,7 +901,7 @@ class EggsRepository {
     // back on every device as an unfinished direction nobody can discard.
     if (direction.status != 'completed') {
       throw StateError(
-        'Refusing to upload direction ${direction.clientUuid}: '
+        'Refusing to upload rejection ${direction.clientUuid}: '
         'status is "${direction.status}", not "completed".',
       );
     }
@@ -825,13 +939,15 @@ class EggsRepository {
     if (response.statusCode != 200 && response.statusCode != 201) {
       // 4xx means the record itself is unacceptable; no amount of retrying
       // will change that.
-      if (response.statusCode >= 400 && response.statusCode < 500 &&
-          response.statusCode != 401 && response.statusCode != 408 &&
+      if (response.statusCode >= 400 &&
+          response.statusCode < 500 &&
+          response.statusCode != 401 &&
+          response.statusCode != 408 &&
           response.statusCode != 429) {
         throw RecordRejected(response.statusCode, response.body);
       }
       throw http.ClientException(
-        'Direction upload failed (${response.statusCode}): ${response.body}',
+        'Rejection upload failed (${response.statusCode}): ${response.body}',
         uri,
       );
     }
@@ -867,6 +983,29 @@ class EggsRepository {
   Future<void> addPhoto(EggPhotosCompanion photo) =>
       database.into(database.eggPhotos).insert(photo);
 
+  /// One signature per role per inspection — re-signing replaces the row,
+  /// matching the server's unique_together on (inspection, role).
+  Future<void> saveSignature(EggSignaturesCompanion signature) async {
+    await (database.delete(database.eggSignatures)
+          ..where((t) =>
+              t.inspectionUuid.equals(signature.inspectionUuid.value) &
+              t.role.equals(signature.role.value)))
+        .go();
+    await database.into(database.eggSignatures).insert(signature);
+  }
+
+  Future<List<EggSignature>> signaturesFor(String uuid) =>
+      (database.select(database.eggSignatures)
+            ..where((t) => t.inspectionUuid.equals(uuid)))
+          .get();
+
+  Future<void> removeSignature(String uuid, String role) =>
+      (database.delete(database.eggSignatures)
+            ..where(
+              (t) => t.inspectionUuid.equals(uuid) & t.role.equals(role),
+            ))
+          .go();
+
   /// As [addPhoto], returning the row id so the caller can remove exactly this
   /// photograph later without matching on a file path.
   Future<int> addPhotoReturningId(EggPhotosCompanion photo) =>
@@ -897,6 +1036,436 @@ class EggsRepository {
     return rows.length;
   }
 
+  /// The Egg Labeling Checklist (SOP-APS-EGGS-003) for [uuid] — the
+  /// marking, container and packing requirements the inspector worked
+  /// through, with the deviations marked.
+  ///
+  /// Null until the labelling checklist has been worked: the sheet records
+  /// that work, and an untouched checklist is not a record of it. The
+  /// original opens the sizing block only once labelling is done, so a
+  /// record with samples on it has necessarily been through this.
+  /// The rejection served off an egg inspection — SOP-APS-001.
+  ///
+  /// What the app calls a rejection is what the Agency's paperwork calls a
+  /// direction, and it is the one document the person it is served on is
+  /// entitled to read. The handset raised it, numbered it and sent it up as
+  /// data, and rendered nothing — so neither the client nor the office ever
+  /// saw the notice itself.
+  ///
+  /// [uuid] is the inspection's, as every other builder here takes; a
+  /// rejection raised on its own in Rejection Management is found by its own
+  /// uuid instead, so both open the same sheet.
+  Future<File?> buildDirection(String uuid, {Directory? into}) async {
+    final direction = await directionForInspection(uuid) ??
+        await directionByUuid(uuid);
+    if (direction == null) return null;
+    final i = direction.inspectionUuid == null
+        ? null
+        : await inspectionByUuid(direction.inspectionUuid!);
+
+    // The deviations the notice cites: the labelling rows that failed, and
+    // the shell and content deviations found on the weighed sample.
+    final deviations = <DirectionDeviation>[];
+    final product = i == null
+        ? 'Eggs'
+        : [
+            if (i.producerSupplier.isNotEmpty) i.producerSupplier,
+            if (i.batchNumber.isNotEmpty) 'batch ${i.batchNumber}',
+          ].join(' — ');
+    if (i != null) {
+      final failed = i.failedRequirementIds
+          .split(',')
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toSet();
+      if (failed.isNotEmpty) {
+        final requirements = await (database.select(database.eggRequirements)
+              ..where((t) => t.id.isIn(failed.toList()))
+              ..orderBy([(t) => OrderingTerm(expression: t.sortOrder)]))
+            .get();
+        for (final r in requirements) {
+          deviations.add(DirectionDeviation(
+            product: product.isEmpty ? 'Eggs' : product,
+            nature: r.description,
+            regulation: r.regulation,
+          ));
+        }
+      }
+      final samples = await samplesFor(direction.inspectionUuid!);
+      final found = <int>{};
+      for (final sample in samples) {
+        found.addAll(sample.deviationIds
+            .split(',')
+            .map((s) => int.tryParse(s.trim()))
+            .whereType<int>());
+      }
+      if (found.isNotEmpty) {
+        final rows = await (database.select(database.eggDeviations)
+              ..where((t) => t.id.isIn(found.toList())))
+            .get();
+        for (final d in rows) {
+          // How many of the sample carried it: the tolerance is counted,
+          // so a notice that omits the count cannot be argued with.
+          final affected = samples
+              .where((s) => s.deviationIds
+                  .split(',')
+                  .map((v) => int.tryParse(v.trim()))
+                  .whereType<int>()
+                  .contains(d.id))
+              .length;
+          deviations.add(DirectionDeviation(
+            product: product.isEmpty ? 'Eggs' : product,
+            nature: '${d.description} — $affected of ${samples.length} eggs '
+                'in the sample.',
+            regulation: '',
+          ));
+        }
+      }
+    }
+
+    // The remarks the inspector picked off the Agency's own list, plus
+    // anything they wrote.
+    final remarkIds = direction.remarkIds
+        .split(',')
+        .map((s) => int.tryParse(s.trim()))
+        .whereType<int>()
+        .toList();
+    final remarks = remarkIds.isEmpty
+        ? <EggDirectionRemark>[]
+        : await (database.select(database.eggDirectionRemarks)
+              ..where((t) => t.id.isIn(remarkIds))
+              ..orderBy([(t) => OrderingTerm(expression: t.sortOrder)]))
+            .get();
+
+    final ctx = i == null ? null : await _eggDocumentContext(i.clientUuid, i);
+    final facility = ctx?.facilityName ?? direction.clientName;
+    final correctBy = direction.qualityCorrectBy ?? direction.labelCorrectBy;
+
+    return DirectionPdf.write(
+      out: _eggDocumentFile(facility, 'Egg-Rejection', direction.clientUuid,
+          into),
+      control: FsaDocuments.eggDirection,
+      // Which part of the notice was served. One sheet may carry both.
+      natureOfInspection: [
+        if (direction.labellingPart) 'Egg Labelling',
+        if (direction.qualityPart) 'Egg Quality',
+      ].join(' & ').isEmpty
+          ? 'Eggs'
+          : [
+              if (direction.labellingPart) 'Egg Labelling',
+              if (direction.qualityPart) 'Egg Quality',
+            ].join(' & '),
+      facilityName: facility,
+      ownerOrRepresentative: ctx?.authorisedPersonName ?? direction.clientName,
+      physicalAddress: ctx?.facilityAddress ?? '',
+      emailAddress: i?.clientEmail ?? '',
+      dateOfVisit: i?.inspectedAt ?? direction.issuedAt,
+      inspectionReason: '',
+      latestReference: direction.directionNumber,
+      originalReference: '',
+      subjectFields: [
+        (
+          label: 'Producer/Supplier',
+          value: direction.producerSupplier.isNotEmpty
+              ? direction.producerSupplier
+              : (i?.producerSupplier ?? '')
+        ),
+        (label: 'Batch Number', value: i?.batchNumber ?? ''),
+        (
+          label: 'Quantity Removed',
+          value: direction.quantityRemoved == null
+              ? ''
+              : '${direction.quantityRemoved}'
+        ),
+      ],
+      deviations: deviations,
+      correctByDate: correctBy == null ? '' : _ymd(correctBy),
+      actionsAndRemark: [
+        for (final r in remarks) r.remarkText,
+        if (direction.additionalRemarks.trim().isNotEmpty)
+          direction.additionalRemarks.trim(),
+      ].join('\n'),
+      inspectorName:
+          ctx?.inspectorName ?? (direction.inspectorUsername ?? ''),
+      authorisedPersonName: ctx?.authorisedPersonName ?? direction.clientName,
+      inspectorSignaturePath: ctx?.inspectorSignaturePath ?? '',
+      authorisedPersonSignaturePath:
+          ctx?.authorisedPersonSignaturePath ?? '',
+      pleaseNote: 'Failure to rectify by the date above may result in '
+          'further action under the Act.',
+    );
+  }
+
+  Future<File?> buildLabellingChecklist(String uuid, {Directory? into}) async {
+    final i = await inspectionByUuid(uuid);
+    if (i == null) return null;
+    final samples = await samplesFor(uuid);
+    final failed = i.failedRequirementIds
+        .split(',')
+        .map((s) => int.tryParse(s.trim()))
+        .whereType<int>()
+        .toSet();
+    // Nothing worked through at all: no ticks, no deviations, no samples.
+    if (samples.isEmpty && failed.isEmpty && !i.outerLabellingAvailable) {
+      return null;
+    }
+
+    final requirements = await (database.select(database.eggRequirements)
+          ..where((t) => t.isActive.equals(true))
+          ..orderBy([(t) => OrderingTerm(expression: t.sortOrder)]))
+        .get();
+    if (requirements.isEmpty) return null;
+
+    const titles = {
+      'label_pack': 'MARKING OF CONTAINERS',
+      'label_outer': 'MARKING OF OUTER CONTAINERS',
+      'packing': 'PACKING REQUIREMENTS',
+    };
+    final sections = <FsaChecklistSection>[];
+    for (final kind in titles.keys) {
+      // The outer container block only applies when there was one.
+      if (kind == 'label_outer' && !i.outerLabellingAvailable) continue;
+      final rows = requirements.where((r) => r.kind == kind).toList();
+      if (rows.isEmpty) continue;
+      sections.add(FsaChecklistSection(
+        title: titles[kind]!,
+        rows: [
+          for (final r in rows)
+            FsaChecklistRow(
+              requirement: r.description,
+              regulation: r.regulation,
+              deviation:
+                  failed.contains(r.id) ? FsaDeviation.yes : FsaDeviation.no,
+            ),
+        ],
+      ));
+    }
+    if (sections.isEmpty) return null;
+
+    final ctx = await _eggDocumentContext(uuid, i);
+    return FsaChecklistPdf.write(
+      out: _eggDocumentFile(
+          ctx.facilityName, 'Egg-Labeling-Checklist', uuid, into),
+      control: FsaDocuments.eggLabelling,
+      facilityName: ctx.facilityName,
+      leftFields: [
+        (label: 'Date of Inspection:', value: _ymd(i.inspectedAt)),
+        (label: 'Facility Name:', value: ctx.facilityName),
+        (label: 'Site Representative:', value: ctx.representative),
+        (label: 'Tray Packaging Size', value: ctx.traySize),
+      ],
+      rightFields: [
+        (label: 'Producer/Supplier', value: i.producerSupplier),
+        (label: 'Batch Number', value: i.batchNumber),
+        (
+          label: 'Best Before Date',
+          value: i.bestBefore == null ? '' : _ymd(i.bestBefore!)
+        ),
+        (label: 'Type of Facility', value: ctx.facilityType),
+      ],
+      sections: sections,
+      inspectorName: ctx.inspectorName,
+      authorisedPersonName: ctx.authorisedPersonName,
+      comments: i.nonConformanceComments,
+      remarks: i.generalComments,
+      photoPaths: [
+        if (ctx.labelPhotoPath.isNotEmpty) ctx.labelPhotoPath,
+      ],
+      inspectorSignaturePath: ctx.inspectorSignaturePath,
+      authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
+      documentTitle: 'Egg Labeling Checklist',
+    );
+  }
+
+  /// The Egg Weighing Checklist (SOP-APS-EGGS-003) for [uuid], filled in
+  /// from the samples weighed on this inspection.
+  ///
+  /// Null when no egg was weighed: the checklist is the record of the
+  /// weighing, and a sheet of empty rows is not one. At a retailer, where
+  /// the original allows an inspection with no weighing at all, that is the
+  /// ordinary case rather than an error.
+  Future<File?> buildWeighingChecklist(String uuid, {Directory? into}) async {
+    final inspection = await inspectionByUuid(uuid);
+    if (inspection == null) return null;
+    final samples = await samplesFor(uuid);
+    if (samples.isEmpty) return null;
+
+    final deviations = await deviationRefs();
+    String deviationName(int id) => deviations
+        .where((d) => d.id == id)
+        .map((d) => d.description)
+        .firstWhere((_) => true, orElse: () => '');
+
+    final sizes = await sizeBands();
+    final grades = await gradeRefs();
+    String sizeName(int? id) => id == null
+        ? ''
+        : sizes
+            .where((s) => s.id == id)
+            .map((s) => s.name)
+            .firstWhere((_) => true, orElse: () => '');
+    String gradeName(int? id) => id == null
+        ? ''
+        : grades
+            .where((g) => g.id == id)
+            .map((g) => g.name)
+            .firstWhere((_) => true, orElse: () => '');
+
+    final tray = inspection.traySizeId == null
+        ? null
+        : await (database.select(database.eggTraySizes)
+              ..where((t) => t.id.equals(inspection.traySizeId!)))
+            .getSingleOrNull();
+    final facilityType = inspection.facilityTypeId == null
+        ? null
+        : await (database.select(database.eggFacilityTypes)
+              ..where((t) => t.id.equals(inspection.facilityTypeId!)))
+            .getSingleOrNull();
+
+    final photos = await photosFor(uuid);
+    String pathOfKind(String kind) => photos
+        .where((p) => p.kind == kind && p.filePath.isNotEmpty)
+        .map((p) => p.filePath)
+        .firstWhere((_) => true, orElse: () => '');
+
+    final signatures = await signaturesFor(uuid);
+    String signaturePath(String role) => signatures
+        .where((s) => s.role == role && !s.declined && s.filePath.isNotEmpty)
+        .map((s) => s.filePath)
+        .firstWhere((_) => true, orElse: () => '');
+    final manager = signatures.where((s) => s.role == 'manager').toList();
+
+    final username = inspection.inspectorUsername ?? '';
+    final user = await database.findUser(username);
+    final fullName =
+        user == null ? '' : '${user.firstName} ${user.lastName}'.trim();
+
+    final facility = inspection.facilityName.isNotEmpty
+        ? inspection.facilityName
+        : inspection.clientName;
+    final dir = into ?? Directory.systemTemp;
+    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
+    final slug = facility
+        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+
+    return EggWeighingChecklistPdf.write(
+      out: File('${dir.path}/FSA-$slug-Egg-Weighing-Checklist-$short.pdf'),
+      facilityName: facility,
+      facilityAddress: inspection.facilityAddress.isNotEmpty
+          ? inspection.facilityAddress
+          : inspection.clientAddress,
+      dateOfInspection: _dmy(inspection.inspectedAt),
+      representative: inspection.representativeName.isNotEmpty
+          ? inspection.representativeName
+          : inspection.clientContactPerson,
+      facilityType: facilityType?.name ?? '',
+      producerSupplier: inspection.producerSupplier,
+      batchNumber: inspection.batchNumber,
+      bestBefore:
+          inspection.bestBefore == null ? '' : _dmy(inspection.bestBefore!),
+      declaredSize: sizeName(inspection.declaredSizeId),
+      declaredGrade: gradeName(inspection.declaredGradeId),
+      traySize: tray?.name ?? '',
+      rows: [
+        for (final sample in samples)
+          EggWeighingRow(
+            number: sample.eggNumber,
+            massG: sample.massG,
+            albumenHeightMm: sample.albumenHeightMm,
+            haughUnit: sample.haughUnit,
+            deviations: [
+              for (final id in sample.deviationIds
+                  .split(',')
+                  .map((s) => int.tryParse(s.trim()))
+                  .whereType<int>())
+                if (deviationName(id).isNotEmpty) deviationName(id),
+            ],
+          ),
+      ],
+      inspectorName: fullName.isEmpty ? username : fullName,
+      authorisedPersonName:
+          manager.isNotEmpty && manager.first.signedName.isNotEmpty
+              ? manager.first.signedName
+              : (inspection.managerName.isNotEmpty
+                  ? inspection.managerName
+                  : inspection.clientContactPerson),
+      comments: inspection.generalComments,
+      trayLabelPhotoPath: pathOfKind('label'),
+      inspectorSignaturePath: signaturePath('inspector'),
+      authorisedPersonSignaturePath: signaturePath('manager'),
+    );
+  }
+
+  /// What both egg documents need about a record: the names on it, the
+  /// reference rows resolved, and who signed.
+  Future<_EggDocumentContext> _eggDocumentContext(
+      String uuid, EggInspection i) async {
+    final tray = i.traySizeId == null
+        ? null
+        : await (database.select(database.eggTraySizes)
+              ..where((t) => t.id.equals(i.traySizeId!)))
+            .getSingleOrNull();
+    final facilityType = i.facilityTypeId == null
+        ? null
+        : await (database.select(database.eggFacilityTypes)
+              ..where((t) => t.id.equals(i.facilityTypeId!)))
+            .getSingleOrNull();
+    final photos = await photosFor(uuid);
+    String pathOfKind(String kind) => photos
+        .where((p) => p.kind == kind && p.filePath.isNotEmpty)
+        .map((p) => p.filePath)
+        .firstWhere((_) => true, orElse: () => '');
+    final signatures = await signaturesFor(uuid);
+    String signaturePath(String role) => signatures
+        .where((s) => s.role == role && !s.declined && s.filePath.isNotEmpty)
+        .map((s) => s.filePath)
+        .firstWhere((_) => true, orElse: () => '');
+    final manager = signatures.where((s) => s.role == 'manager').toList();
+    final username = i.inspectorUsername ?? '';
+    final user = await database.findUser(username);
+    final full =
+        user == null ? '' : '${user.firstName} ${user.lastName}'.trim();
+    return _EggDocumentContext(
+      facilityName: i.facilityName.isNotEmpty ? i.facilityName : i.clientName,
+      facilityAddress:
+          i.facilityAddress.isNotEmpty ? i.facilityAddress : i.clientAddress,
+      facilityType: facilityType?.name ?? '',
+      traySize: tray?.name ?? '',
+      representative: i.representativeName.isNotEmpty
+          ? i.representativeName
+          : i.clientContactPerson,
+      inspectorName: full.isEmpty ? username : full,
+      authorisedPersonName: manager.isNotEmpty &&
+              manager.first.signedName.isNotEmpty
+          ? manager.first.signedName
+          : (i.managerName.isNotEmpty ? i.managerName : i.clientContactPerson),
+      inspectorSignaturePath: signaturePath('inspector'),
+      authorisedPersonSignaturePath: signaturePath('manager'),
+      labelPhotoPath: pathOfKind('label'),
+    );
+  }
+
+  File _eggDocumentFile(
+      String facility, String kind, String uuid, Directory? into) {
+    final dir = into ?? Directory.systemTemp;
+    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
+    final slug = facility
+        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
+  }
+
+  static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
+      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  /// The sheets date themselves the office system's way round.
+  static String _ymd(DateTime d) => '${d.year}/'
+      '${d.month.toString().padLeft(2, '0')}/'
+      '${d.day.toString().padLeft(2, '0')}';
+
   Future<List<EggSample>> samplesFor(String uuid) =>
       (database.select(database.eggSamples)
             ..where((t) => t.inspectionUuid.equals(uuid))
@@ -918,8 +1487,7 @@ class EggsRepository {
     return (database.select(database.eggInspections)
           ..where(
             (t) =>
-                t.status.equals('draft') &
-                _ownedBy(t.inspectorUsername, owner),
+                t.status.equals('draft') & _ownedBy(t.inspectorUsername, owner),
           )
           ..orderBy([
             (t) => OrderingTerm(
@@ -942,8 +1510,7 @@ class EggsRepository {
     return (database.select(database.eggInspections)
           ..where(
             (t) =>
-                t.status.equals('draft') &
-                _ownedBy(t.inspectorUsername, owner),
+                t.status.equals('draft') & _ownedBy(t.inspectorUsername, owner),
           )
           ..orderBy([
             (t) => OrderingTerm(
@@ -969,8 +1536,7 @@ class EggsRepository {
     return (database.select(database.eggDirections)
           ..where(
             (t) =>
-                t.status.equals('draft') &
-                _ownedBy(t.inspectorUsername, owner),
+                t.status.equals('draft') & _ownedBy(t.inspectorUsername, owner),
           )
           ..orderBy([
             (t) => OrderingTerm(
@@ -1016,6 +1582,224 @@ class EggsRepository {
   Future<void> deletePhoto(int id) =>
       (database.delete(database.eggPhotos)..where((t) => t.id.equals(id))).go();
 
+  /// Re-points a captured inspection's lookup ids at the rows this server
+  /// actually has, matching by name.
+  ///
+  /// The rules ship inside the APK with their own ids so a handset can work
+  /// before it has signal. Once it syncs, the server's rows arrive under
+  /// different ids, and for a while both sets sit in the tables — two
+  /// "Jumbo" rows, two "Grade 1" rows. An inspection captured against the
+  /// bundled twin uploads as `Invalid pk "11" - object does not exist` and
+  /// sits at "Pending upload" for ever, because the ids it stores are never
+  /// looked at again.
+  ///
+  /// Every id the upload sends is checked against the current table; one that
+  /// is missing is resolved to its name through the bundled rules and pointed
+  /// at the current row with that name. Returns true when anything changed,
+  /// so the caller knows a retry is worth making.
+  Future<bool> repointLookupIds(String uuid) async {
+    final inspection = await inspectionByUuid(uuid);
+    if (inspection == null) return false;
+    final names = await _BundledNames.load();
+
+    Future<int?> fix<T extends Table, D>(
+      int? id,
+      TableInfo<T, D> table,
+      Expression<int> Function(T) idOf,
+      Future<int?> Function(String name) byName,
+      String? Function(int id) bundledName,
+    ) async {
+      if (id == null) return null;
+      final present = await (database.select(table)
+            ..where((t) => idOf(t).equals(id)))
+          .getSingleOrNull();
+      if (present != null) return id;
+      final name = bundledName(id);
+      if (name == null) return id;
+      return await byName(name) ?? id;
+    }
+
+    Future<int?> sizeByName(String n) async =>
+        (await (database.select(database.eggSizes)
+                  ..where((t) => t.name.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> gradeByName(String n) async =>
+        (await (database.select(database.eggGrades)
+                  ..where((t) => t.name.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> reasonByName(String n) async =>
+        (await (database.select(database.eggInspectionReasons)
+                  ..where((t) => t.name.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> trayByName(String n) async =>
+        (await (database.select(database.eggTraySizes)
+                  ..where((t) => t.name.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> facilityTypeByName(String n) async =>
+        (await (database.select(database.eggFacilityTypes)
+                  ..where((t) => t.name.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> requirementByName(String n) async =>
+        (await (database.select(database.eggRequirements)
+                  ..where((t) => t.description.equals(n)))
+                .get())
+            .firstOrNull
+            ?.id;
+    Future<int?> particularByName(String n) async =>
+        (await (database.select(database.eggRestrictedParticulars)
+                  ..where((t) => t.keyword.equals(n)))
+                .getSingleOrNull())
+            ?.id;
+    Future<int?> deviationByName(String n) async {
+      // "<category>|<description>": the same description exists under
+      // more than one category, so the category is part of the name.
+      final split = n.indexOf('|');
+      final category = n.substring(0, split);
+      final description = n.substring(split + 1);
+      final cat = await (database.select(database.eggDeviationCategories)
+            ..where((t) => t.name.equals(category)))
+          .getSingleOrNull();
+      if (cat == null) return null;
+      return (await (database.select(database.eggDeviations)
+                ..where((t) =>
+                    t.categoryId.equals(cat.id) &
+                    t.description.equals(description)))
+              .getSingleOrNull())
+          ?.id;
+    }
+
+    Future<String> fixCsv<T extends Table, D>(
+      String csv,
+      TableInfo<T, D> table,
+      Expression<int> Function(T) idOf,
+      Future<int?> Function(String name) byName,
+      String? Function(int id) bundledName,
+    ) async {
+      final out = <int>[];
+      for (final id in _ids(csv)) {
+        out.add(await fix(id, table, idOf, byName, bundledName) ?? id);
+      }
+      return out.join(',');
+    }
+
+    var changed = false;
+    var facilityType = await fix(
+        inspection.facilityTypeId,
+        database.eggFacilityTypes,
+        (t) => t.id,
+        facilityTypeByName,
+        names.facilityType);
+    var reason = await fix(inspection.reasonId, database.eggInspectionReasons,
+        (t) => t.id, reasonByName, names.reason);
+
+    // An id no list here knows — captured against another server's rows,
+    // which the bundled rules never had — is matched through the visit it
+    // belongs to instead, which keeps both answers as names. An inspection
+    // captured against a local server went to the live one as
+    // `Invalid pk "13"` for ever otherwise (Ethan, 2026-09-24).
+    final visit = inspection.visitUuid.isEmpty
+        ? null
+        : await (database.select(database.storeVisits)
+              ..where((t) => t.uuid.equals(inspection.visitUuid)))
+            .getSingleOrNull();
+    if (visit != null) {
+      Future<bool> known<T extends Table, D>(int? id, TableInfo<T, D> table,
+              Expression<int> Function(T) idOf) async =>
+          id != null &&
+          await (database.select(table)..where((t) => idOf(t).equals(id)))
+                  .getSingleOrNull() !=
+              null;
+      if (!await known(facilityType, database.eggFacilityTypes, (t) => t.id) &&
+          visit.facilityType.trim().isNotEmpty) {
+        final rows = await database.select(database.eggFacilityTypes).get();
+        final i = FacilityTypeMatch.indexOf(
+            visit.facilityType, [for (final r in rows) r.name]);
+        if (i != null) facilityType = rows[i].id;
+      }
+      if (!await known(reason, database.eggInspectionReasons, (t) => t.id) &&
+          visit.inspectionReason.trim().isNotEmpty) {
+        final rows = await database.select(database.eggInspectionReasons).get();
+        final i = InspectionReasonMatch.indexOf(
+            visit.inspectionReason, [for (final r in rows) r.name]);
+        if (i != null) reason = rows[i].id;
+      }
+    }
+    final tray = await fix(inspection.traySizeId, database.eggTraySizes,
+        (t) => t.id, trayByName, names.traySize);
+    final declaredSize = await fix(inspection.declaredSizeId, database.eggSizes,
+        (t) => t.id, sizeByName, names.size);
+    final declaredGrade = await fix(inspection.declaredGradeId,
+        database.eggGrades, (t) => t.id, gradeByName, names.grade);
+    final determinedGrade = await fix(inspection.determinedGradeId,
+        database.eggGrades, (t) => t.id, gradeByName, names.grade);
+    final failed = await fixCsv(
+        inspection.failedRequirementIds,
+        database.eggRequirements,
+        (t) => t.id,
+        requirementByName,
+        names.requirement);
+    final particulars = await fixCsv(
+        inspection.restrictedParticularIds,
+        database.eggRestrictedParticulars,
+        (t) => t.id,
+        particularByName,
+        names.particular);
+
+    if (facilityType != inspection.facilityTypeId ||
+        reason != inspection.reasonId ||
+        tray != inspection.traySizeId ||
+        declaredSize != inspection.declaredSizeId ||
+        declaredGrade != inspection.declaredGradeId ||
+        determinedGrade != inspection.determinedGradeId ||
+        failed != inspection.failedRequirementIds ||
+        particulars != inspection.restrictedParticularIds) {
+      changed = true;
+      await (database.update(database.eggInspections)
+            ..where((t) => t.clientUuid.equals(uuid)))
+          .write(EggInspectionsCompanion(
+        facilityTypeId: Value(facilityType),
+        reasonId: Value(reason),
+        traySizeId: Value(tray),
+        declaredSizeId: Value(declaredSize),
+        declaredGradeId: Value(declaredGrade),
+        determinedGradeId: Value(determinedGrade),
+        failedRequirementIds: Value(failed),
+        restrictedParticularIds: Value(particulars),
+      ));
+    }
+
+    for (final sample in await samplesFor(uuid)) {
+      final size = await fix(sample.sizeId, database.eggSizes, (t) => t.id,
+          sizeByName, names.size);
+      final grade = await fix(sample.gradeId, database.eggGrades, (t) => t.id,
+          gradeByName, names.grade);
+      final deviations = await fixCsv(
+          sample.deviationIds,
+          database.eggDeviations,
+          (t) => t.id,
+          deviationByName,
+          names.deviation);
+      if (size != sample.sizeId ||
+          grade != sample.gradeId ||
+          deviations != sample.deviationIds) {
+        changed = true;
+        await (database.update(database.eggSamples)
+              ..where((t) => t.id.equals(sample.id)))
+            .write(EggSamplesCompanion(
+          sizeId: Value(size),
+          gradeId: Value(grade),
+          deviationIds: Value(deviations),
+        ));
+      }
+    }
+    return changed;
+  }
+
   Future<EggInspection?> inspectionByUuid(String uuid) =>
       (database.select(database.eggInspections)
             ..where((t) => t.clientUuid.equals(uuid)))
@@ -1024,6 +1808,14 @@ class EggsRepository {
   Future<EggDirection?> directionByUuid(String uuid) =>
       (database.select(database.eggDirections)
             ..where((t) => t.clientUuid.equals(uuid)))
+          .getSingleOrNull();
+
+  /// The direction this inspection raised, if it raised one. Read back on
+  /// the record's own page: what was served on the client belongs with the
+  /// inspection that found it.
+  Future<EggDirection?> directionForInspection(String inspectionUuid) =>
+      (database.select(database.eggDirections)
+            ..where((t) => t.inspectionUuid.equals(inspectionUuid)))
           .getSingleOrNull();
 
   /// How many eggs in this inspection carry each deviation.
@@ -1047,7 +1839,8 @@ class EggsRepository {
         d.id: d.description,
     };
     final categoriesById = {
-      for (final c in await database.select(database.eggDeviationCategories).get())
+      for (final c
+          in await database.select(database.eggDeviationCategories).get())
         c.id: c.name,
     };
     final categoryOf = {
@@ -1231,6 +2024,13 @@ class EggsRepository {
   /// The server upserts on `clientUuid`, so a retry after a dropped connection
   /// updates rather than duplicates. Only marked uploaded once the server has
   /// confirmed — a half-sent record stays pending and is retried.
+  /// A reference id the office can resolve, or null.
+  ///
+  /// The form offers "Not indicated" on the size and grade pickers, which
+  /// are answers rather than rows in the office's lists; they are held as
+  /// negative ids so a draft can remember them without a column of its own.
+  static int? _officeId(int? id) => id == null || id < 0 ? null : id;
+
   Future<void> upload(EggInspection inspection, {required String token}) async {
     // Refused here as well as in the sync service. Half an inspection is not a
     // record: uploaded, it comes back on every device as an unfinished one
@@ -1258,16 +2058,27 @@ class EggsRepository {
       'client_contact_number': inspection.clientContactNumber,
       'client_email': inspection.clientEmail,
       'representative_name': inspection.representativeName,
+      'manager_name': inspection.managerName,
+      'manager_email': inspection.managerEmail,
       'producer_supplier': inspection.producerSupplier,
       'batch_number': inspection.batchNumber,
-      'best_before':
-          inspection.bestBefore?.toIso8601String().split('T').first,
-      'tray_size': inspection.traySizeId,
+      'best_before': inspection.bestBefore?.toIso8601String().split('T').first,
+      'tray_size': _officeId(inspection.traySizeId),
+      // Whether the inspector seized the consignment rather than serving a
+      // rectification period. Empty when the question never arose.
+      'seizure_decision': inspection.seizureDecision,
+      'eggs_expression_absent': inspection.eggsExpressionAbsent,
+      'best_before_absent': inspection.bestBeforeAbsent,
       // What the consignment is declared as. Added with the tolerance rules;
       // without these the server cannot tell which band an inspection was
       // judged against.
-      'declared_size': inspection.declaredSizeId,
-      'declared_grade': inspection.declaredGradeId,
+      // "Not indicated" is the handset's own answer, not a row the office
+      // holds — it is carried locally as a negative id. Sent as such the
+      // server reads it as a foreign key it has never heard of and refuses
+      // the whole inspection, so it travels as "no claim", which is what it
+      // means. The labelling checklist is what records the deviation.
+      'declared_size': _officeId(inspection.declaredSizeId),
+      'declared_grade': _officeId(inspection.declaredGradeId),
       'sample_size': inspection.sampleSize,
       'pasteurised_present': inspection.pasteurisedPresent,
       'haugh_not_required': inspection.haughNotRequired,
@@ -1278,6 +2089,7 @@ class EggsRepository {
       'non_conformance_comments': inspection.nonConformanceComments,
       'failed_requirements': _ids(inspection.failedRequirementIds),
       'restricted_particulars': _ids(inspection.restrictedParticularIds),
+      'restricted_particulars_text': inspection.restrictedParticularsText,
       'latitude': _coordinate(inspection.latitude),
       'longitude': _coordinate(inspection.longitude),
       'samples': [
@@ -1309,8 +2121,10 @@ class EggsRepository {
         .timeout(timeout);
 
     if (response.statusCode != 200 && response.statusCode != 201) {
-      if (response.statusCode >= 400 && response.statusCode < 500 &&
-          response.statusCode != 401 && response.statusCode != 408 &&
+      if (response.statusCode >= 400 &&
+          response.statusCode < 500 &&
+          response.statusCode != 401 &&
+          response.statusCode != 408 &&
           response.statusCode != 429) {
         throw RecordRejected(response.statusCode, response.body);
       }
@@ -1320,17 +2134,46 @@ class EggsRepository {
       );
     }
 
-    // Photos go separately, so one failed image does not force the whole
-    // record to be resent.
-    for (final photo in await photosFor(inspection.clientUuid)) {
+    // The record is on the server once this POST is answered. It is marked
+    // so now: its photographs and signatures follow on their own, and the
+    // sync pass keeps retrying any that did not make it. Waiting for them
+    // first held a record the office already had at "not synced" whenever a
+    // photograph was slow.
+    await (database.update(database.eggInspections)
+          ..where((t) => t.clientUuid.equals(inspection.clientUuid)))
+        .write(const EggInspectionsCompanion(isUploaded: Value(true)));
+    try {
+      await uploadAttachments(inspection.clientUuid, token: token);
+    } on Object catch (error) {
+      debugPrint('Eggs: attachments for ${inspection.clientUuid} will be '
+          'retried — $error');
+    }
+  }
+
+  /// The record's photographs and signatures, each sent on its own so one
+  /// failure does not force the whole record to be resent — and each marked
+  /// only when the server confirmed it, so the next pass retries the rest.
+  ///
+  /// Called separately by the sync pass as well: a record whose attachments
+  /// failed is still marked uploaded, and without this retry those images
+  /// would sit on the handset forever with nothing left to carry them up.
+  /// How long a photograph or signature may take to go up. Far longer than
+  /// [timeout]: a 6 MB photo took three minutes on a slow uplink to the live
+  /// server, and the 45 seconds every other call gets cut every one of them
+  /// off (Ethan, 2026-09-24).
+  static const fileUploadTimeout = Duration(minutes: 5);
+
+  Future<void> uploadAttachments(
+    String inspectionUuid, {
+    required String token,
+  }) async {
+    for (final photo in await photosFor(inspectionUuid)) {
       if (photo.isUploaded) continue;
       final file = File(photo.filePath);
       if (!file.existsSync()) continue;
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse(
-          '$baseUrl/api/eggs/inspections/${inspection.clientUuid}/photos/',
-        ),
+        Uri.parse('$baseUrl/api/eggs/inspections/$inspectionUuid/photos/'),
       )
         ..headers['Authorization'] = 'Bearer $token'
         ..fields['kind'] = photo.kind
@@ -1339,20 +2182,48 @@ class EggsRepository {
         // record synced days later would otherwise carry no capture time at
         // all, since the column is nullable server-side.
         ..fields['captured_at'] = photo.capturedAt.toUtc().toIso8601String()
-        ..files.add(await http.MultipartFile.fromPath('image', photo.filePath));
-      final photoResponse = await request.send().timeout(timeout);
-      if (photoResponse.statusCode == 201) {
+        ..files.add(await http.MultipartFile.fromPath('image', photo.filePath,
+            filename: 'photo_${photo.kind}.jpg'));
+      final photoResponse = await request.send().timeout(fileUploadTimeout);
+      if (photoResponse.statusCode == 201 || photoResponse.statusCode == 200) {
         await (database.update(database.eggPhotos)
               ..where((t) => t.id.equals(photo.id)))
             .write(const EggPhotosCompanion(isUploaded: Value(true)));
       }
     }
 
-    await (database.update(database.eggInspections)
-          ..where((t) => t.clientUuid.equals(inspection.clientUuid)))
-        .write(const EggInspectionsCompanion(isUploaded: Value(true)));
+    for (final signature in await signaturesFor(inspectionUuid)) {
+      if (signature.isUploaded) continue;
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/eggs/inspections/$inspectionUuid/signatures/'),
+      )
+        ..headers['Authorization'] = 'Bearer $token'
+        ..fields['role'] = signature.role
+        ..fields['signed_name'] = signature.signedName
+        ..fields['declined'] = signature.declined.toString();
+      if (signature.signedAt != null) {
+        request.fields['signed_at'] =
+            signature.signedAt!.toUtc().toIso8601String();
+      }
+      if (signature.filePath.isNotEmpty) {
+        request.files.add(
+          // A short part-filename, whatever the file is called on disk: the
+          // server's FileField caps the stored name at 100 characters, and
+          // the visit sign-off's copies carry two uuids in theirs.
+          await http.MultipartFile.fromPath('image', signature.filePath,
+              filename: 'signature_${signature.role}.png'),
+        );
+      }
+      final signatureResponse = await request.send().timeout(fileUploadTimeout);
+      if (signatureResponse.statusCode == 201 ||
+          signatureResponse.statusCode == 200) {
+        await (database.update(database.eggSignatures)
+              ..where((t) => t.id.equals(signature.id)))
+            .write(const EggSignaturesCompanion(isUploaded: Value(true)));
+      }
+    }
   }
-
 
   /// Parses a value the server sends as a JSON number or a decimal string.
   ///
@@ -1440,8 +2311,8 @@ class EggsRepository {
     );
     await database.into(database.eggClients).insertOnConflictUpdate(row);
     return (await (database.select(database.eggClients)
-              ..where((t) => t.id.equals(id)))
-            .getSingle());
+          ..where((t) => t.id.equals(id)))
+        .getSingle());
   }
 
   /// Registers premises met in the field. As [addClient].
@@ -1494,8 +2365,8 @@ class EggsRepository {
           ),
         );
     return (await (database.select(database.eggFacilities)
-              ..where((t) => t.id.equals(id)))
-            .getSingle());
+          ..where((t) => t.id.equals(id)))
+        .getSingle());
   }
 
   /// An id that cannot collide with the server's.
@@ -1503,9 +2374,11 @@ class EggsRepository {
   /// Negative and descending, so a row registered with no signal is obviously
   /// local and a later download cannot overwrite the wrong record.
   Future<int> _nextLocalId(GeneratedColumn<int> column) async {
-    final rows = await database.customSelect(
-      'SELECT MIN(${column.name}) AS lowest FROM ${column.tableName}',
-    ).getSingle();
+    final rows = await database
+        .customSelect(
+          'SELECT MIN(${column.name}) AS lowest FROM ${column.tableName}',
+        )
+        .getSingle();
     final lowest = rows.data['lowest'] as int? ?? 0;
     return lowest < 0 ? lowest - 1 : -1;
   }
@@ -1523,9 +2396,30 @@ class EggsRepository {
     if (access != null && access.isNotEmpty && !_isKnownExpired(access)) {
       return access;
     }
+    // One refresh at a time. The list pages, the menu, the background sync
+    // and Server Sync all ask for a token, often within the same second,
+    // and with refresh-token rotation on the server a refresh token is
+    // single-use: two callers posting the same one means the second is
+    // refused, and whichever answer lands last decides what the handset
+    // keeps. Callers that arrive mid-refresh wait for the one in flight.
+    final running = _refreshInFlight;
+    if (running != null) return running;
+    final pass = _refreshAccessToken();
+    _refreshInFlight = pass;
+    try {
+      return await pass;
+    } finally {
+      _refreshInFlight = null;
+    }
+  }
 
+  Future<String?>? _refreshInFlight;
+
+  Future<String?> _refreshAccessToken() async {
     final refresh = await database.readSyncState('auth.refreshToken');
-    if (refresh == null || refresh.isEmpty || _isKnownExpired(refresh)) return null;
+    if (refresh == null || refresh.isEmpty || _isKnownExpired(refresh)) {
+      return null;
+    }
 
     try {
       final response = await _client
@@ -1535,6 +2429,20 @@ class EggsRepository {
             body: jsonEncode({'refresh': refresh}),
           )
           .timeout(timeout);
+      if (response.statusCode == 401) {
+        // The server has looked at this refresh token and refused it — it
+        // was signed by another server, or revoked. It will never be
+        // accepted, so keeping it only makes the handset post it again
+        // every two minutes for ever, with every upload waiting behind it
+        // and nothing on screen to say why. Cleared, the next sync says
+        // plainly that a sign-in with signal is needed. A tablet that had
+        // last signed in against the deployed server and then taken a
+        // build pointed at a local one sat in exactly that loop
+        // (2026-09-23).
+        await database.writeSyncState('auth.accessToken', '');
+        await database.writeSyncState('auth.refreshToken', '');
+        return null;
+      }
       if (response.statusCode != 200) return null;
 
       final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -1572,7 +2480,8 @@ class EggsRepository {
       ) as Map<String, dynamic>;
       final exp = payload['exp'];
       if (exp is! int) return false;
-      final expiry = DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
+      final expiry =
+          DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
       return DateTime.now().toUtc().isAfter(
             expiry.subtract(const Duration(minutes: 1)),
           );
@@ -1593,6 +2502,10 @@ class EggsRepository {
     final owner = await currentInspector();
     var written = 0;
     final headers = {'Authorization': 'Bearer $token'};
+    final inspectionCursor =
+        await database.readSyncState('eggs.inspections.downloadCursor');
+    final directionCursor =
+        await database.readSyncState('eggs.directions.downloadCursor');
 
     final localPending = {
       for (final i in await savedInspections())
@@ -1603,7 +2516,12 @@ class EggsRepository {
         if (!d.isUploaded) d.clientUuid,
     };
 
-    final inspectionsUri = Uri.parse('$baseUrl/api/eggs/inspections/');
+    final inspectionsUri = Uri.parse('$baseUrl/api/eggs/inspections/').replace(
+      queryParameters: {
+        if (inspectionCursor != null && inspectionCursor.isNotEmpty)
+          'updated_since': inspectionCursor,
+      },
+    );
     final response =
         await _client.get(inspectionsUri, headers: headers).timeout(timeout);
     if (response.statusCode != 200) {
@@ -1618,7 +2536,13 @@ class EggsRepository {
             : decoded as List<dynamic>)
         .cast<Map<String, dynamic>>();
 
+    DateTime? newestInspection;
     for (final j in inspections) {
+      final updatedAt = DateTime.tryParse('${j['updated_at'] ?? ''}');
+      if (updatedAt != null &&
+          (newestInspection == null || updatedAt.isAfter(newestInspection))) {
+        newestInspection = updatedAt;
+      }
       final uuid = j['client_uuid'] as String;
       if (localPending.contains(uuid)) continue;
       // A draft is work in progress on one handset, not a record to
@@ -1647,6 +2571,8 @@ class EggsRepository {
               clientEmail: Value(j['client_email'] as String? ?? ''),
               representativeName:
                   Value(j['representative_name'] as String? ?? ''),
+              managerName: Value(j['manager_name'] as String? ?? ''),
+              managerEmail: Value(j['manager_email'] as String? ?? ''),
               producerSupplier: Value(j['producer_supplier'] as String? ?? ''),
               batchNumber: Value(j['batch_number'] as String? ?? ''),
               bestBefore: Value(_date(j['best_before'])),
@@ -1663,8 +2589,11 @@ class EggsRepository {
               nonConformanceComments:
                   Value(j['non_conformance_comments'] as String? ?? ''),
               failedRequirementIds: Value(_csv(j['failed_requirements'])),
-              restrictedParticularIds:
-                  Value(_csv(j['restricted_particulars'])),
+              restrictedParticularIds: Value(_csv(j['restricted_particulars'])),
+              restrictedParticularsText:
+                  Value(j['restricted_particulars_text'] as String? ?? ''),
+              eggsExpressionAbsent: Value(j['eggs_expression_absent'] == true),
+              bestBeforeAbsent: Value(j['best_before_absent'] == true),
               latitude: Value(_number(j['latitude'])),
               longitude: Value(_number(j['longitude'])),
               inspectorUsername: Value(owner),
@@ -1710,8 +2639,7 @@ class EggsRepository {
                   kind: photo['kind'] as String? ?? 'egg',
                   // The server returns a path; store it absolute so the viewer
                   // does not have to know where it came from.
-                  filePath:
-                      image.startsWith('http') ? image : '$baseUrl$image',
+                  filePath: image.startsWith('http') ? image : '$baseUrl$image',
                   caption: Value(photo['caption'] as String? ?? ''),
                   capturedAt:
                       DateTime.tryParse('${photo['captured_at']}')?.toLocal() ??
@@ -1725,7 +2653,19 @@ class EggsRepository {
       written++;
     }
 
-    final directionsUri = Uri.parse('$baseUrl/api/eggs/directions/');
+    if (newestInspection != null) {
+      await database.writeSyncState(
+        'eggs.inspections.downloadCursor',
+        newestInspection.toUtc().toIso8601String(),
+      );
+    }
+
+    final directionsUri = Uri.parse('$baseUrl/api/eggs/directions/').replace(
+      queryParameters: {
+        if (directionCursor != null && directionCursor.isNotEmpty)
+          'updated_since': directionCursor,
+      },
+    );
     final dirResponse =
         await _client.get(directionsUri, headers: headers).timeout(timeout);
     if (dirResponse.statusCode == 200) {
@@ -1734,7 +2674,13 @@ class EggsRepository {
               ? (dirDecoded['results'] as List<dynamic>? ?? const [])
               : dirDecoded as List<dynamic>)
           .cast<Map<String, dynamic>>();
+      DateTime? newestDirection;
       for (final j in directions) {
+        final updatedAt = DateTime.tryParse('${j['updated_at'] ?? ''}');
+        if (updatedAt != null &&
+            (newestDirection == null || updatedAt.isAfter(newestDirection))) {
+          newestDirection = updatedAt;
+        }
         final uuid = j['client_uuid'] as String;
         if (localPendingDirections.contains(uuid)) continue;
         // A draft belongs to the handset writing it; writing one back would
@@ -1747,8 +2693,7 @@ class EggsRepository {
                 issuedAt: at,
                 updatedAt: at,
                 status: Value(j['status'] as String? ?? 'completed'),
-                directionNumber:
-                    Value(j['direction_number'] as String? ?? ''),
+                directionNumber: Value(j['direction_number'] as String? ?? ''),
                 labellingPart: Value(j['labelling_part'] as bool? ?? false),
                 qualityPart: Value(j['quality_part'] as bool? ?? false),
                 labelCorrectBy: Value(_date(j['label_correct_by'])),
@@ -1774,10 +2719,101 @@ class EggsRepository {
             );
         written++;
       }
+      if (newestDirection != null) {
+        await database.writeSyncState(
+          'eggs.directions.downloadCursor',
+          newestDirection.toUtc().toIso8601String(),
+        );
+      }
     }
 
     return written;
   }
 
   void dispose() => _client.close();
+}
+
+/// Names of the rows in the bundled rules, by the ids the bundle gave them.
+///
+/// The bundle is the only record of what a stale id used to mean once the
+/// synced tables have replaced its rows, so the names are read from the asset
+/// rather than from the database.
+class _BundledNames {
+  _BundledNames._(this._data);
+
+  static _BundledNames? _cached;
+
+  static Future<_BundledNames> load() async {
+    if (_cached != null) return _cached!;
+    try {
+      final raw = await rootBundle.loadString(EggsRepository.bundledRulesAsset);
+      final body = jsonDecode(raw) as Map<String, dynamic>;
+      return _cached = _BundledNames._(
+        (body['data'] as Map<String, dynamic>?) ?? const {},
+      );
+    } on Object {
+      // No asset bundle to hand (a bare test binding, say): nothing can be
+      // named, so nothing is re-pointed. Not cached — the next call may work.
+      return _BundledNames._(const {});
+    }
+  }
+
+  final Map<String, dynamic> _data;
+
+  String? _lookup(String collection, int id, String field) {
+    for (final row in (_data[collection] as List<dynamic>?) ?? const []) {
+      final r = row as Map<String, dynamic>;
+      if (r['id'] == id) return r[field] as String?;
+    }
+    return null;
+  }
+
+  String? size(int id) => _lookup('sizes', id, 'name');
+  String? grade(int id) => _lookup('grades', id, 'name');
+  String? reason(int id) => _lookup('inspection_reasons', id, 'name');
+  String? traySize(int id) => _lookup('tray_sizes', id, 'name');
+  String? facilityType(int id) => _lookup('facility_types', id, 'name');
+  String? requirement(int id) => _lookup('requirements', id, 'description');
+  String? particular(int id) =>
+      _lookup('restricted_particulars', id, 'keyword');
+
+  /// "<category name>|<description>", see the deviation lookup.
+  String? deviation(int id) {
+    for (final row in (_data['deviations'] as List<dynamic>?) ?? const []) {
+      final r = row as Map<String, dynamic>;
+      if (r['id'] != id) continue;
+      final category =
+          _lookup('deviation_categories', r['category'] as int, 'name');
+      if (category == null) return null;
+      return '$category|${r['description']}';
+    }
+    return null;
+  }
+}
+
+/// What the egg documents need about a record and its signing.
+class _EggDocumentContext {
+  const _EggDocumentContext({
+    required this.facilityName,
+    required this.facilityAddress,
+    required this.facilityType,
+    required this.traySize,
+    required this.representative,
+    required this.inspectorName,
+    required this.authorisedPersonName,
+    required this.inspectorSignaturePath,
+    required this.authorisedPersonSignaturePath,
+    required this.labelPhotoPath,
+  });
+
+  final String facilityName;
+  final String facilityAddress;
+  final String facilityType;
+  final String traySize;
+  final String representative;
+  final String inspectorName;
+  final String authorisedPersonName;
+  final String inspectorSignaturePath;
+  final String authorisedPersonSignaturePath;
+  final String labelPhotoPath;
 }

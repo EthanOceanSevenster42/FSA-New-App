@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/session/session_user.dart';
 import '../../../core/theme/app_theme.dart';
@@ -57,6 +59,7 @@ class _Row {
 
 class _EggInspectionListPageState extends State<EggInspectionListPage> {
   late Future<List<_Row>> _rows;
+
   /// Inclusive at both ends, compared by calendar day.
   DateTimeRange _range = DateTimeRange(
     start: DateTime.now(),
@@ -193,8 +196,7 @@ class _EggInspectionListPageState extends State<EggInspectionListPage> {
     if (mounted) _refresh();
   }
 
-  String _day(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/'
+  String _day(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   /// One date when both ends are the same day, so the ordinary case does not
@@ -278,7 +280,8 @@ class _EggInspectionListPageState extends State<EggInspectionListPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<List<_Row>>(
+      body: ContentWidth(
+          child: FutureBuilder<List<_Row>>(
         future: _rows,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -345,9 +348,8 @@ class _EggInspectionListPageState extends State<EggInspectionListPage> {
                   ),
                   if (pending > 0)
                     TextButton.icon(
-                      onPressed: _uploading.isEmpty
-                          ? () => _sendAll(rows)
-                          : null,
+                      onPressed:
+                          _uploading.isEmpty ? () => _sendAll(rows) : null,
                       icon: const Icon(Icons.cloud_upload_outlined, size: 18),
                       label: Text('Send all ($pending)'),
                     ),
@@ -379,7 +381,7 @@ class _EggInspectionListPageState extends State<EggInspectionListPage> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -513,8 +515,7 @@ class _InspectionCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: i.isUploaded
                       ? const Color(0xFFEAF5EB)
@@ -561,7 +562,7 @@ class _InspectionCard extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
-                  color: AppColors.brandRed,
+                  color: AppColors.brandPrimary,
                 ),
               ),
             ),

@@ -2,4 +2,7 @@
 <!-- Pre-API-21 fallback. Same plain white as drawable-v21. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/launch_background" />
+    <item android:gravity="center">
+        <bitmap android:src="@drawable/splash_logo" />
+    </item>
 </layer-list>

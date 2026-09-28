@@ -29,11 +29,13 @@ class ThemeController extends ValueNotifier<ThemeMode> {
   Future<void> set(ThemeMode mode) async {
     if (mode == value) return;
     value = mode;
-    await _database.writeSyncState(_key, switch (mode) {
-      ThemeMode.light => 'light',
-      ThemeMode.dark => 'dark',
-      ThemeMode.system => 'system',
-    });
+    await _database.writeSyncState(
+        _key,
+        switch (mode) {
+          ThemeMode.light => 'light',
+          ThemeMode.dark => 'dark',
+          ThemeMode.system => 'system',
+        });
   }
 
   /// What to show the inspector for the current choice.

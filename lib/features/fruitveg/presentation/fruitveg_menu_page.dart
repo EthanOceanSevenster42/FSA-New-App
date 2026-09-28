@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/theme/app_theme.dart';
 import '../data/fruitveg_repository.dart';
 import 'fruitveg_inspection_form.dart';
@@ -101,7 +103,7 @@ class _FruitVegMenuPageState extends State<FruitVegMenuPage> {
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text(
-          'Fruit & Vegetables',
+          'Fruit & Vegetable Produce',
           style: TextStyle(fontWeight: FontWeight.w900),
         ),
         backgroundColor: AppColors.surface,
@@ -109,7 +111,8 @@ class _FruitVegMenuPageState extends State<FruitVegMenuPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_MenuState>(
+      body: ContentWidth(
+          child: FutureBuilder<_MenuState>(
         future: _state,
         builder: (context, snap) {
           final s = snap.data;
@@ -146,7 +149,7 @@ class _FruitVegMenuPageState extends State<FruitVegMenuPage> {
               const SizedBox(height: 10),
               const _MenuButton(
                 icon: Icons.gavel_outlined,
-                title: 'Direction Management',
+                title: 'Rejection Management',
                 subtitle: 'Directives and seizures',
                 enabled: false,
                 onTap: null,
@@ -154,7 +157,7 @@ class _FruitVegMenuPageState extends State<FruitVegMenuPage> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 }
@@ -291,7 +294,7 @@ class _MenuButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final fg = enabled ? AppColors.ink : AppColors.muted;
     return Material(
-      color: enabled && primary ? AppColors.brandRed : AppColors.surface,
+      color: enabled && primary ? AppColors.brandPrimary : AppColors.surface,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -301,7 +304,7 @@ class _MenuButton extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: enabled && primary ? AppColors.brandRed : AppColors.border,
+              color: enabled && primary ? AppColors.brandPrimary : AppColors.border,
             ),
           ),
           child: Row(

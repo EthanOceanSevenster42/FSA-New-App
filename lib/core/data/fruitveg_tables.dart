@@ -52,6 +52,7 @@ class FvCountries extends Table {
 class FvGrades extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
+
   /// 1 is the best class; the overall result takes the worst rank.
   IntColumn get rank => integer()();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
@@ -64,6 +65,7 @@ class FvGrades extends Table {
 class FvDefectGroups extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
+
   /// Internal defects are weighed; external ones counted.
   BoolColumn get isInternal => boolean().withDefault(const Constant(false))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
@@ -100,6 +102,7 @@ class FvTolerances extends Table {
 
 class FvRequirements extends Table {
   IntColumn get id => integer()();
+
   /// 'marking' or 'packing'.
   TextColumn get kind => text()();
   TextColumn get description => text()();
@@ -188,8 +191,10 @@ class FvInspectionDefects extends Table {
 class FvInspectionPhotos extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get inspectionUuid => text()();
+
   /// 'grn' | 'label' | 'gps' | 'defect'
   TextColumn get kind => text()();
+
   /// Absolute path on the device. Images stay on disk, never in the database.
   TextColumn get filePath => text()();
   TextColumn get caption => text().withDefault(const Constant(''))();

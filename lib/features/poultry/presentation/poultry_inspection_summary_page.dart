@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
 import '../data/poultry_repository.dart';
@@ -80,9 +82,20 @@ class _PoultryInspectionSummaryPageState
       if (g.id == inspection.gradeId) names['grade'] = g.name;
     }
 
+    // Only the lists the grading screen asks. The store also holds the
+    // Label/Container screen's rows, and counting those against a grading
+    // record inflated its deviations.
+    final items = [
+      for (final item in await repo.checklistItems())
+        if (item.kind == PoultryChecklistKind.grading ||
+            item.kind == PoultryChecklistKind.portion ||
+            item.kind == PoultryChecklistKind.pack)
+          item,
+    ];
+
     return _Loaded(
       inspection: inspection,
-      items: await repo.checklistItems(),
+      items: items,
       compliant: {
         for (final part in inspection.compliantItemIds.split(','))
           if (int.tryParse(part.trim()) != null) int.parse(part.trim()),
@@ -105,7 +118,8 @@ class _PoultryInspectionSummaryPageState
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_Loaded?>(
+      body: ContentWidth(
+          child: FutureBuilder<_Loaded?>(
         future: _loaded,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -122,7 +136,7 @@ class _PoultryInspectionSummaryPageState
           }
           return _body(loaded);
         },
-      ),
+      )),
     );
   }
 
@@ -149,10 +163,8 @@ class _PoultryInspectionSummaryPageState
           '${i.inspectedAt.toLocal()}'.split('.').first,
           style: TextStyle(color: AppColors.muted, fontSize: 13),
         ),
-
         const SizedBox(height: 18),
         _banner(findings.length),
-
         _section('Deviations'),
         if (findings.isEmpty)
           Text(
@@ -162,7 +174,6 @@ class _PoultryInspectionSummaryPageState
         else
           for (final f in findings)
             _line(f.item.description, f.item.regulationReference, bad: true),
-
         _section('Product'),
         _kv('Poultry type', loaded.names['meatType']),
         _kv('Portion type', loaded.names['portion']),
@@ -171,25 +182,22 @@ class _PoultryInspectionSummaryPageState
         _kv('Grade', loaded.names['grade']),
         _kv('Product details', i.productDetails),
         _kv('Sample #', i.sampleNumber),
-
         _section('Inspection'),
         _kv('Location', loaded.names['location']),
         _kv('Reason', loaded.names['reason']),
         _kv('Facility address', i.facilityAddress),
-        _kv('Telephone', i.facilityTelephone),
+        _kv('Telephone / cellphone', i.facilityTelephone),
         _kv('Company reg.', i.companyRegNumber),
         _kv('Contact person', i.contactPerson),
         _kv('Manager', i.managerName),
-
         if (i.inspectionComments.isNotEmpty ||
             i.directionComments.isNotEmpty ||
             i.directionRemarks.isNotEmpty) ...[
           _section('Remarks'),
           _kv('Inspection', i.inspectionComments),
-          _kv('Direction', i.directionComments),
-          _kv('Direction remarks', i.directionRemarks),
+          _kv('Rejection', i.directionComments),
+          _kv('Rejection remarks', i.directionRemarks),
         ],
-
         _section('Checked and compliant (${compliant.length})'),
         for (final item in compliant)
           _line(item.description, item.regulationReference, bad: false),
@@ -202,12 +210,12 @@ class _PoultryInspectionSummaryPageState
         decoration: BoxDecoration(
           color: findings == 0
               ? const Color(0xFFEAF5EB)
-              : AppColors.noticeBackground,
+              : const Color(0xFFFDECEC),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: findings == 0
                 ? const Color(0xFF2E7D32).withValues(alpha: 0.3)
-                : AppColors.noticeBorder,
+                : AppColors.brandRed.withValues(alpha: 0.3),
           ),
         ),
         child: Row(
@@ -216,7 +224,7 @@ class _PoultryInspectionSummaryPageState
               findings == 0 ? Icons.check_circle_outline : Icons.warning_amber,
               color: findings == 0
                   ? const Color(0xFF2E7D32)
-                  : AppColors.noticeForeground,
+                  : AppColors.brandRed,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -224,13 +232,13 @@ class _PoultryInspectionSummaryPageState
                 findings == 0
                     ? 'No deviations recorded.'
                     : '$findings ${findings == 1 ? "deviation" : "deviations"} '
-                        'recorded. A direction may need to be served.',
+                        'recorded. A rejection may need to be served.',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   height: 1.35,
                   color: findings == 0
                       ? const Color(0xFF2E7D32)
-                      : AppColors.noticeForeground,
+                      : AppColors.brandRed,
                 ),
               ),
             ),

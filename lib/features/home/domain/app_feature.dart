@@ -41,71 +41,38 @@ const kAppFeatures = <AppFeature>[
   // Its screens, repository and backend remain in the tree — re-add an entry
   // with id 1 to bring it back; main.dart still routes that id.
   AppFeature(
-    id: 2,
-    title: 'Eggs',
-    subtitle: 'Sizing, Haugh readings and grading',
-    icon: Icons.egg_outlined,
+    id: 11,
+    title: 'Inspection',
+    subtitle: 'Plan the store\'s inspections, capture each, sign once',
+    icon: Icons.storefront_outlined,
     group: FeatureGroup.inspections,
     available: true,
   ),
   AppFeature(
-    id: 3,
-    title: 'Poultry Products',
-    subtitle: 'Grading and classification',
-    icon: Icons.food_bank_outlined,
+    id: 12,
+    title: 'Inspection Management',
+    subtitle: 'Every inspection captured — grouped by facility',
+    icon: Icons.fact_check_outlined,
     group: FeatureGroup.inspections,
     available: true,
   ),
-  AppFeature(
-    id: 4,
-    title: 'Processed Meat',
-    subtitle: 'PMP inspections and directives',
-    icon: Icons.lunch_dining_outlined,
-    group: FeatureGroup.inspections,
-    available: false,
-  ),
-  AppFeature(
-    id: 5,
-    title: 'Raw Processed Meat',
-    subtitle: 'Certain raw processed meat products',
-    icon: Icons.kebab_dining_outlined,
-    group: FeatureGroup.inspections,
-    available: false,
-  ),
-  AppFeature(
-    id: 6,
-    title: 'SAPA',
-    subtitle: 'RMLA levy return forms',
-    icon: Icons.receipt_long_outlined,
-    group: FeatureGroup.inspections,
-    available: false,
-  ),
-  AppFeature(
-    id: 7,
-    title: 'Product Scanning',
-    subtitle: 'Scan and look up products',
-    icon: Icons.qr_code_scanner,
-    group: FeatureGroup.tools,
-    available: false,
-  ),
+  // The standalone commodity entries (Eggs id 2, Poultry Products id 3,
+  // Processed Meat id 4, Raw Processed Meat id 5) are parked while all
+  // capturing goes through the grouped Inspection flow above — re-add an
+  // entry with its id to bring one back; main.dart still routes every id.
+  // Note: Processed Meat (PMP) is not yet part of the Inspection plan, so
+  // it is unreachable until it is wired in or its tile returns.
+  // SAPA (id 6) and Product Scanning (id 7) are removed until their screens
+  // exist — re-add entries with those ids to bring them back.
   AppFeature(
     id: 8,
     title: 'Server Sync',
     subtitle: 'Upload inspections, pull reference data',
     icon: Icons.sync,
     group: FeatureGroup.tools,
-    available: false,
+    available: true,
   ),
-  AppFeature(
-    id: 9,
-    title: 'Information',
-    subtitle: 'Application and device details',
-    icon: Icons.info_outline,
-    group: FeatureGroup.tools,
-    // No screen behind this yet. Marked unavailable so the menu does not
-    // promise something that only answers "not built yet".
-    available: false,
-  ),
+  // Information (id 9) is likewise removed until a screen exists behind it.
   AppFeature(
     id: 10,
     title: 'Admin Tools',

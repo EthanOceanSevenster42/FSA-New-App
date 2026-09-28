@@ -36,9 +36,11 @@ Future<void> showSavedDialog(
   final (IconData icon, Color colour) = switch (state) {
     SavedState.sent => (Icons.cloud_done_outlined, const Color(0xFF2E7D32)),
     SavedState.queued => (Icons.save_outlined, AppColors.brandTeal),
-    SavedState.needsSignIn =>
-      (Icons.cloud_off_outlined, AppColors.noticeForeground),
-    SavedState.rejected => (Icons.error_outline, AppColors.brandRed),
+    SavedState.needsSignIn => (
+        Icons.cloud_off_outlined,
+        AppColors.noticeForeground
+      ),
+    SavedState.rejected => (Icons.error_outline, AppColors.brandPrimary),
   };
 
   final message = switch (state) {

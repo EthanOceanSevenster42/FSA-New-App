@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'photo_shrink.dart';
+
 /// Where inspection photographs live on the handset.
 ///
 /// Evidence photographs are kept in the application's own private directory —
@@ -30,8 +32,7 @@ class PhotoStorage {
     if (existing != null) return existing;
 
     final documents = await getApplicationDocumentsDirectory();
-    return _instance =
-        _prepare(Directory('${documents.path}/$folderName'));
+    return _instance = _prepare(Directory('${documents.path}/$folderName'));
   }
 
   /// Creates the folder and marks it as non-media.
@@ -74,11 +75,16 @@ class PhotoStorage {
   /// [adopt]. Keeps the directory itself private.
   String pathFor(String name) => '${_directory.path}/$name';
 
+  /// How an adopted photograph is brought down to size. Replaced in tests
+  /// that only care where the file went.
+  static Future<int> Function(String path) shrink = PhotoShrink.shrinkInPlace;
+
   Future<String> adopt(File captured, {required String name}) async {
     final target = '${_directory.path}/$name';
+    String path;
     try {
       final moved = await captured.rename(target);
-      return moved.path;
+      path = moved.path;
     } on FileSystemException {
       // Rename fails across filesystems. Fall back to copying, then remove the
       // source so a large photo is not held twice.
@@ -88,8 +94,16 @@ class PhotoStorage {
       } on FileSystemException {
         // The cache copy is the system's to reclaim; nothing more to do.
       }
-      return target;
+      path = target;
     }
+    // Down to inspection size before it is recorded, so what is stored and
+    // sent is the small copy. Never the reason a capture fails.
+    try {
+      await shrink(path);
+    } on Object {
+      // The full-size shot stays; it is only larger.
+    }
+    return path;
   }
 
   /// Removes a photograph. Silent when the file has already gone.

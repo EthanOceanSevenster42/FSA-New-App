@@ -10,8 +10,10 @@ import 'package:drift/drift.dart';
 /// A captured Label/Container Checklist.
 class PoultryLabelInspections extends Table {
   TextColumn get clientUuid => text()();
-  TextColumn get inspectorUsername =>
-      text().withDefault(const Constant(''))();
+
+  /// The store visit this record was captured under, empty when standalone.
+  TextColumn get visitUuid => text().withDefault(const Constant(''))();
+  TextColumn get inspectorUsername => text().withDefault(const Constant(''))();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   DateTimeColumn get inspectedAt => dateTime()();
 
@@ -22,14 +24,17 @@ class PoultryLabelInspections extends Table {
       text().withDefault(const Constant(''))();
   TextColumn get facilityAddress => text().withDefault(const Constant(''))();
   TextColumn get facilityTelephone => text().withDefault(const Constant(''))();
-  TextColumn get registrationNumber =>
-      text().withDefault(const Constant(''))();
+  TextColumn get registrationNumber => text().withDefault(const Constant(''))();
   TextColumn get contactPerson => text().withDefault(const Constant(''))();
-  TextColumn get contactPersonEmail =>
-      text().withDefault(const Constant(''))();
+  TextColumn get contactPersonEmail => text().withDefault(const Constant(''))();
   TextColumn get productDetails => text().withDefault(const Constant(''))();
   TextColumn get selectedDirectionForFollowup =>
       text().withDefault(const Constant(''))();
+
+  /// Whether the grading and classification checklist follows this one.
+  /// Asked on the form; kept so a resumed draft remembers the answer.
+  BoolColumn get gradingToFollow =>
+      boolean().withDefault(const Constant(false))();
 
   IntColumn get meatTypeId => integer().nullable()();
   IntColumn get portionTypeId => integer().nullable()();
@@ -45,6 +50,11 @@ class PoultryLabelInspections extends Table {
       boolean().withDefault(const Constant(false))();
 
   TextColumn get compliantItemIds => text().withDefault(const Constant(''))();
+
+  /// Grading ticks per sample in the lot, as "1:4,5;2:4" — sample number,
+  /// then the checklist rows found compliant on it. The lot is five
+  /// carcasses, and each is graded in its own right.
+  TextColumn get gradingBySample => text().withDefault(const Constant(''))();
   TextColumn get restrictedParticularIds =>
       text().withDefault(const Constant(''))();
   TextColumn get restrictedParticularsText =>
@@ -54,6 +64,16 @@ class PoultryLabelInspections extends Table {
       text().withDefault(const Constant(''))();
   TextColumn get directionRemarks => text().withDefault(const Constant(''))();
   IntColumn get directionRemarkTypeId => integer().nullable()();
+
+  /// FSA-SOP-APS-001 Annexure C: whether the class or grade designation was
+  /// left off altogether (a seizure) rather than shown wrong (30 days).
+  BoolColumn get classOmitted =>
+      boolean().withDefault(const Constant(false))();
+  BoolColumn get gradeOmitted =>
+      boolean().withDefault(const Constant(false))();
+
+  /// 'seize' or 'inspect' once the seizure question was put; empty until.
+  TextColumn get seizureDecision => text().withDefault(const Constant(''))();
 
   TextColumn get managerName => text().withDefault(const Constant(''))();
   TextColumn get managerEmail => text().withDefault(const Constant(''))();
@@ -78,8 +98,12 @@ class PoultryLabelInspections extends Table {
 /// same inspection, and splitting it here would let the halves drift apart.
 class PoultryQuidInspections extends Table {
   TextColumn get clientUuid => text()();
-  TextColumn get inspectorUsername =>
-      text().withDefault(const Constant(''))();
+
+  /// The grouped inspection this QUID belongs to, empty when it was
+  /// captured on its own. QUID was the one poultry inspection with no way
+  /// into a visit at all, so it could only ever be a record of its own.
+  TextColumn get visitUuid => text().withDefault(const Constant(''))();
+  TextColumn get inspectorUsername => text().withDefault(const Constant(''))();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   DateTimeColumn get inspectedAt => dateTime()();
 
@@ -92,8 +116,7 @@ class PoultryQuidInspections extends Table {
   TextColumn get facilityTelephone => text().withDefault(const Constant(''))();
   TextColumn get companyRegNumber => text().withDefault(const Constant(''))();
   TextColumn get contactPerson => text().withDefault(const Constant(''))();
-  TextColumn get contactPersonEmail =>
-      text().withDefault(const Constant(''))();
+  TextColumn get contactPersonEmail => text().withDefault(const Constant(''))();
   TextColumn get productDetails => text().withDefault(const Constant(''))();
 
   BoolColumn get isWaterChilled =>
@@ -132,6 +155,8 @@ class PoultryQuidInspections extends Table {
   TextColumn get setInjectorQuidPercent =>
       text().withDefault(const Constant(''))();
 
+  /// "Verification of Records" — the date on the record being verified.
+  DateTimeColumn get documentDate => dateTime().nullable()();
   TextColumn get documentName => text().withDefault(const Constant(''))();
   BoolColumn get documentVerified =>
       boolean().withDefault(const Constant(false))();
@@ -140,9 +165,28 @@ class PoultryQuidInspections extends Table {
   TextColumn get documentDeviationComment =>
       text().withDefault(const Constant(''))();
 
+  /// Every "Verification of Records" entry, as JSON. The original keeps a
+  /// list — Add puts one on it and clears the boxes for the next. The
+  /// single document fields above hold the first, for older readers.
+  TextColumn get verificationRecordsJson =>
+      text().withDefault(const Constant(''))();
+
+  /// Set when the determination ends in a rejection: the water pick-up or
+  /// an injector over its limit on the second round. The reason says which.
+  BoolColumn get directionRequired =>
+      boolean().withDefault(const Constant(false))();
+  TextColumn get directionReason => text().withDefault(const Constant(''))();
+
+  /// The rejection's "Correct by/on Date".
+  DateTimeColumn get correctByDate => dateTime().nullable()();
+
   IntColumn get directionRemarkTypeId => integer().nullable()();
   TextColumn get directionRemarks => text().withDefault(const Constant(''))();
   TextColumn get directionAction => text().withDefault(const Constant(''))();
+
+  /// FSA-SOP-APS-001 Annexure C seizes on a QUID deviation: 'seize' or
+  /// 'inspect' once the question was put, empty until.
+  TextColumn get seizureDecision => text().withDefault(const Constant(''))();
 
   TextColumn get managerName => text().withDefault(const Constant(''))();
   TextColumn get managerEmail => text().withDefault(const Constant(''))();
@@ -171,10 +215,66 @@ class PoultryQuidSamples extends Table {
   TextColumn get inspectionUuid => text()();
   TextColumn get carcassNumber => text().withDefault(const Constant(''))();
   TextColumn get injectorNumber => text().withDefault(const Constant(''))();
+
+  /// Water chilling: the carcass off the line, what it weighed after, and
+  /// what it picked up between the two.
   TextColumn get initialMassG => text().withDefault(const Constant(''))();
   TextColumn get afterMassG => text().withDefault(const Constant(''))();
   TextColumn get finalMassG => text().withDefault(const Constant(''))();
   TextColumn get pickupPercent => text().withDefault(const Constant(''))();
+
+  /// Injector processing, which the original weighs separately from the
+  /// chilling: the carcass onto the injector, off it, the gain between, and
+  /// that gain as a rate.
+  TextColumn get beforeMassG => text().withDefault(const Constant(''))();
+
+  /// The carcass off the injector. Its own column: [afterMassG] is the
+  /// chilling reading and writing both into one silently destroyed
+  /// whichever was weighed first.
+  TextColumn get injectorAfterMassG =>
+      text().withDefault(const Constant(''))();
+  TextColumn get gainG => text().withDefault(const Constant(''))();
+  TextColumn get injectorRatePercent =>
+      text().withDefault(const Constant(''))();
+
+  /// Determination of QUID for this carcass.
+  ///
+  /// The original weighs it per carcass, not once per consignment: the
+  /// initial mass is the carcass's own chilling weight and the final mass is
+  /// weighed after processing, so QUID is (final - initial) / final. One pair
+  /// of masses for the whole inspection cannot be read back against the
+  /// injector that produced it.
+  TextColumn get quidFinalMassG => text().withDefault(const Constant(''))();
+  TextColumn get quidGainG => text().withDefault(const Constant(''))();
+  TextColumn get quidPercent => text().withDefault(const Constant(''))();
+
+  /// Which injector on the set-up list processed this carcass, by position.
+  /// Empty while it has not been assigned.
+  TextColumn get assignedInjector => text().withDefault(const Constant(''))();
+
+  /// Which round of weighing this carcass belongs to: 1, or 2 when the
+  /// determination had to be repeated. Only the last round is judged.
+  IntColumn get iteration => integer().withDefault(const Constant(1))();
+}
+
+/// One injector on a QUID set-up, and the QUID percentage it is set to.
+///
+/// A plant runs several injectors and each is set to its own percentage, so
+/// the set-up builds a list rather than naming one — the original's Add /
+/// Clear List pair under Injector Setup Details. The continue screen assigns
+/// each carcass to one of these and compares the percentage the injector was
+/// set to against the percentage the weighing actually found.
+class PoultryQuidInjectors extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get inspectionUuid => text()();
+
+  /// The number the list shows against it, 1-based, and what a sample's
+  /// [PoultryQuidSamples.assignedInjector] holds.
+  IntColumn get position => integer()();
+  TextColumn get name => text().withDefault(const Constant(''))();
+
+  /// "QUID Percentage for this Injector" — what the plant says it is set to.
+  TextColumn get quidPercent => text().withDefault(const Constant(''))();
 }
 
 /// A direction served on a client.
@@ -184,8 +284,7 @@ class PoultryQuidSamples extends Table {
 /// independently of which inspection produced them.
 class PoultryDirections extends Table {
   TextColumn get clientUuid => text()();
-  TextColumn get inspectorUsername =>
-      text().withDefault(const Constant(''))();
+  TextColumn get inspectorUsername => text().withDefault(const Constant(''))();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   DateTimeColumn get issuedAt => dateTime()();
 
@@ -198,8 +297,11 @@ class PoultryDirections extends Table {
   TextColumn get actionTaken => text().withDefault(const Constant(''))();
 
   /// Which non-conformances this direction cites, comma separated.
-  TextColumn get nonConformanceIds =>
-      text().withDefault(const Constant(''))();
+  TextColumn get nonConformanceIds => text().withDefault(const Constant(''))();
+
+  /// "Correct by/on" — set by FSA-SOP-APS-001 Annexure C from the
+  /// deviations cited, counted from the inspection date.
+  DateTimeColumn get correctByDate => dateTime().nullable()();
 
   RealColumn get latitude => real().nullable()();
   RealColumn get longitude => real().nullable()();

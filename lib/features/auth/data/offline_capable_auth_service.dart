@@ -40,7 +40,8 @@ class OfflineCapableAuthService implements AuthService {
     required String password,
   }) async {
     try {
-      final result = await remote.signIn(username: username, password: password);
+      final result =
+          await remote.signIn(username: username, password: password);
       // A reachable server is authoritative — including for rejections.
       if (result.outcome != AuthOutcome.failure) {
         // Persist the token so captured work can be uploaded later, possibly
@@ -94,6 +95,7 @@ class OfflineCapableAuthService implements AuthService {
   }
 
   @override
+
   /// The "Sync users" button. Deliberately a full re-fetch — see
   /// [UserSyncRepository.sync]. The automatic sync after a successful sign-in
   /// stays incremental.

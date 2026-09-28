@@ -101,7 +101,7 @@ Future<T?> showPickerSheet<T>({
                           ),
                     trailing: isSelected
                         ? const Icon(Icons.check,
-                            color: AppColors.brandRed, size: 22)
+                            color: AppColors.brandPrimary, size: 22)
                         : null,
                     onTap: () => Navigator.of(sheetContext).pop(item),
                   );

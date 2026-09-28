@@ -68,7 +68,6 @@ void main() {
       'entryFacilityName',
       'entryProducerNewFacility',
       'editorNewFacilityAddress',
-      'entryNewFacilityTelephone',
       'entryCompanyRegNumber',
       'entryNewContactPerson',
       'entryNewContactPersonEmail',
@@ -81,13 +80,37 @@ void main() {
       'entrySampleNumber',
       'pickerDirectionRemark',
       'editorDirectionRemarks',
-      'editorDirectionComments',
       'entryManagerName',
       'entryManagerEmail',
       'entryClientEmail1',
       'entryClientEmail12',
       'editorInspectionComments',
     };
+
+    // Where the FSA asked for different words than the original's, the
+    // wording they asked for is the one the form must carry. Listing them
+    // here keeps the divergence deliberate and visible rather than letting
+    // the parity check quietly stop covering the field.
+    const reworded = {
+      // "Direction" in the original; the FSA calls this a rejection.
+      'editorDirectionComments': 'Comments/Remarks on Rejection',
+      // A cellphone is as good as a landline for reaching the facility
+      // (Ethan, 2026-09-24).
+      'entryNewFacilityTelephone':
+          'Facility Primary Contact Telephone / Cellphone Number',
+    };
+    for (final entry in reworded.entries) {
+      expect(
+        original[entry.key],
+        isNotNull,
+        reason: '${entry.key} is no longer in the original XAML',
+      );
+      expect(
+        source.contains("'${entry.value}'"),
+        isTrue,
+        reason: '${entry.key} should read "${entry.value}"',
+      );
+    }
 
     final missing = <String>[];
     for (final name in reproduced) {

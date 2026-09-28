@@ -3,23 +3,36 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/responsive.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/data/batch_number.dart';
 import '../../../core/data/local_database.dart';
+import '../../../core/data/restricted_particulars_catalogue.dart';
 import '../../../core/services/in_app_camera.dart';
 import '../../../core/services/photo_storage.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/compliance_slider.dart';
+import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../data/eggs_repository.dart';
+import '../../seizures/presentation/record_seizure.dart';
+import '../../visits/domain/visit_prefill.dart';
+import '../../visits/domain/facility_type_match.dart';
+import '../../visits/domain/inspection_reason_match.dart';
 import '../data/eggs_sync_service.dart';
 import 'date_field.dart';
 import 'egg_direction_form.dart';
 import 'new_directory_entry_sheet.dart';
 import 'picker_sheet.dart';
-import 'required_label.dart';
+import '../../../core/widgets/required_label.dart';
+import '../../../core/widgets/restricted_particulars_picker.dart';
 import 'saved_dialog.dart';
-import 'search_picker.dart';
+import '../../../core/widgets/search_picker.dart';
 import '../domain/egg_rules.dart';
+import '../../poultry/presentation/signature_pad.dart';
+import '../../../core/widgets/picker_menu_field.dart';
 
 /// Poultry Egg inspection capture.
 ///
@@ -33,6 +46,7 @@ class EggInspectionForm extends StatefulWidget {
     required this.inspectorName,
     this.syncService,
     this.resumeUuid,
+    this.visit,
   });
 
   final EggsRepository repository;
@@ -46,6 +60,12 @@ class EggInspectionForm extends StatefulWidget {
   /// mid-capture — usually because Android reclaimed memory while the camera
   /// was in front — and the inspector chose to resume rather than start again.
   final String? resumeUuid;
+
+  /// Set when this inspection is one of several at the same store. The
+  /// facility, contact and manager fields arrive already filled from the
+  /// visit, and the signatures are taken once at the end of the visit
+  /// rather than on this form.
+  final VisitPrefill? visit;
 
   @override
   State<EggInspectionForm> createState() => _EggInspectionFormState();
@@ -117,31 +137,92 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   /// When capture began. Held so a resumed draft keeps its original time
   /// rather than jumping to whenever it was picked back up.
   DateTime _startedAt = DateTime.now();
-  final _page = PageController();
-  int _step = 0;
   bool _saving = false;
   bool _loading = true;
 
   // Reference
   List<EggSizeBand> _bands = [];
   List<EggGradeRef> _gradeRefs = [];
+
+  /// The size picker's own "Not indicated", offered beside the mass bands.
+  ///
+  /// A pack that declares no size is the same case as one that declares no
+  /// grade: the marking requirement is not met, and there is no claim for
+  /// the weighed sample to be measured against. Leaving the picker alone
+  /// said neither — it read as a question nobody had answered, and the
+  /// inspection could not be saved at all, because the size is required.
+  ///
+  /// Kept out of [_bands], which is what each weighed egg is sized against:
+  /// a band with no mass range would swallow every egg.
+  static const _sizeNotIndicated = EggSizeBand(
+    id: -1,
+    name: 'Not indicated',
+    minMassG: 0,
+    maxMassG: null,
+    sortOrder: 999,
+    isMassBand: false,
+  );
+
+  /// The picker's contents: the office's bands, and "Not indicated".
+  List<EggSizeBand> get _sizeOptions =>
+      [..._bands, if (_bands.isNotEmpty) _sizeNotIndicated];
+
+  /// The tray picker's own "Not indicated".
+  ///
+  /// Eggs are met loose and in unmarked trays, and the pack size is required
+  /// before the marking checklists open — so with nothing to choose that
+  /// meant "the pack does not say", the inspection could not be started at
+  /// all. Annexure D of FSA-SOP-APS-001 treats an omitted indication as an
+  /// omission rather than a mis-statement, which is the inspector's to
+  /// record, not to guess at.
+  static const _trayNotIndicated = EggTraySize(
+    id: -1,
+    name: 'Not indicated',
+    eggCount: 0,
+    sortOrder: 999,
+    isActive: true,
+    updatedAt: '',
+  );
+
+  List<EggTraySize> get _trayOptions =>
+      [..._traySizes, if (_traySizes.isNotEmpty) _trayNotIndicated];
+
+  /// The grade picker's own "Not indicated", offered beside Grade 1/2/3.
+  ///
+  /// A pack that declares no grade had to be answered by leaving the picker
+  /// alone, which read as an unanswered question and contradicted the
+  /// labelling checklist, where the row is left as a deviation precisely
+  /// because no grade is indicated. Now the inspector says so.
+  ///
+  /// It is not a grade the office holds: id -1 is the value the rules
+  /// already read as "no grade", so the tolerances that key off a declared
+  /// grade are simply not applied, and the id survives a draft without a
+  /// column of its own.
+  static const _gradeNotIndicated =
+      EggGradeRef(id: -1, name: 'Not indicated', rank: 0);
+
+  /// The picker's contents: the office's grades, and "Not indicated".
+  List<EggGradeRef> get _gradeOptions =>
+      [..._gradeRefs, if (_gradeRefs.isNotEmpty) _gradeNotIndicated];
   List<DeviationRef> _deviationRefs = [];
   List<EggDeviationCategory> _categories = [];
   List<EggFacilityType> _facilityTypes = [];
+
   List<EggInspectionReason> _reasons = [];
   List<EggTraySize> _traySizes = [];
   List<EggRequirement> _labelPack = [];
   List<EggRequirement> _labelOuter = [];
   List<EggRequirement> _packing = [];
   List<EggRestrictedParticular> _particulars = [];
+
+  /// Every commodity's list, so this form offers the same menu as the rest.
+  List<String> _sharedParticulars = const [];
   Map<int, List<EggDeviation>> _deviationsByCategory = {};
 
-  List<EggClient> _clients = [];
   List<EggFacility> _facilities = [];
   List<EggSupplier> _suppliers = [];
 
   // Selections
-  EggClient? _client;
   EggFacilityType? _facilityType;
   EggInspectionReason? _reason;
   EggTraySize? _traySize;
@@ -159,11 +240,51 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   Map<LabelChecklist, Set<int>> _checklists = const {};
   final _failedRequirements = <int>{};
   final _selectedParticulars = <int>{};
+
+  /// Particulars typed in because the Agency's list did not have them.
+  final _typedParticulars = <String>{};
   final _samples = <_Sample>[];
   Position? _position;
   final _photos = <_Shot>[];
   bool _pasteurised = false;
+
+  /// The original's `switchIsOuterPackagingAvailable`: the outer-packaging
+  /// checklist only shows once the inspector confirms outer labelling is
+  /// there to inspect.
+  bool _outerAvailable = false;
+
+  final _managerName = TextEditingController();
+  final _managerEmail = TextEditingController();
+
+  /// Captured signatures by role ('manager' / 'inspector').
+  final Map<String, EggSignature> _signaturesByRole = {};
   bool _haughNotRequired = false;
+
+  /// `Constants.MinQualityTrayLabelPhotos` — at least two egg quality
+  /// deviation photographs. The original's own words: "the 1st TWO set of
+  /// photos will be included in the DIRECTION. Additional photos will be
+  /// stored for future reference."
+  /// How many photographs every block on this form asks for.
+  ///
+  /// Two, as the poultry label and QUID checklists have always asked for
+  /// ([PoultryRules.requiredPhotos]) — one shot rarely shows both what was
+  /// found and where it was found, and the office cannot go back for a
+  /// second. The quality-deviation row already worked this way; the label
+  /// and egg-numbering rows asked for one, so the same evidence arrived at
+  /// two standards depending on which row took it.
+  static const _minPhotos = 2;
+
+  static const _minQualityDeviationPhotos = _minPhotos;
+
+  /// The original shows its "at least (TWO) 2 photos" notice once per
+  /// inspection, on the first tap of Take Egg Photos
+  /// (`_qualityDirectivePhotoMsgFlag`).
+  bool _qualityPhotoNoticeShown = false;
+
+  /// The original's `switchEggWeighingInspectionNotRequired`, offered at a
+  /// retailer only. Confirming it takes the sizing and grading block off the
+  /// page and moves the inspection straight to signature.
+  bool _weighingNotRequired = false;
 
   // Text
   final _facilityName = TextEditingController();
@@ -177,45 +298,52 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   final _representative = TextEditingController();
   final _producer = TextEditingController();
   final _batch = TextEditingController();
-  final _generalComments = TextEditingController();
+
+  /// Watched so an empty batch box fills itself in with N/A the moment the
+  /// inspector moves off it.
+  final _batchFocus = FocusNode();
+
   final _nonConformance = TextEditingController();
-  final _overrideReason = TextEditingController();
   DateTime? _bestBefore;
 
   EggGradeRef? _consignmentGrade;
-  bool _override = false;
-  EggGradeRef? _overrideGrade;
-
-  static const _titles = [
-    'Facility & client',
-    'Product',
-    'Egg samples',
-    'Labelling & packing',
-    'Photos',
-    'Result',
-  ];
 
   @override
   void initState() {
     super.initState();
+    // The Egg Size picker opens once a producer is settled, and a producer
+    // can be typed into the box as well as picked from it — so the gate
+    // watches the box rather than a second entry beside it.
+    _producer.addListener(_producerChanged);
+    _batchFocus.addListener(_normaliseBatch);
+    _applyVisitPrefill();
     _load();
-    // Every inspection is located. Permission is requested once at app start,
-    // so this is a silent fix rather than a prompt mid-inspection, and it
-    // begins immediately so a fix is ready by the time it is needed.
-    unawaited(_captureLocation(silent: true));
   }
 
   @override
   void dispose() {
+    _producer.removeListener(_producerChanged);
+    _batchFocus.removeListener(_normaliseBatch);
+    _batchFocus.dispose();
+    _scroll.dispose();
+    _weightEntry.dispose();
+    _haughEntry.dispose();
     for (final sample in _samples) {
       sample.dispose();
     }
-    _page.dispose();
     for (final c in [
-      _facilityName, _facilityAddress, _facilityPhone, _clientName,
-      _clientAddress, _contactPerson, _contactNumber, _clientEmail,
-      _representative, _producer, _batch, _generalComments,
-      _nonConformance, _overrideReason,
+      _facilityName,
+      _facilityAddress,
+      _facilityPhone,
+      _clientName,
+      _clientAddress,
+      _contactPerson,
+      _contactNumber,
+      _clientEmail,
+      _representative,
+      _producer,
+      _batch,
+      _nonConformance,
     ]) {
       c.dispose();
     }
@@ -229,7 +357,29 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     _deviationRefs = await r.deviationRefs();
     _categories = await r.deviationCategories();
     _facilityTypes = await r.facilityTypes();
-    _reasons = await r.reasons();
+    // Chosen once at the door: find this commodity's row for it.
+    final doorType = widget.visit?.facilityType ?? '';
+    if (_facilityType == null && doorType.isNotEmpty) {
+      final i = FacilityTypeMatch.indexOf(
+          doorType, _facilityTypes.map((t) => t.name).toList());
+      if (i != null) {
+        _facilityType = _facilityTypes[i];
+      }
+    }
+    // Inspection or Follow-up only; eggs' "Complaint" row is not offered.
+    _reasons = [
+      for (final reason in await r.reasons())
+        if (InspectionReasonMatch.isOffered(reason.name)) reason,
+    ];
+    // And why it is being made — also answered once, at the door.
+    final doorReason = widget.visit?.inspectionReason ?? '';
+    if (_reason == null && doorReason.isNotEmpty) {
+      final i = InspectionReasonMatch.indexOf(
+          doorReason, _reasons.map((x) => x.name).toList());
+      if (i != null) {
+        _reason = _reasons[i];
+      }
+    }
     _traySizes = await r.traySizes();
     _tolerances = await r.deviationTolerances();
     _checklists = await r.requirementChecklists();
@@ -237,13 +387,29 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     _labelOuter = await r.requirements('label_outer');
     _packing = await r.requirements('packing');
     _particulars = await r.restrictedParticulars();
-    _clients = await r.clients();
+    _sharedParticulars = await RestrictedParticularsCatalogue.names(r.database);
     _facilities = await r.facilities();
     _suppliers = await r.suppliers();
     _deviationsByCategory = {
       for (final c in _categories) c.id: await r.deviationsFor(c.id),
     };
-    if (widget.resumeUuid != null) await _restoreDraft();
+    // Every requirement starts Compliant, so the inspector marks only what
+    // is wrong.
+    //
+    // The rows used to start as deviations, on the reasoning that the app
+    // must not claim a requirement was met before anyone had looked. In the
+    // field that inverted the work: a compliant pack meant moving twenty
+    // rows one at a time, and any row missed in that sweep became a
+    // deviation the inspector never intended. A deviation is the exception
+    // on a normal pack, so it is the exception that gets marked
+    // (FSA, 2026-09-07).
+    _failedRequirements.clear();
+    if (widget.resumeUuid != null) {
+      await _restoreDraft();
+      // The restore writes every field, blanks included, so anything the
+      // draft never captured comes back from the visit here.
+      _applyVisitPrefill();
+    }
     if (mounted) setState(() => _loading = false);
   }
 
@@ -267,34 +433,51 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     _contactNumber.text = draft.clientContactNumber;
     _clientEmail.text = draft.clientEmail;
     _representative.text = draft.representativeName;
+    _managerName.text = draft.managerName;
+    _managerEmail.text = draft.managerEmail;
+    for (final sig in await r.signaturesFor(_uuid)) {
+      _signaturesByRole[sig.role] = sig;
+    }
     _producer.text = draft.producerSupplier;
     _batch.text = draft.batchNumber;
-    _generalComments.text = draft.generalComments;
     _nonConformance.text = draft.nonConformanceComments;
-    _overrideReason.text = draft.overrideReason;
     _bestBefore = draft.bestBefore;
     _pasteurised = draft.pasteurisedPresent;
     _haughNotRequired = draft.haughNotRequired;
-    _override = draft.gradeOverridden;
+    _weighingNotRequired = draft.weighingNotRequired;
+    _outerAvailable = draft.outerLabellingAvailable;
 
     _facilityType =
         _facilityTypes.where((t) => t.id == draft.facilityTypeId).firstOrNull;
     _reason = _reasons.where((x) => x.id == draft.reasonId).firstOrNull;
-    _traySize = _traySizes.where((t) => t.id == draft.traySizeId).firstOrNull;
-    _declaredSize =
-        _bands.where((b) => b.id == draft.declaredSizeId).firstOrNull;
-    _declaredGrade =
-        _gradeRefs.where((g) => g.id == draft.declaredGradeId).firstOrNull;
+    _traySize = draft.traySizeId == _trayNotIndicated.id
+        ? _trayNotIndicated
+        : _traySizes.where((t) => t.id == draft.traySizeId).firstOrNull;
+    _seizureDecision = SeizureDecision.of(draft.seizureDecision);
+    // A record that already carries an answer does not ask again.
+    _seizureAsked = _seizureDecision != null;
+    _eggsExpressionAbsent = draft.eggsExpressionAbsent;
+    _bestBeforeAbsent = draft.bestBeforeAbsent;
+    _declaredSize = draft.declaredSizeId == _sizeNotIndicated.id
+        ? _sizeNotIndicated
+        : _bands.where((b) => b.id == draft.declaredSizeId).firstOrNull;
+    _declaredGrade = draft.declaredGradeId == _gradeNotIndicated.id
+        ? _gradeNotIndicated
+        : _gradeRefs.where((g) => g.id == draft.declaredGradeId).firstOrNull;
 
     int? asId(String v) => int.tryParse(v.trim());
     _failedRequirements
       ..clear()
-      ..addAll(draft.failedRequirementIds.split(',').map(asId).whereType<int>());
+      ..addAll(
+          draft.failedRequirementIds.split(',').map(asId).whereType<int>());
     _selectedParticulars
       ..clear()
       ..addAll(
         draft.restrictedParticularIds.split(',').map(asId).whereType<int>(),
       );
+    _typedParticulars
+      ..clear()
+      ..addAll(TypedParticulars.unpack(draft.restrictedParticularsText));
 
     for (final old in _samples) {
       old.dispose();
@@ -307,20 +490,10 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       sample.deviationIds.addAll(
         row.deviationIds.split(',').map(asId).whereType<int>(),
       );
-      // Size, Haugh and grade are derived, so recompute rather than trust a
-      // stored value that may predate a rule change.
-      sample.size = EggRules.sizeFor(sample.massG, _bands);
-      sample.haugh = _haughNotRequired
-          ? null
-          : EggRules.haughUnit(
-              albumenHeightMm: sample.albumenHeightMm,
-              massG: sample.massG,
-            );
-      sample.grade = EggRules.gradeForEgg(
-        tickedDeviationIds: sample.deviationIds,
-        deviations: _deviationRefs,
-        grades: _gradeRefs,
-      );
+      // Size, Haugh, automatic deviations and grade are derived, so
+      // recompute rather than trust a stored value that may predate a rule
+      // change.
+      _applyDerived(sample);
       // The readings exist on the record but nothing has typed them into
       // the fields, so put them there.
       sample.fillControllers();
@@ -328,8 +501,12 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     }
     _consignmentGrade =
         EggRules.consignmentGrade([for (final x in _samples) x.grade]);
-    _overrideGrade =
-        _gradeRefs.where((g) => g.id == draft.determinedGradeId).firstOrNull;
+
+    // Land on the highest captured egg, ready to carry on from there.
+    _currentEggNumber = _samples.isEmpty
+        ? 1
+        : _samples.map((x) => x.number).reduce((a, b) => a > b ? a : b);
+    _loadCurrentEggIntoEntries();
 
     _photos.clear();
     _photoRowIds.clear();
@@ -350,9 +527,9 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       fields: [
         DirectoryField(
             label: 'Name', key: 'name', initial: typedName, isRequired: true),
-        DirectoryField(label: 'Physical address', key: 'address'),
-        DirectoryField(
-            label: 'Telephone',
+        const DirectoryField(label: 'Physical address', key: 'address'),
+        const DirectoryField(
+            label: 'Telephone / cellphone',
             key: 'telephone',
             keyboardType: TextInputType.phone),
       ],
@@ -386,13 +563,13 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       fields: [
         DirectoryField(
             label: 'Name', key: 'name', initial: typedName, isRequired: true),
-        DirectoryField(label: 'Physical address', key: 'address'),
-        DirectoryField(label: 'Contact person', key: 'contact'),
-        DirectoryField(
-            label: 'Telephone',
+        const DirectoryField(label: 'Physical address', key: 'address'),
+        const DirectoryField(label: 'Contact person', key: 'contact'),
+        const DirectoryField(
+            label: 'Telephone / cellphone',
             key: 'telephone',
             keyboardType: TextInputType.phone),
-        DirectoryField(
+        const DirectoryField(
             label: 'Email',
             key: 'email',
             keyboardType: TextInputType.emailAddress),
@@ -419,50 +596,6 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     }
   }
 
-  /// Registers a client the directory does not hold, then selects them.
-  Future<void> _addClient(String typedName) async {
-    final values = await showNewDirectoryEntrySheet(
-      context,
-      title: 'New client',
-      subtitle: 'Registered on the server so the next inspection for this '
-          'client links up rather than recording a loose name.',
-      saveLabel: 'Add client',
-      fields: [
-        DirectoryField(
-            label: 'Name', key: 'name', initial: typedName, isRequired: true),
-        DirectoryField(label: 'Trading name', key: 'trading'),
-        DirectoryField(label: 'Physical address', key: 'address'),
-        DirectoryField(label: 'Contact person', key: 'contact'),
-        DirectoryField(
-            label: 'Telephone',
-            key: 'telephone',
-            keyboardType: TextInputType.phone),
-        DirectoryField(
-            label: 'Email',
-            key: 'email',
-            keyboardType: TextInputType.emailAddress),
-      ],
-    );
-    if (values == null || !mounted) return;
-
-    try {
-      final client = await widget.repository.addClient(
-        name: values['name'] ?? typedName,
-        tradingName: values['trading'] ?? '',
-        physicalAddress: values['address'] ?? '',
-        contactPerson: values['contact'] ?? '',
-        telephone: values['telephone'] ?? '',
-        email: values['email'] ?? '',
-      );
-      if (!mounted) return;
-      setState(() => _clients = [..._clients, client]);
-      _onClientSelected(client);
-      _toast('Client added.');
-    } on Object catch (e) {
-      if (mounted) _toast('Could not add the client. $e');
-    }
-  }
-
   /// Fills the facility fields from the picked premises. Editable afterwards,
   /// for the same reason as clients: details change in the field.
   void _onFacilitySelected(EggFacility facility) {
@@ -473,48 +606,72 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       _facilityType = _facilityTypes
           .where((t) => t.id == facility.facilityTypeId)
           .firstOrNull;
+      // The original searches its client table from this one box — the
+      // control is literally called ClientAutoSuggestBox while carrying the
+      // "Inspection Facility Name" label. The premises IS the client, so the
+      // record's client columns follow the selection rather than being
+      // captured a second time.
+      _clientName.text = facility.name;
+      _clientAddress.text = facility.physicalAddress;
+      _contactNumber.text = facility.telephone;
     });
   }
 
-  /// Fills the client fields from the picked record. They stay editable —
-  /// details change in the field, and an inspector must be able to correct
-  /// them without abandoning the selection.
-  void _onClientSelected(EggClient client) {
-    setState(() {
-      _client = client;
-      _clientName.text = client.name;
-      _clientAddress.text = client.physicalAddress;
-      _contactPerson.text = client.contactPerson;
-      _contactNumber.text = client.telephone;
-      _clientEmail.text = client.email;
-    });
-  }
-
-  void _clearClient() {
-    setState(() {
-      _client = null;
-      _clientName.clear();
-      _clientAddress.clear();
-      _contactPerson.clear();
-      _contactNumber.clear();
-      _clientEmail.clear();
-    });
-  }
-
-  /// Recomputes size, Haugh unit and grade for one egg, then the consignment.
-  void _recalculate(_Sample s) {
+  /// Recomputes everything derived on one egg: its size band, Haugh unit,
+  /// the deviations the original's grading engine ticks by itself — the
+  /// weight checks against the declared size and the Haugh checks against
+  /// the declared grade — and finally its grade. Automatic ticks are
+  /// stripped and re-derived each time, so a corrected reading clears the
+  /// deviation it no longer justifies, exactly as the original clears them.
+  void _applyDerived(_Sample s) {
     s.size = EggRules.sizeFor(s.massG, _bands);
-    s.haugh = _haughNotRequired
+    final haughRaw = _haughNotRequired
         ? null
         : EggRules.haughUnit(
             albumenHeightMm: s.albumenHeightMm,
             massG: s.massG,
           );
+    // The original stores Math.Round of the formula's result
+    // (entryHaughMeterValue_Completed) and every later comparison reads the
+    // rounded figure — the rounding is part of the rules, not the display.
+    s.haugh = haughRaw?.roundToDouble();
+    s.deviationIds
+      ..removeAll(EggRules.autoManagedDeviationIds(_deviationRefs))
+      ..addAll(EggRules.autoWeightDeviationIds(
+        massG: s.massG,
+        declaredSize: _declaredSize,
+        declaredGrade: _declaredGrade,
+        deviations: _deviationRefs,
+      ))
+      ..addAll(EggRules.autoAlbumenDeviationIds(
+        haughUnit: s.haugh,
+        declaredGrade: _declaredGrade,
+        pasteurised: _pasteurised,
+        deviations: _deviationRefs,
+      ));
     s.grade = EggRules.gradeForEgg(
       tickedDeviationIds: s.deviationIds,
       deviations: _deviationRefs,
       grades: _gradeRefs,
     );
+  }
+
+  /// Recomputes size, Haugh unit and grade for one egg, then the consignment.
+  void _recalculate(_Sample s) {
+    _applyDerived(s);
+    _consignmentGrade =
+        EggRules.consignmentGrade([for (final x in _samples) x.grade]);
+    _updateHaughBaseline();
+    setState(() {});
+  }
+
+  /// Re-derives every egg — the declared size, grade and pasteurised switch
+  /// feed the automatic deviations, so changing one re-evaluates the whole
+  /// sample the way the original's engine re-runs over every egg.
+  void _recalculateAll() {
+    for (final s in _samples) {
+      _applyDerived(s);
+    }
     _consignmentGrade =
         EggRules.consignmentGrade([for (final x in _samples) x.grade]);
     _updateHaughBaseline();
@@ -524,17 +681,12 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   /// Fixes the baseline the moment the mean drops below the threshold, and
   /// clears it if further readings bring the mean back up.
   void _updateHaughBaseline() {
-    final mean =
-        EggRules.meanHaughUnit([for (final x in _samples) x.haugh]);
+    final mean = EggRules.meanHaughUnit([for (final x in _samples) x.haugh]);
     if (mean == null || mean >= EggRules.haughAdditionalSampleThreshold) {
       _haughBaseline = null;
       return;
     }
     _haughBaseline ??= _samples.length;
-  }
-
-  void _addEgg() {
-    setState(() => _samples.add(_Sample(_samples.length + 1)));
   }
 
   /// Which photo row is mid-capture, so its button can show progress rather
@@ -545,6 +697,31 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     // One at a time. Two cameras in flight would race on the file name and
     // leave a photo attributed to the wrong row.
     if (_capturingKind != null) return;
+
+    // The original says this once per inspection, before the first egg
+    // quality deviation photograph.
+    if (kind == 'egg' && !_qualityPhotoNoticeShown) {
+      _qualityPhotoNoticeShown = true;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Egg Quality Deviation Photos'),
+          content: const Text(
+            'Please note that at least (TWO) 2 photos are required. The 1st '
+            'TWO set of photos will be included in the REJECTION. Additional '
+            'photos will be stored for future reference.',
+            style: TextStyle(height: 1.4),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Ok'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+    }
 
     // Captured inside the app rather than by handing off to the phone's camera
     // app. The handover backgrounded this app while an inspection was open,
@@ -659,64 +836,67 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     if (_facilityName.text.trim().isEmpty) {
       return 'Inspection facility name is required.';
     }
-    if (_facilityType == null) return 'Facility type must be selected.';
-    if (_reason == null) return 'Reason for inspection must be selected.';
-
-    // --- Client. Message: "Please type in the client / Physical Address /
-    // Telephone to proceed."
-    if (_clientName.text.trim().isEmpty) {
-      return 'Please type in the client to proceed.';
+    // Inside a visit these are the door's answers, not this form's, and the
+    // form no longer shows them — so it must not refuse to save on a field
+    // the inspector cannot see. Where the door's answer is not one the egg
+    // rules offer, the record simply carries none.
+    if (widget.visit == null) {
+      if (_facilityType == null) return 'Facility type must be selected.';
+      if (_reason == null) return 'Reason for inspection must be selected.';
     }
-    if (_clientAddress.text.trim().isEmpty) {
-      return 'Please type in the physical address to proceed.';
-    }
-    if (_contactNumber.text.trim().isEmpty) {
-      return 'Please type in the telephone to proceed.';
-    }
-    final email = EggValidation.email(_clientEmail.text);
-    if (email != null) return email;
 
     // --- Product
     if (_producer.text.trim().isEmpty) {
       return 'Egg producer / supplier is required.';
     }
-    if (_batch.text.trim().isEmpty) return 'Batch number is required.';
+    final batch = BatchNumber.missing(_batch.text);
+    if (batch != null) return batch;
+    if (!_batchEntryValid(_batch.text)) {
+      return 'The batch number must be a number, or N/A — nothing else '
+          'counts as a batch.';
+    }
     if (_traySize == null) return 'Tray packaging size must be selected.';
     // Without these there is no tolerance band to judge deviations against,
     // so whether a direction must be served cannot be answered.
     if (_declaredSize == null) {
       return 'The size the consignment is sold as must be selected.';
     }
-    if (_declaredGrade == null) {
-      return 'The grade the consignment is sold as must be selected.';
-    }
 
     final bestBefore = EggValidation.bestBefore(_bestBefore);
     if (bestBefore != null) return bestBefore;
 
     // --- Samples
-    if (_samples.isEmpty) return 'Capture at least one egg before saving.';
-    if (_samples.length > EggValidation.maxSamples) {
-      return 'Maximum number of samples reached '
-          '(${EggValidation.maxSamples}).';
-    }
-
-    for (final s in _samples) {
-      if (s.massG == null || s.massG! <= 0) {
-        return 'Egg #${s.number} has no weight reading.';
+    //
+    // Skipped entirely when the inspector has recorded that no weighing was
+    // possible at this retailer: the sizing and grading block is off the
+    // screen, so demanding an egg from it asks for something the form no
+    // longer offers, and the inspection could not be saved at all.
+    if (EggValidation.samplesRequired(
+        weighingNotRequired: _weighingNotRequired)) {
+      if (_samples.isEmpty) return 'Capture at least one egg before saving.';
+      if (_samples.length > EggValidation.maxSamples) {
+        return 'Maximum number of samples reached '
+            '(${EggValidation.maxSamples}).';
       }
-      // A weight above the sanity ceiling is flagged under the field but does
-      // not stop the inspection being saved. It guards against a mis-keyed
-      // scale reading rather than enforcing a regulation, and an inspector
-      // holding a genuinely heavy egg must still be able to record it.
-      final albumen = EggValidation.albumenHeight(s.albumenHeightMm);
-      if (albumen != null) return 'Egg #${s.number}: $albumen';
-    }
 
-    if (_outstandingSamples > 0) {
-      return 'Mean Haugh value is below '
-          '${EggRules.haughAdditionalSampleThreshold.toStringAsFixed(0)} HU — '
-          '$_outstandingSamples further sample(s) required.';
+      for (final s in _samples) {
+        if (s.massG == null || s.massG! <= 0) {
+          return 'Egg #${s.number} has no weight reading.';
+        }
+        // A weight above the sanity ceiling is flagged under the field but
+        // does not stop the inspection being saved. It guards against a
+        // mis-keyed scale reading rather than enforcing a regulation, and an
+        // inspector holding a genuinely heavy egg must still be able to
+        // record it.
+        final albumen = EggValidation.albumenHeight(s.albumenHeightMm);
+        if (albumen != null) return 'Egg #${s.number}: $albumen';
+      }
+
+      if (_outstandingSamples > 0) {
+        return 'Mean Haugh value is below '
+            '${EggRules.haughAdditionalSampleThreshold.toStringAsFixed(0)} '
+            'HU — $_outstandingSamples further sample(s) required.';
+      }
     }
 
     // --- Evidence. Message: "No photo of the label has been taken. Please
@@ -725,28 +905,37 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       return 'No photo of the label has been taken. Please address.';
     }
 
-    if (_override && _overrideReason.text.trim().isEmpty) {
-      return 'A reason is required when overriding the grade.';
-    }
+    // An address is taken as typed. A malformed one is a typo, not a
+    // reason to refuse an inspection: the server keeps it either way, and
+    // blocking sign-off here stranded finished inspections on the handset
+    // over an address the inspector often did not have to begin with.
     return null;
   }
 
   /// Message: "Please confirm that you want to save the entire inspection with
-  /// the info captured as is?"
+  /// the info captured as is?" — and inside a grouped inspection, that
+  /// submitting this record does not end the group: the flow carries on to
+  /// the next planned inspection.
   Future<bool> _confirmSubmit() async {
+    final inVisit = widget.visit != null;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: Text(
-          'Submit inspection',
+          inVisit ? 'Finish this egg inspection' : 'Submit inspection',
           style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.ink),
         ),
         content: Text(
-          'Please confirm that you want to save the entire inspection with '
-          'the information captured as is.',
+          inVisit
+              ? 'This egg inspection is saved with the information captured '
+                  'as is — nothing is submitted yet.\n\n'
+                  'You will return to the grouped inspection to carry on '
+                  'with the next one in the plan. Everything is submitted '
+                  'together when you sign off at the end.'
+              : 'Please confirm that you want to save the entire inspection '
+                  'with the information captured as is.',
           style: TextStyle(color: AppColors.inkSoft, height: 1.4),
         ),
         actions: [
@@ -756,7 +945,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Confirm'),
+            child: Text(inVisit ? 'Save & Continue' : 'Confirm'),
           ),
         ],
       ),
@@ -786,10 +975,33 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   }
 
   /// The inspection row, at whatever stage it has reached.
+  /// Copies the visit's shared facility details into this form's fields.
+  /// Only empty fields take the value, so a resumed draft keeps what was
+  /// typed on it.
+  void _applyVisitPrefill() {
+    final visit = widget.visit;
+    if (visit == null) return;
+    void fill(TextEditingController field, String value) {
+      if (field.text.trim().isEmpty && value.isNotEmpty) field.text = value;
+    }
+
+    fill(_facilityName, visit.facilityName);
+    fill(_facilityAddress, visit.facilityAddress);
+    fill(_facilityPhone, visit.facilityPhone);
+    fill(_producer, visit.producer);
+    fill(_clientName, visit.facilityName);
+    fill(_contactPerson, visit.contactPerson);
+    fill(_clientEmail, visit.contactEmail);
+    fill(_representative, visit.representative);
+    fill(_managerName, visit.managerName);
+    fill(_managerEmail, visit.managerEmail);
+  }
+
   EggInspectionsCompanion _companion({required String status}) {
     final now = DateTime.now();
     return EggInspectionsCompanion.insert(
       clientUuid: _uuid,
+      visitUuid: Value(widget.visit?.uuid ?? ''),
       inspectedAt: _startedAt,
       updatedAt: now,
       status: Value(status),
@@ -804,8 +1016,13 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       clientContactNumber: Value(_contactNumber.text.trim()),
       clientEmail: Value(_clientEmail.text.trim()),
       representativeName: Value(_representative.text.trim()),
+      managerName: Value(_managerName.text.trim()),
+      managerEmail: Value(_managerEmail.text.trim()),
       producerSupplier: Value(_producer.text.trim()),
-      batchNumber: Value(_batch.text.trim()),
+      seizureDecision: Value(_seizureDecision?.stored ?? ''),
+      eggsExpressionAbsent: Value(_eggsExpressionAbsent),
+      bestBeforeAbsent: Value(_bestBeforeAbsent),
+      batchNumber: Value(_batchForRecord),
       bestBefore: Value(_bestBefore),
       traySizeId: Value(_traySize?.id),
       declaredSizeId: Value(_declaredSize?.id),
@@ -813,14 +1030,20 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       sampleSize: Value(_samples.length),
       pasteurisedPresent: Value(_pasteurised),
       haughNotRequired: Value(_haughNotRequired),
-      determinedGradeId:
-          Value(_override ? _overrideGrade?.id : _consignmentGrade?.id),
-      gradeOverridden: Value(_override),
-      overrideReason: Value(_overrideReason.text.trim()),
-      generalComments: Value(_generalComments.text.trim()),
+      weighingNotRequired: Value(_weighingNotRequired),
+      outerLabellingAvailable: Value(_outerAvailable),
+      labelChecklistComplete: Value(status != 'draft'),
+      determinedGradeId: Value(_consignmentGrade?.id),
+      // The grade stands as the inspection determined it; there is no
+      // override on the form any more, so nothing can have set these.
+      gradeOverridden: const Value(false),
+      overrideReason: const Value(''),
+      generalComments: const Value(''),
       nonConformanceComments: Value(_nonConformance.text.trim()),
       failedRequirementIds: Value(_failedRequirements.join(',')),
       restrictedParticularIds: Value(_selectedParticulars.join(',')),
+      restrictedParticularsText:
+          Value(TypedParticulars.pack(_typedParticulars)),
       latitude: Value(_position?.latitude),
       longitude: Value(_position?.longitude),
     );
@@ -846,16 +1069,27 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       _toast(issue);
       return;
     }
+    if (_photos.isEmpty) {
+      _toast('Capture at least one inspection photo before saving.');
+      return;
+    }
     if (!await _confirmSubmit()) return;
     if (!mounted) return;
 
     setState(() => _saving = true);
 
+    // Inside a grouped inspection nothing submits per record: the member is
+    // saved as `ready` and the one sign-off at the end of the group flips
+    // everything to `completed` and lets it upload.
+    final inVisit = widget.visit != null;
     try {
+      // A standalone record has already been signed at this point. GPS is
+      // stored silently now, not displayed while the form is being captured.
+      if (!inVisit) await _captureLocation(silent: true);
       // Photographs were written as they were taken, so only the record and
       // its eggs need saving here.
       await widget.repository.saveInspection(
-        _companion(status: 'completed'),
+        _companion(status: inVisit ? 'ready' : 'completed'),
         _sampleCompanions(),
       );
     } on Object catch (e) {
@@ -868,24 +1102,30 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     // reported as "will send later" rather than as an error.
     var sent = false;
     final sync = widget.syncService;
-    if (sync != null) {
+    if (!inVisit && sync != null) {
       final saved = await widget.repository.inspectionByUuid(_uuid);
       if (saved != null) sent = await sync.sendNow(saved);
     }
 
     if (!mounted) return;
     setState(() => _saving = false);
-    await showSavedDialog(
-      context,
-      noun: 'inspection',
-      state: _savedState(sent, sync),
-    );
-    if (!mounted) return;
+    if (!inVisit) {
+      await showSavedDialog(
+        context,
+        noun: 'inspection',
+        state: _savedState(sent, sync),
+      );
+      if (!mounted) return;
+    }
 
     // A direction is a consequence of the findings, not a separate errand.
     // The original raises it as part of saving the inspection, and leaving it
     // to the inspector to remember is how a non-conforming consignment leaves
     // the premises with no notice served.
+    // A sample that fails the size or grade standard is one Annexure D
+    // seizes on, and that is only known once the weighing is complete.
+    await _askAboutSeizureIfNeeded();
+    if (!mounted) return;
     final required = _directionRequired();
     if (required.any) {
       await _raiseDirection(required);
@@ -906,7 +1146,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       }
     }
 
-    return EggRules.directionRequired(
+    final required = EggRules.directionRequired(
       countsByDeviationId: counts,
       // Validation blocks saving without these, so the fallback is only
       // reached on a record that could not have been saved.
@@ -916,24 +1156,58 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       failedRequirementIds: _failedRequirements,
       checklists: _checklists,
     );
+    // A pack with no grade designation fails Reg. 10 whatever else the
+    // checklist says, and the rejection covers it under marking.
+    if (_noGradeIndicated && !required.labelling) {
+      return DirectionRequirement(
+        quality: required.quality,
+        labelling: true,
+      );
+    }
+    return required;
   }
 
   /// Opens the direction, pre-filled, with the compulsory parts already set.
   Future<void> _raiseDirection(DirectionRequirement required) async {
+    // The correction dates are the annexure's, counted from the inspection.
+    final labelDays = EggRules.labellingRectificationDays(
+      failed: _failedRows,
+      eggsExpressionAbsent: _eggsExpressionAbsent,
+      bestBeforeAbsent: _bestBeforeAbsent,
+      designationOmitted:
+          _noSizeIndicated || _noGradeIndicated || _noTrayIndicated,
+    );
+    final labelCorrectBy = required.labelling
+        ? EggRules.correctBy(inspectedAt: _startedAt, days: labelDays ?? 30)
+        : null;
+    final qualityCorrectBy = required.quality
+        ? EggRules.correctBy(
+            inspectedAt: _startedAt, days: EggRules.qualityRectificationDays)
+        : null;
+    final periods = [
+      if (required.labelling)
+        'labelling: ${EggRules.periodLabel(labelDays ?? 30).toLowerCase()}',
+      if (required.quality)
+        'quality: ${EggRules.periodLabel(EggRules.qualityRectificationDays).toLowerCase()}',
+    ].join('; ');
     final proceed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
+        // Red, like everything else about a rejection: this is the moment
+        // the inspection turns into one.
         icon: const Icon(Icons.gavel, size: 32, color: AppColors.brandRed),
-        title: const Text('A direction must be served'),
+        title: const Text('A rejection must be issued'),
         content: Text(
           '${_directionReason(required)}\n\n'
-          'The direction is filled in from this inspection. You set the '
-          'correction dates and the remarks.',
+          'The rejection is filled in from this inspection. The correction '
+          'dates follow FSA-SOP-APS-001 Annexure D ($periods). You write '
+          'the remarks.',
           style: const TextStyle(height: 1.4),
         ),
         actions: [
           FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
             onPressed: () => Navigator.of(dialogContext).pop(true),
             child: const Text('Continue'),
           ),
@@ -952,15 +1226,27 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           requirement: required,
           clientName: _clientName.text.trim(),
           producerSupplier: _producer.text.trim(),
+          labelCorrectBy: labelCorrectBy,
+          qualityCorrectBy: qualityCorrectBy,
+          labelPeriod:
+              required.labelling ? EggRules.periodLabel(labelDays ?? 30) : null,
+          qualityPeriod: required.quality
+              ? EggRules.periodLabel(EggRules.qualityRectificationDays)
+              : null,
         ),
       ),
     );
   }
 
   String _directionReason(DirectionRequirement required) {
+    if (_noGradeIndicated && !required.quality) {
+      return 'The pack declares no grade. A grade designation is required, '
+          'so the consignment is rejected on marking and there is nothing '
+          'to weigh it against.';
+    }
     if (required.quality && required.labelling) {
       return 'This consignment fails on both quality and labelling. One '
-          'direction covers both, each with its own correction date.';
+          'rejection covers both, each with its own correction date.';
     }
     if (required.quality) {
       return 'A deviation exceeds what is allowed for a consignment sold as '
@@ -969,21 +1255,12 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     return 'The marking and packing requirements were not met.';
   }
 
-  void _goto(int step) {
-    // Cheap insurance: every step change leaves a recoverable draft behind.
-    unawaited(_saveDraft());
-    setState(() => _step = step);
-    _page.animateToPage(
-      step,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+          body:
+              ContentWidth(child: Center(child: CircularProgressIndicator())));
     }
     return Scaffold(
       backgroundColor: AppColors.surface,
@@ -992,310 +1269,541 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
         foregroundColor: AppColors.ink,
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _titles[_step],
-              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
-            ),
-            Text(
-              'Step ${_step + 1} of ${_titles.length}',
-              style: TextStyle(fontSize: 11.5, color: AppColors.muted),
-            ),
-          ],
+        title: const Text(
+          'Egg Inspection Details',
+          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
         ),
       ),
-      body: Column(
-        children: [
-          LinearProgressIndicator(
-            value: (_step + 1) / _titles.length,
-            backgroundColor: AppColors.surfaceAlt,
-            color: AppColors.brandRed,
-            minHeight: 3,
-          ),
-          Expanded(
-            child: PageView(
-              controller: _page,
-              physics: const NeverScrollableScrollPhysics(),
-              children: [
-                _facilityStep(),
-                _productStep(),
-                _samplesStep(),
-                _requirementsStep(),
-                _photosStep(),
-                _resultStep(),
-              ],
+      // One continuous form in the original page's order: inspection
+      // details, the labelling checklists, client capture, the sizing and
+      // grade checklist with per-egg particulars, then signatures and the
+      // submit button at the bottom.
+      body: ContentWidth(
+          child: _pad([
+        const RequiredLegend(),
+        ..._inspectionDetailFields(),
+        ..._declarationFields(),
+        // At the FSA's request (2026-08-21) the label photographs sit above
+        // the checklists and take up to three — the original kept a single
+        // shot at the foot of the block.
+        _photoRow('label', 'Add Label Photo *',
+            minimum: _minPhotos, maximum: 3),
+        _sectionHeader('Marking/Labelling - Packaging'),
+        if (!_checklistUnlocked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              'Select the Tray Packaging Size above to open the '
+              'marking/labelling checklists — the original unlocks them the '
+              'same way.',
+              style: TextStyle(color: AppColors.muted, height: 1.35),
             ),
           ),
-          _navBar(),
+        IgnorePointer(
+          ignoring: !_checklistUnlocked,
+          child: Opacity(
+            opacity: _checklistUnlocked ? 1 : 0.45,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _labellingFields(),
+            ),
+          ),
+        ),
+        // At a retailer the eggs cannot be broken open, so the original
+        // offers these two switches there and nowhere else.
+        if (_isRetailer) ..._retailerSwitches(),
+        // The sizing and grading block is not on the page until the labelling
+        // checklist is complete and any restricted particulars are listed.
+        if (_samplingVisible) ...[
+          _sectionHeader('Sizing and Grade Checklist'),
+          ..._sizingChecklistFields(),
+          _sectionHeader('Egg Particulars'),
+          // btnPhotoEggNumbering is the sampling block's own photograph. The
+          // original kept it at the foot of the block (Grid.Row 41 of
+          // EggInspectionBlock); at the FSA's request (2026-08-28) it comes
+          // first — the eggs are numbered and photographed, then weighed.
+          // The two direction photographs are not here — they belong to the
+          // Direction Form.
+          _photoRow('numbering', 'Photo - Egg Numbering',
+              minimum: _minPhotos, maximum: 3),
+          ..._samplingFields(),
         ],
-      ),
+        // The direction form appears only once the sample set is signed off
+        // and the findings actually call for a direction — quality, labelling
+        // or both.
+        if (_qualitySetReadyToSave && _directionBlockRequired) ...[
+          _sectionHeader('Rejection Form'),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              'When the findings demand a rejection its form opens on '
+              'submission, pre-filled from this inspection. Remarks, the '
+              'correct-by dates and the quantity removed are captured there — '
+              'the same particulars the original saves with the inspection.',
+              style: TextStyle(
+                  fontSize: 12.5, color: AppColors.muted, height: 1.35),
+            ),
+          ),
+          // Grid.Row 10 of EggQualityDirectiveBlock, right after "Quantity
+          // of Products Removed". The original enables each button only for
+          // the kind of direction the findings raise — a labelling failure
+          // asks for label photographs, a quality failure for egg ones — so
+          // each row only appears when its direction is owed.
+          //
+          // These are not the same as "Add Label Photo" up in the labelling
+          // checklist: that one evidences the label as found, these evidence
+          // the direction being served. The original keeps two separate
+          // lists, EggTrayLabellingPhotos and EggLabellingDirectivePhotoLists.
+          if (_directionRequired().quality)
+            _photoRow('egg', 'Take Egg Photos',
+                minimum: _minQualityDeviationPhotos, maximum: 3),
+          // The direction cannot be served without the photographs that
+          // evidence it, so the record cannot be submitted without them.
+          if (!_directionPhotosComplete)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(13),
+              decoration: BoxDecoration(
+                color: AppColors.noticeBackground,
+                border: Border.all(color: AppColors.noticeBorder),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                'The rejection still needs: $_directionPhotosOutstanding.',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.35,
+                  color: AppColors.noticeForeground,
+                ),
+              ),
+            ),
+        ],
+        // Signatures Control: on the page only when the original's
+        // IsQualitySetReadyToSave is true.
+        if (_qualitySetReadyToSave) ...[
+          ..._resultFields(),
+        ] else
+          _notYetSignable(),
+        const SizedBox(height: 14),
+        // The original's Clear Form, reachable from the foot of the page:
+        // reset this inspection to a clean slate rather than starting
+        // another record.
+        SizedBox(
+          height: 48,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.brandPrimary,
+              side: const BorderSide(color: AppColors.brandPrimary),
+            ),
+            onPressed: _saving ? null : _clearEntireForm,
+            icon: const Icon(Icons.restart_alt, size: 20),
+            label: const Text('CLEAR FORM'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 52,
+          child: ElevatedButton(
+            // The original enables btnSaveRecords only once the sample set
+            // is ready, the GPS reading is stored, both signatures are on the
+            // record and any direction it raises carries its photographs.
+            onPressed: (_saving ||
+                    !_qualitySetReadyToSave ||
+                    !_directionPhotosComplete)
+                ? null
+                : _save,
+            child: _saving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: Colors.white,
+                    ),
+                  )
+                : Text(widget.visit != null
+                    ? 'DONE — NEXT INSPECTION'
+                    : 'SUBMIT INSPECTION'),
+          ),
+        ),
+      ])),
     );
   }
 
-  Widget _navBar() => Container(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          border: Border(top: BorderSide(color: AppColors.border)),
+  /// Whether the findings call for a direction at all — the original's
+  /// `IsQualityDirectionRequired || IsLabelDirectionRequired`.
+  bool get _directionBlockRequired {
+    final required = _directionRequired();
+    return required.quality || required.labelling;
+  }
+
+  int _photoCount(String kind) => _photos.where((p) => p.kind == kind).length;
+
+  /// `CheckAllConditionForSaveQualityDirection` and
+  /// `CheckAllConditionForSaveLabelDirection`: a direction cannot be served
+  /// without the photographs that evidence it. Where no direction of that
+  /// kind is required the condition is met by default, exactly as the
+  /// original short-circuits it.
+  bool get _directionPhotosComplete {
+    final required = _directionRequired();
+    final quality =
+        !required.quality || _photoCount('egg') >= _minQualityDeviationPhotos;
+    // The label itself is captured once in the mandatory Label Photo row at
+    // the top of this form. Do not ask for the same evidence again in the
+    // direction block.
+    return quality;
+  }
+
+  /// Which photographs the direction is still short of, named as the original
+  /// names the buttons that take them.
+  String get _directionPhotosOutstanding {
+    final required = _directionRequired();
+    return [
+      if (required.quality && _photoCount('egg') < _minQualityDeviationPhotos)
+        'Take Egg Photos (${_photoCount('egg')}/$_minQualityDeviationPhotos)',
+    ].join(', ');
+  }
+
+  /// The two switches the original shows at a retailer and nowhere else.
+  ///
+  /// Eggs cannot be broken open on a retailer's premises, so the inspector
+  /// may record that no Haugh readings are possible, or that no weighing
+  /// operation was done at all. Both are confirmed before they take effect
+  /// and neither can be switched back, exactly as the original has it.
+  List<Widget> _retailerSwitches() => [
+        YesNoQuestion(
+          label: 'No Haugh readings required',
+          bold: true,
+          helper: 'Eggs cannot be broken open at this retailer.',
+          value: _haughNotRequired,
+          // Once answered Yes it cannot be taken back, exactly as the
+          // original has it; the slide is drawn but will not move.
+          onChanged: _haughNotRequired
+              ? null
+              : (v) {
+                  if (v) setState(() => _haughNotRequired = true);
+                },
         ),
-        child: SafeArea(
-          top: false,
-          child: Row(
+        YesNoQuestion(
+          label: 'No egg weighing inspection at this retailer',
+          bold: true,
+          helper: 'The sizing and grading block comes off the record and the '
+              'inspection goes straight to signature. Answer No again to '
+              'continue weighing.',
+          value: _weighingNotRequired,
+          onChanged: (v) {
+            if (v) {
+              unawaited(_confirmNoWeighing());
+            } else {
+              setState(() => _weighingNotRequired = false);
+              unawaited(_saveDraft());
+            }
+          },
+        ),
+      ];
+
+  /// The original's confirmation before it drops the weighing operation.
+  Future<void> _confirmNoWeighing() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Confirm No Weighing'),
+        content: const Text(
+          'Please confirm that you are not doing an Egg Weighing operation '
+          'at this retailer.',
+          style: TextStyle(height: 1.4),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_step > 0)
-                Expanded(
-                  child: SizedBox(
-                    height: 52,
-                    child: OutlinedButton(
-                      onPressed: _saving ? null : () => _goto(_step - 1),
-                      child: const Text('Back'),
-                    ),
-                  ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                 ),
-              if (_step > 0) const SizedBox(width: 12),
-              Expanded(
-                flex: 2,
-                child: SizedBox(
-                  height: 52,
-                  child: ElevatedButton(
-                    onPressed: _saving
-                        ? null
-                        : () async {
-                            if (_step == _titles.length - 1) {
-                              await _save();
-                            } else {
-                              _goto(_step + 1);
-                            }
-                          },
-                    child: _saving
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.4,
-                              color: Colors.white,
-                            ),
-                          )
-                        : Text(_step == _titles.length - 1
-                            ? 'SAVE INSPECTION'
-                            : 'NEXT'),
-                  ),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text(
+                  'Confirm-No Inspection',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, height: 1.25),
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text(
+                  'Return-Inspection Continues',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, height: 1.25),
                 ),
               ),
             ],
           ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _weighingNotRequired = true);
+    unawaited(_saveDraft());
+  }
+
+  /// Stands in for the signature block while the sample set is not finished.
+  ///
+  /// The original simply leaves the page short, which reads as a fault to
+  /// anyone who has not been told the rule. The block is just as absent here;
+  /// this says why.
+  Widget _notYetSignable() => Container(
+        margin: const EdgeInsets.only(top: 18),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.noticeBackground,
+          border: Border.all(color: AppColors.noticeBorder),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          _samplingVisible
+              ? 'Signatures and the rejection form open once the sample set '
+                  'is complete. Still outstanding: $_readinessOutstanding.'
+              : 'Signatures open once the labelling checklist is confirmed '
+                  'complete and the sample set has been captured.',
+          style: TextStyle(
+            fontSize: 12.5,
+            height: 1.35,
+            color: AppColors.noticeForeground,
+          ),
+        ),
+      );
+
+  Widget _sectionHeader(String title) => Padding(
+        padding: const EdgeInsets.only(top: 18, bottom: 8),
+        child: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
         ),
       );
 
   Widget _pad(List<Widget> children) => ListView(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+        controller: _scroll,
+        // The system navigation bar draws over the bottom of the page, and
+        // the submit button is the last thing on it — without this the bar
+        // sat on top of the button and swallowed the tap, dropping the
+        // inspector out of the app instead of saving.
+        padding: EdgeInsets.fromLTRB(
+          16,
+          18,
+          16,
+          24 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: children,
       );
 
-  Widget _facilityStep() => _pad([
-        const RequiredLegend(),
-        // Pick a known premises rather than retyping four fields per visit,
-        // and so the same facility is spelled the same way on every record.
-        // One field, not two: type the premises and pick it from the list, or
-        // type a name that is not on the list and carry on.
-        SearchPickerField<EggFacility>(
-          label: 'Inspection facility name',
-          controller: _facilityName,
-          options: _facilities,
-          optionLabel: (f) => f.name,
-          optionSubtitle: (f) => [
-            _facilityTypes
-                    .where((t) => t.id == f.facilityTypeId)
-                    .map((t) => t.name)
-                    .firstOrNull ??
-                '',
-            f.physicalAddress,
-          ].where((part) => part.trim().isNotEmpty).join(' · '),
-          onSelected: _onFacilitySelected,
-          addNewLabel: 'Add as new premises',
-          onAddNew: _addFacility,
-          isRequired: true,
-          emptyHint: 'No facilities on this device yet. Sync from the Eggs '
-              'menu to download them.',
-        ),
-        _Drop<EggFacilityType>(
-          label: 'Facility type',
-          value: _facilityType,
-          items: _facilityTypes,
-          itemLabel: (f) => f.name,
-          onChanged: (f) => setState(() => _facilityType = f),
-          isRequired: true,
-        ),
-        _Text(label: 'Facility address', controller: _facilityAddress),
-        _Text(
-          label: 'Facility telephone',
-          controller: _facilityPhone,
-          keyboardType: TextInputType.phone,
-        ),
-        _Drop<EggInspectionReason>(
-          label: 'Reason for inspection',
-          value: _reason,
-          items: _reasons,
-          itemLabel: (r) => r.name,
-          onChanged: (r) => setState(() => _reason = r),
-          isRequired: true,
-        ),
-        Divider(height: 28, color: AppColors.border),
-        // Pick a known client rather than retyping four fields at every
-        // consignment.
-        SearchPickerField<EggClient>(
-          label: 'Client name',
-          controller: _clientName,
-          options: _clients,
-          optionLabel: (c) => c.name,
-          optionSubtitle: (c) => [
-            if (c.tradingName.trim().isNotEmpty) 't/a ${c.tradingName}',
-            if (!c.isRegistered) 'unregistered',
-            c.physicalAddress,
-          ].where((part) => part.trim().isNotEmpty).join(' · '),
-          onSelected: _onClientSelected,
-          addNewLabel: 'Add as a new client',
-          onAddNew: _addClient,
-          isRequired: true,
-          emptyHint: 'No clients on this device yet. Sync from the Eggs menu '
-              'to download them.',
-        ),
-        if (_client != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
-              children: [
-                Icon(Icons.info_outline,
-                    size: 15, color: AppColors.muted),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Details filled from the client list. Edit below if they '
-                    'have changed.',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.muted,
-                      height: 1.3,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: _clearClient,
-                  child: const Text('Clear'),
-                ),
-              ],
-            ),
+  List<Widget> _inspectionDetailFields() => [
+        // Why the inspector is here and what kind of premises it is were
+        // both answered at the door, and the visit carries them to every
+        // inspection under it. Asking again on the form is the same question
+        // a second time — and lets one record disagree with the visit it
+        // belongs to.
+        if (widget.visit == null) ...[
+          _Drop<EggInspectionReason>(
+            label: 'Reason for Inspection',
+            value: _reason,
+            items: _reasons,
+            itemLabel: (r) => r.name,
+            onChanged: (r) => setState(() => _reason = r),
+            isRequired: true,
           ),
-        _Text(
-          label: 'Client physical address',
-          controller: _clientAddress,
-          isRequired: true,
-        ),
-        _Text(label: 'Contact person', controller: _contactPerson),
-        _Text(
-          label: 'Telephone',
-          controller: _contactNumber,
-          keyboardType: TextInputType.phone,
-          isRequired: true,
-        ),
-        _Text(
-          label: 'Client email',
-          controller: _clientEmail,
-          keyboardType: TextInputType.emailAddress,
-          // Message: "The email address does not meet standard conventions."
-          errorText: EggValidation.email(_clientEmail.text),
-          onChanged: (_) => setState(() {}),
-        ),
-        _Text(
-          label: 'Representative / person in charge',
-          controller: _representative,
-        ),
-      ]);
+          _Drop<EggFacilityType>(
+            label: 'Inspection Facility Type',
+            value: _facilityType,
+            items: _facilityTypes,
+            itemLabel: (f) => f.name,
+            onChanged: (f) => setState(() => _facilityType = f),
+            isRequired: true,
+          ),
+        ],
+        // The facility is captured once, at the top of the grouped
+        // inspection, so it is not asked for again on every record inside
+        // it. On a standalone inspection it is still asked here.
+        if (widget.visit == null) ...[
+          // Pick a known premises rather than retyping four fields per visit,
+          // and so the same facility is spelled the same way on every record.
+          // One field, not two: type the premises and pick it from the list, or
+          // type a name that is not on the list and carry on.
+          SearchPickerField<EggFacility>(
+            label: 'Inspection Facility Name',
+            controller: _facilityName,
+            options: _facilities,
+            optionLabel: (f) => f.name,
+            optionSubtitle: (f) => [
+              _facilityTypes
+                      .where((t) => t.id == f.facilityTypeId)
+                      .map((t) => t.name)
+                      .firstOrNull ??
+                  '',
+              f.physicalAddress,
+            ].where((part) => part.trim().isNotEmpty).join(' · '),
+            onSelected: _onFacilitySelected,
+            addNewLabel: 'Add new',
+            onAddNew: _addFacility,
+            isRequired: true,
+            emptyHint: 'No facilities on this device yet. Sync from the Eggs '
+                'menu to download them.',
+          ),
+        ],
+      ];
 
-  Widget _productStep() => _pad([
-        const RequiredLegend(),
-        SearchPickerField<EggSupplier>(
-          label: 'Egg producer / supplier',
-          controller: _producer,
-          options: _suppliers,
-          optionLabel: (x) => x.name,
-          optionSubtitle: (x) => x.physicalAddress,
-          onSelected: (x) => setState(() => _producer.text = x.name),
-          isRequired: true,
-          addNewLabel: 'Add as a new supplier',
-          onAddNew: _addSupplier,
-          emptyHint: 'No suppliers on this device yet. Sync from the Eggs '
-              'menu, or add one here.',
-        ),
-        _Text(
-          label: 'Batch number',
-          controller: _batch,
-          isRequired: true,
-        ),
-        DateField(
-          label: 'Best before / best quality before',
-          value: _bestBefore,
-          onChanged: (d) => setState(() => _bestBefore = d),
-          // Neither past nor today, so the picker cannot offer a date the
-          // form would then reject.
-          firstDate: DateTime.now().add(const Duration(days: 1)),
-          lastDate: DateTime(DateTime.now().year + 3),
-          errorText: EggValidation.bestBefore(_bestBefore),
-          helperText: 'Printed on the pack. Leave empty if the consignment '
-              'carries none.',
-        ),
-        _Drop<EggTraySize>(
-          label: 'Tray packaging size',
-          value: _traySize,
-          items: _traySizes,
-          itemLabel: (t) => t.name,
-          onChanged: (t) => setState(() => _traySize = t),
-          isRequired: true,
-        ),
+  /// The producer named once on the visit: shown there, not asked again.
+  bool get _producerFromVisit =>
+      (widget.visit?.producer ?? '').trim().isNotEmpty;
+
+  List<Widget> _declarationFields() => [
+        if (!_producerFromVisit)
+          SearchPickerField<EggSupplier>(
+            label: 'Egg Producer/Supplier',
+            controller: _producer,
+            options: _suppliers,
+            optionLabel: (x) => x.name,
+            optionSubtitle: (x) => x.physicalAddress,
+            onSelected: (x) => setState(() => _producer.text = x.name),
+            isRequired: true,
+            addNewLabel: 'Add new',
+            onAddNew: _addSupplier,
+            emptyHint: 'No suppliers on this device yet. Sync from the Eggs '
+                'menu, or add one here.',
+          ),
         // What the consignment claims to be. The deviation tolerances are
         // keyed on these, so they decide how strictly the sample is judged.
         _Drop<EggSizeBand>(
-          label: 'Size declared on the pack',
+          label: 'Egg Size',
           value: _declaredSize,
-          items: _bands,
+          items: _sizeOptions,
           itemLabel: (b) => b.name,
-          onChanged: (b) => setState(() => _declaredSize = b),
+          // The original opens this picker only once a producer is chosen
+          // (or a new one named) — verified live: before that, tapping it
+          // does nothing.
+          enabled: _producerChosen,
+          disabledHint: 'Choose the Egg Producer/Supplier first',
+          onChanged: (b) {
+            // The original's size handler closes the tray picker and the
+            // checklist-complete switch again: a different declared size
+            // means the checklist below has to be reconsidered.
+            _declaredSize = b;
+            _declaredGrade = null;
+            _traySize = null;
+            // ResetForm() and ResetFormWithRepeatDetails() both put
+            // IsWeighingCheckingRequired back to true and hide the retailer
+            // switches. Without this the "no weighing" flag survived a change
+            // of declared size, and the page was left with the sampling block
+            // gone but the direction and signatures showing.
+            _weighingNotRequired = false;
+            _haughNotRequired = false;
+            _recalculateAll();
+            unawaited(_askAboutSeizureIfNeeded());
+          },
+          // The same note the grade picker carries, for the same reason: a
+          // pack that states no size is a marking deviation, not a question
+          // the inspector is expected to answer out of their own head.
+          helper: 'Choose "Not indicated" if the pack shows no size.',
           isRequired: true,
         ),
         _Drop<EggGradeRef>(
-          label: 'Grade declared on the pack',
+          label: 'Egg Grade',
           value: _declaredGrade,
-          items: _gradeRefs,
+          items: _gradeOptions,
           itemLabel: (g) => g.name,
-          onChanged: (g) => setState(() => _declaredGrade = g),
+          // The original opens the grade picker only once a size is chosen,
+          // and closes the tray picker again whenever the size changes.
+          enabled: _declaredSize != null,
+          disabledHint: 'Choose the Egg Size first',
+          onChanged: (g) {
+            _declaredGrade = g;
+            _traySize = null;
+            _weighingNotRequired = false;
+            _haughNotRequired = false;
+            _recalculateAll();
+            unawaited(_askAboutSeizureIfNeeded());
+          },
+          // Answered as "Not indicated" where the pack carries no grade,
+          // which is what the labelling checklist says on the same facts.
+          // Demanding Grade 1/2/3 contradicted it — an inspector had to
+          // invent a grade to get the inspection submitted.
+          helper: 'Choose "Not indicated" if the pack shows no grade.',
+        ),
+        _Drop<EggTraySize>(
+          label: 'Tray Packaging Size',
+          value: _traySize,
+          items: _trayOptions,
+          itemLabel: (t) => t.name,
+          helper: 'Choose "Not indicated" if the pack shows no size.',
+          // Follows the size, not the grade: the grade may be left blank,
+          // and gating on it held the checklists and the label photograph
+          // shut behind a field the pack does not carry.
+          enabled: _declaredSize != null,
+          disabledHint: 'Choose the Egg Size first',
+          onChanged: (t) {
+            setState(() => _traySize = t);
+            unawaited(_askAboutSeizureIfNeeded());
+          },
           isRequired: true,
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          activeThumbColor: AppColors.brandRed,
-          value: _pasteurised,
-          title: const Text('Pasteurised eggs present'),
-          onChanged: (v) => setState(() => _pasteurised = v),
+      ];
+
+  List<Widget> _sizingChecklistFields() => [
+        DateField(
+          label: 'Best Before/Best Quality Before Date',
+          value: _bestBefore,
+          onChanged: (d) => setState(() => _bestBefore = d),
+          // Past as well as future — the calendar's open default. The
+          // original refused any date before tomorrow, which made expired
+          // stock on a shelf impossible to record as what it is: the date on
+          // the pack. Whether it has passed is a finding, not an input error
+          // (Ethan, 2026-09-23).
+          errorText: EggValidation.bestBefore(_bestBefore),
+          // The original will not open the batch number until the date is
+          // picked (datepickerBBDate_DateSelected). A date already passed is
+          // accepted and said so: it is what the pack claims, and the fact
+          // that it has passed is the finding.
+          helperText: EggValidation.bestBeforeHasPassed(_bestBefore)
+              ? 'This date has already passed - the pack is past its best '
+                  'before. Record it as marked; the labelling checklist '
+                  'carries the finding.'
+              : 'Printed on the pack. The Batch Number opens once the '
+                  'date is set.',
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          activeThumbColor: AppColors.brandRed,
-          value: _haughNotRequired,
-          title: const Text('Haugh readings not required'),
-          subtitle: const Text(
-            'Hides albumen height and skips the Haugh calculation.',
-            style: TextStyle(fontSize: 12),
-          ),
+        _Text(
+          label: 'Batch Number',
+          isRequired: true,
+          controller: _batch,
+          focusNode: _batchFocus,
+          // Opened by the date above; completing it opens the weighing
+          // fields, exactly the original's entryBatchNumber_Completed →
+          // SetEggQualityInspectBlock(true) chain.
+          enabled: _bestBefore != null,
+          helper: _bestBefore == null
+              ? 'Pick the Best Before date above first.'
+              : _batchEntryValid(_batch.text)
+                  ? 'The number off the pack, or N/A if it has none.'
+                  : 'A number, or N/A — nothing else counts as a batch.',
+          onChanged: (_) => setState(() {}),
+        ),
+        YesNoQuestion(
+          label: 'Is Pasteurised Eggs Present',
+          value: _pasteurised,
           onChanged: (v) {
-            setState(() => _haughNotRequired = v);
-            for (final s in _samples) {
-              _recalculate(s);
-            }
+            _pasteurised = v;
+            _recalculateAll();
           },
         ),
-      ]);
+        // The original carries a "Is Haugh Readings NOT required" switch but
+        // ships it hidden (IsVisible=False) — readings are always required,
+        // and so they are here.
+      ];
 
   /// Mean Haugh below 70 HU demands six further samples.
   /// How many eggs the inspection held when the mean Haugh unit was first
@@ -1313,7 +1821,526 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
         baselineCount: _haughBaseline,
       );
 
-  Widget _samplesStep() => _pad([
+  // -------------------------------------------------------------------
+  // The original's Egg Particulars is a single-record capture: one egg on
+  // screen at a time, stepped with Next/Back/Goto, and every derived value
+  // — size, grade, Haugh unit, auto deviations, the results table —
+  // recomputed in the background as each reading lands
+  // (DoFullGradeCheckandUpdate). Nothing per-egg is ever displayed beyond
+  // the number, the two readings, the Haugh unit and the ticks.
+  // -------------------------------------------------------------------
+
+  /// `CurrentEggSampleNumber` — which egg the fields show, 1-based.
+  int _currentEggNumber = 1;
+
+  /// The one visible pair of entry fields, rebound on every navigation the
+  /// way `UpdateNewEggQualitySampleGroup` reloads or clears the original's.
+  final _weightEntry = TextEditingController();
+  final _haughEntry = TextEditingController();
+
+  /// Anchors the Egg # field so the bottom-of-form "Add egg n" button can
+  /// scroll the capture fields back into view after jumping to a new egg.
+  final _eggNumberFieldKey = GlobalKey();
+
+  /// The form's ListView builds lazily, so from the bottom of the page the
+  /// Egg # field is unmounted and its key has no context to scroll to.
+  /// This controller lets _addNextEgg step upward until it mounts.
+  final _scroll = ScrollController();
+
+  _Sample? get _currentEgg =>
+      _samples.where((x) => x.number == _currentEggNumber).firstOrNull;
+
+  int get _weighedCount => _samples.where((x) => (x.massG ?? 0) > 0).length;
+  int get _haughCount => _samples.where((x) => (x.haugh ?? 0) > 0).length;
+
+  static bool _batchEntryValid(String text) => BatchNumber.valid(text);
+
+  /// What goes on the record: the number as typed, or N/A.
+  String get _batchForRecord => BatchNumber.forRecord(_batch.text);
+
+  /// Leaving the box empty fills in N/A rather than filing a blank: a blank
+  /// says nothing about whether the pack carried a batch code or the
+  /// inspector never looked (FSA, 2026-09-08).
+  void _normaliseBatch() {
+    if (_batchFocus.hasFocus) return;
+    final tidied = BatchNumber.tidy(_batch.text);
+    if (tidied == _batch.text) return;
+    setState(() => _batch.text = tidied);
+  }
+
+  /// Whether the weighing fields are open: the original enables them from
+  /// entryBatchNumber_Completed, once the best-before date has opened the
+  /// batch number and it has been filled in — with a number, or N/A.
+  bool get _samplingUnlocked =>
+      _bestBefore != null && _batchEntryValid(_batch.text);
+
+  /// A record exists only once a valid weight lands on it — the original's
+  /// `IsPopulated`.
+  _Sample _ensureCurrentEgg() {
+    final existing = _currentEgg;
+    if (existing != null) return existing;
+    final fresh = _Sample(_currentEggNumber);
+    _samples.add(fresh);
+    return fresh;
+  }
+
+  /// The original's DisplayAlert: title, message, one "Ok".
+  Future<void> _legacyAlert(String title, String message) => showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(title),
+          content: Text(message, style: const TextStyle(height: 1.4)),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Ok'),
+            ),
+          ],
+        ),
+      );
+
+  /// The weight lands the moment the typed text is a weight — no Done key,
+  /// no dialog. Out-of-range and half-typed values simply do not store, and
+  /// clearing the field takes the reading off the egg again.
+  void _weightTyped(String raw) {
+    final value = double.tryParse(raw.trim().replaceAll(',', '.'));
+    if (value != null && value >= 0.1 && value <= 999.9) {
+      final egg = _ensureCurrentEgg();
+      egg.massG = value;
+      egg.massController.text = raw.trim();
+      _recalculate(egg);
+      unawaited(_saveDraft());
+      return;
+    }
+    final egg = _currentEgg;
+    if (egg != null && egg.massG != null) {
+      egg.massG = null;
+      egg.massController.clear();
+      _recalculate(egg);
+      unawaited(_saveDraft());
+    } else {
+      // Nothing stored yet; still repaint so the inline message tracks the
+      // text.
+      setState(() {});
+    }
+  }
+
+  /// The Haugh reading, live like the weight. The unit recomputes on every
+  /// keystroke and shows in the read-only row underneath.
+  void _haughTyped(String raw) {
+    final value = double.tryParse(raw.trim().replaceAll(',', '.'));
+    final egg = _currentEgg;
+    if (value != null && value > 0 && egg != null && (egg.massG ?? 0) > 0) {
+      egg.albumenHeightMm = value;
+      egg.albumenController.text = raw.trim();
+      _recalculate(egg);
+      unawaited(_saveDraft());
+      return;
+    }
+    if (egg != null && egg.albumenHeightMm != null) {
+      egg.albumenHeightMm = null;
+      egg.albumenController.clear();
+      _recalculate(egg);
+      unawaited(_saveDraft());
+    } else {
+      setState(() {});
+    }
+  }
+
+  /// What the weight field has to say about its text, inline — there is no
+  /// submit moment to hang a dialog on any more.
+  String? get _weightInlineError {
+    final raw = _weightEntry.text.trim();
+    if (raw.isEmpty) return null;
+    final value = double.tryParse(raw.replaceAll(',', '.'));
+    if (value == null) return null; // still typing
+    if (value > 999.9) {
+      return "Entered weight is too high. Please recheck the scale's reading.";
+    }
+    if (value < 0.1) return 'A weight of zero or less is not allowed.';
+    return null;
+  }
+
+  String? get _haughInlineHint {
+    if (_haughEntry.text.trim().isEmpty) return null;
+    final egg = _currentEgg;
+    if (egg == null || (egg.massG ?? 0) <= 0) {
+      return 'Enter the weight first — the Haugh unit needs it.';
+    }
+    final value = double.tryParse(_haughEntry.text.trim().replaceAll(',', '.'));
+    if (value != null && value <= 0) {
+      return 'The Haugh meter value cannot be 0 or less.';
+    }
+    return null;
+  }
+
+  /// The deviation rows exactly as the original's screen lists them.
+  ///
+  /// The original pairs 25 fixed XAML labels (lblPack1..25) with the
+  /// deviation matrix its manager builds from the database — every category
+  /// except Egg Size, minus the four Haugh/pasteurised rows the analysis
+  /// ticks itself. The label text is cleaner than the stored description
+  /// ("do not result in leakage" on screen, a typo in the record), so, as
+  /// with the labelling checklists, the screen wording and the record
+  /// wording are both kept: the label shows, the id stores.
+  static const _deviationScreenLabels = [
+    'Soundness of Egg - Eggs with cracks that result in leakage',
+    'Soundness of Egg - Eggs with cracks that do not result in leakage',
+    'Cleaniness of Shell - Eggs with nesting material/foreign matter',
+    'Discolouration/Stains - Eggs with discolouration/stains on shell',
+    'Shape of Shell - Irregular shape of shell',
+    'Blood Spot - Light intensity, ≤ 1mm diameter',
+    'Blood Spot - Strong intensity, ≤ 2mm diameter',
+    'Blood Rings - Light intensity, ≤ 1mm diameter',
+    'Blood Rings - Strong intensity, ≤ 2mm diameter',
+    'Meat Spots in Egg - Light intensity, ≤ 1mm diameter',
+    'Meat Spots in Egg - Strong intensity, ≤ 2mm diameter',
+    'Moulds - Eggs with mould adhering to shells',
+    'Poultry Feces - Eggs with faeces',
+    'Yolk - Defects in normal position',
+    'Yolk - Defects in yolk not spotted, flat or englared',
+    'Yolk - Defects in yolk colour',
+    'Air Cells - Maximum Depth 6/9mm - Eggs exceed permissable maximum '
+        'depth',
+    'Air Cells - Not Move> 6/12mm in any direction when tilted from the '
+        'Vertical - Eggs exceed permissable maximum depth',
+    'Air Cells - No swimmers',
+    'Air Cells - No bubbly air cells - eggs with bubbly air cells',
+    'Packaged Eggs - Boards end down/point ends up',
+    'Egg White - Clear',
+    'Atypical / Unacceptable Odours',
+    'Texture of Shell - Strong and Smooth',
+    'Decay/Germ Development',
+  ];
+
+  /// The screen lays the last four out in a different order than they are
+  /// numbered — the XAML's grid rows put Texture (24) before Egg White (22)
+  /// and Decay (25) before Atypical (23). Indices into the matrix/labels.
+  static const _deviationScreenOrder = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    23,
+    21,
+    24,
+    22,
+  ];
+
+  /// The original's deviation matrix: every deviation outside the Egg Size
+  /// category, minus the rows the analysis manages, in database order.
+  /// Position n pairs with `_deviationScreenLabels[n]`.
+  List<DeviationRef> get _deviationMatrix {
+    final eggSizeCategory =
+        _categories.where((c) => c.name == 'Egg Size').map((c) => c.id).toSet();
+    final auto = EggRules.autoManagedDeviationIds(_deviationRefs);
+    return [
+      for (final d in _deviationRefs)
+        if (!eggSizeCategory.contains(d.categoryId) && !auto.contains(d.id)) d,
+    ];
+  }
+
+  /// The highest egg number holding anything so far.
+  int get _highestEggNumber =>
+      _samples.fold(0, (high, x) => x.number > high ? x.number : high);
+
+  /// Tap the egg number and pick from the eggs opened so far — the weighed
+  /// ones and the fresh one on screen — to move between them and edit any.
+  /// New eggs are added only through the "Add egg" button under the sampled
+  /// counters. No guards: an egg left unweighed stays unweighed and the
+  /// counters keep the score.
+  Future<void> _pickEggNumber() async {
+    final highest = _highestEggNumber;
+    final furthest = _currentEggNumber > highest ? _currentEggNumber : highest;
+    final options = [for (var n = 1; n <= furthest; n++) n];
+    final picked = await showPickerSheet<int>(
+      context: context,
+      title: 'Egg #',
+      items: options,
+      itemLabel: (n) => n <= highest ? 'Egg $n of $highest' : 'Egg $n (new)',
+      selected: _currentEggNumber,
+    );
+    if (picked == null || !mounted) return;
+    _showEgg(picked);
+  }
+
+  /// `UpdateNewEggQualitySampleGroup` — load the record under the new
+  /// number into the fields, or clear them when none exists yet.
+  void _loadCurrentEggIntoEntries() {
+    final egg = _currentEgg;
+    if (egg != null && (egg.massG ?? 0) > 0) {
+      _weightEntry.text = egg.massController.text;
+      // The original skips a stored "0" so the field reads as empty.
+      final haughText = egg.albumenController.text;
+      _haughEntry.text = haughText == '0' ? '' : haughText;
+    } else {
+      _weightEntry.clear();
+      _haughEntry.clear();
+    }
+  }
+
+  void _showEgg(int number) => setState(() {
+        _currentEggNumber = number;
+        _loadCurrentEggIntoEntries();
+      });
+
+  /// The number the "Add egg" button offers: one past whichever is further
+  /// along — the highest weighed egg or the fresh one already on screen —
+  /// so adding egg 2 immediately moves the offer on to egg 3.
+  int get _nextEggNumber =>
+      (_currentEggNumber > _highestEggNumber
+          ? _currentEggNumber
+          : _highestEggNumber) +
+      1;
+
+  /// The bottom-of-form shortcut: jump to the next fresh egg and scroll the
+  /// capture fields back into view so the weight can be typed right away.
+  void _addNextEgg() {
+    _showEgg(_nextEggNumber);
+    unawaited(_revealEggEntry());
+  }
+
+  /// Moves to the next egg from the capture fields themselves.
+  ///
+  /// The reading is already saved as it is typed, so there is nothing to
+  /// confirm: this only advances the number and clears the two fields, and
+  /// leaves the view where it is — the inspector's hands stay on the scale
+  /// and the keypad.
+  void _nextEgg() {
+    if (_nextEggNumber > EggValidation.maxSamples) return;
+    _showEgg(_nextEggNumber);
+  }
+
+  /// Bring the Egg # field on screen. The lazy ListView keeps it unmounted
+  /// while the user is far below it, so its key has no context yet — step
+  /// the scroll upward a screen at a time until it mounts, then land on it.
+  Future<void> _revealEggEntry() async {
+    for (var i = 0; i < 40; i++) {
+      if (!mounted) return;
+      final anchor = _eggNumberFieldKey.currentContext;
+      if (anchor != null && anchor.mounted) {
+        await Scrollable.ensureVisible(
+          anchor,
+          duration: const Duration(milliseconds: 250),
+          alignment: 0.05,
+        );
+        return;
+      }
+      if (!_scroll.hasClients) return;
+      final position = _scroll.position;
+      if (position.pixels <= position.minScrollExtent) return;
+      await _scroll.animateTo(
+        (position.pixels - 700)
+            .clamp(position.minScrollExtent, position.maxScrollExtent),
+        duration: const Duration(milliseconds: 90),
+        curve: Curves.easeOut,
+      );
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  /// What the read-only Haugh row shows. "No value" before anything exists;
+  /// the original's reload path writes it back as "No Value" on a weighed
+  /// egg without a reading, capital and all.
+  String get _haughUnitDisplay {
+    final egg = _currentEgg;
+    if (egg?.haugh != null) return egg!.haugh!.round().toString();
+    // The XAML placeholder is "No value"; every reload writes "No Value".
+    // Only the pristine first egg has never been through a reload.
+    final pristine =
+        _currentEggNumber == 1 && _samples.isEmpty && (egg?.massG ?? 0) <= 0;
+    return pristine ? 'No value' : 'No Value';
+  }
+
+  /// `UpdateOverallGradeResultsTable` — "Deviations | Count", one row per
+  /// deviation found across the set, the count on green while the tolerance
+  /// for the declared size and grade permits it, red once it does not.
+  Widget _overallGradeResults() {
+    final counts = <int, int>{};
+    for (final x in _samples) {
+      for (final id in x.deviationIds) {
+        counts[id] = (counts[id] ?? 0) + 1;
+      }
+    }
+    if (counts.isEmpty) return const SizedBox.shrink();
+
+    final labelById = {
+      for (final category in _categories)
+        for (final d
+            in _deviationsByCategory[category.id] ?? const <EggDeviation>[])
+          d.id: '${category.name} - ${d.description}',
+    };
+
+    const cellPadding = EdgeInsets.symmetric(horizontal: 10, vertical: 8);
+
+    // One definition, because the count column's width is measured from it
+    // below and the two must not drift apart.
+    TextStyle cellTextStyle({bool bold = false, Color? foreground}) =>
+        TextStyle(
+          fontSize: 12.5,
+          height: 1.3,
+          color: foreground ?? AppColors.ink,
+          fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
+        );
+
+    Widget cell(String text,
+            {Color? background,
+            Color? foreground,
+            bool center = false,
+            bool bold = false,
+            bool singleLine = false}) =>
+        Container(
+          color: background,
+          alignment: center ? Alignment.center : Alignment.centerLeft,
+          padding: cellPadding,
+          child: Text(
+            text,
+            textAlign: center ? TextAlign.center : TextAlign.start,
+            // Deviation descriptions are long and must wrap; the count header
+            // is sized to fit and must never split across two lines.
+            maxLines: singleLine ? 1 : null,
+            softWrap: !singleLine,
+            style: cellTextStyle(bold: bold, foreground: foreground),
+          ),
+        );
+
+    // The original lays the table out as a grid: the deviation text spans
+    // the wide columns, the count keeps one narrow column of its own, and
+    // every cell stretches to the row's full height so the green/red block
+    // fills its cell rather than floating beside a taller wrapped label.
+    // The dressing, though, is this app's: a bordered rounded card, the
+    // teal accent on the header, the brand red where a count breaks the
+    // tolerance.
+    //
+    // That narrow column is measured rather than fixed. "Count" is the widest
+    // thing it ever holds — a tally does not reach three digits on a sample
+    // set this size — and a hard-coded 62 was only just wide enough at the
+    // default font: on a tablet with the system text size turned up the
+    // header wrapped to "Coun / t". Measuring the header at the scale the
+    // device is actually using keeps it on one line at any accessibility
+    // setting, and the column stays no wider than it has to be.
+    // Measured against the style the cell will actually resolve to, not the
+    // bare TextStyle. The app is set in Poppins, which is wider than the
+    // engine's default face, and `cellTextStyle` names no family — so
+    // measuring it alone came out short and the header still wrapped, just
+    // one letter later.
+    final countHeaderStyle =
+        DefaultTextStyle.of(context).style.merge(cellTextStyle(bold: true));
+    final countWidth = cellPadding.horizontal +
+        (TextPainter(
+          text: TextSpan(text: '00 of 00 allowed', style: countHeaderStyle),
+          textDirection: Directionality.of(context),
+          textScaler: MediaQuery.textScalerOf(context),
+          maxLines: 1,
+        )..layout())
+            .width
+            .ceilToDouble() +
+        // Slack for subpixel rounding and any hinting difference between
+        // measuring and painting.
+        4;
+    Widget tableRow(Widget label, Widget count) => IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: label),
+              SizedBox(width: countWidth, child: count),
+            ],
+          ),
+        );
+
+    final rows = <Widget>[];
+    for (final entry in counts.entries) {
+      if (rows.isNotEmpty) {
+        rows.add(Container(height: 1, color: AppColors.border));
+      }
+      rows.add(tableRow(
+        cell(
+          labelById[entry.key] ??
+              _deviationRefs
+                  .where((d) => d.id == entry.key)
+                  .map((d) => d.description)
+                  .firstOrNull ??
+              'Deviation ${entry.key}',
+        ),
+        // The band is named beside the tally. A green "2" on its own read
+        // as nothing having happened; "2 of 4 allowed" says the deviation
+        // was counted and is inside what the Agency permits at this size
+        // and grade, and red says it is not (Ethan, 2026-09-23).
+        cell(
+          EggRules.toleranceLabel(
+            count: entry.value,
+            deviationId: entry.key,
+            sizeId: _declaredSize?.id ?? -1,
+            gradeId: _declaredGrade?.id ?? -1,
+            tolerances: _tolerances,
+            sampleSize: EggValidation.maxSamples,
+          ),
+          center: true,
+          bold: true,
+          singleLine: true,
+          foreground: Colors.white,
+          background: EggRules.isDeviationPermissible(
+            deviationId: entry.key,
+            count: entry.value,
+            sizeId: _declaredSize?.id ?? -1,
+            gradeId: _declaredGrade?.id ?? -1,
+            tolerances: _tolerances,
+          )
+              ? const Color(0xFF2E7D32)
+              : AppColors.brandRed,
+        ),
+      ));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 4),
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            tableRow(
+              cell('Deviations',
+                  background: AppColors.brandTeal,
+                  foreground: Colors.white,
+                  bold: true),
+              cell('Count',
+                  background: AppColors.brandTeal,
+                  foreground: Colors.white,
+                  center: true,
+                  bold: true,
+                  singleLine: true),
+            ),
+            ...rows,
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _samplingFields() => [
         if (_outstandingSamples > 0)
           Container(
             margin: const EdgeInsets.only(bottom: 14),
@@ -1344,275 +2371,327 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
               ],
             ),
           ),
-        if (_samples.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 20),
-            child: Text(
-              'No eggs captured yet. Add one egg per unit drawn from the '
-              'sample — each is weighed, sized and graded individually.',
-              style: TextStyle(color: AppColors.muted, height: 1.35),
-            ),
-          ),
-        for (final s in _samples) _sampleCard(s),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 50,
-          child: OutlinedButton.icon(
-            onPressed: _addEgg,
-            icon: const Icon(Icons.add),
-            label: Text('Add egg #${_samples.length + 1}'),
-          ),
-        ),
-      ]);
-
-  Widget _sampleCard(_Sample s) => Container(
-        // Tied to the egg, not to a position in the list.
-        //
-        // The "further samples required" banner appears and disappears above
-        // this list as readings are typed, which shifts every card down or up
-        // one. Without a key Flutter rebinds each card to a different element,
-        // destroys the field being typed into, and the keyboard closes
-        // mid-number. Keying on the egg keeps the field — and the caret —
-        // exactly where the inspector left it.
-        key: ValueKey(s),
-        margin: const EdgeInsets.only(bottom: 14),
-        padding: const EdgeInsets.all(13),
-        decoration: BoxDecoration(
-          border: Border.all(color: AppColors.border),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Egg #${s.number}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 15.5,
-                    ),
-                  ),
-                ),
-                if (s.grade != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppColors.brandTeal.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      s.grade!.name,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.brandTeal,
-                      ),
-                    ),
-                  ),
-                IconButton(
-                  onPressed: () => setState(() {
-                    _samples.remove(s);
-                    s.dispose();
-                    _consignmentGrade = EggRules.consignmentGrade(
-                      [for (final x in _samples) x.grade],
-                    );
-                  }),
-                  icon: const Icon(Icons.delete_outline,
-                      color: AppColors.brandRed),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            TextFormField(
-              // Controlled by the egg, not by this widget's position in the
-              // list. See _Sample.
-              key: ValueKey('mass-${s.number}'),
-              controller: s.massController,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: 'Mass (g) *',
-                // Message: "Entered weight is too high. Please recheck the
-                // scale's reading."
-                errorText: EggValidation.eggMass(s.massG),
+        // Egg # — tap it to jump to any egg in the sample of 60.
+        LabelledField(
+          key: _eggNumberFieldKey,
+          label: 'Egg #',
+          child: InkWell(
+            onTap: _samplingUnlocked ? _pickEggNumber : null,
+            borderRadius: BorderRadius.circular(10),
+            child: InputDecorator(
+              isEmpty: false,
+              decoration: const InputDecoration(
+                suffixIcon: Icon(Icons.arrow_drop_down),
               ),
-              onChanged: (v) {
-                s.massG = double.tryParse(v.trim().replaceAll(',', '.'));
-                _recalculate(s);
-              },
+              child: Text(
+                _currentEggNumber <= _highestEggNumber
+                    ? 'Egg $_currentEggNumber of $_highestEggNumber'
+                    : 'Egg $_currentEggNumber (new)',
+                style: const TextStyle(
+                    fontSize: 15.5, fontWeight: FontWeight.w700),
+              ),
             ),
-            if (s.massG != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
+          ),
+        ),
+        LabelledField(
+          label: 'Egg Weight (g)',
+          child: TextField(
+            controller: _weightEntry,
+            enabled: _samplingUnlocked,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(fontSize: 15.5),
+            // Saved as typed — no Done key, no dialogs.
+            onChanged: _weightTyped,
+            decoration: InputDecoration(
+              errorText: _weightInlineError,
+              errorMaxLines: 2,
+            ),
+          ),
+        ),
+        LabelledField(
+          label: 'Haugh Meter Value (mm)',
+          child: TextField(
+            controller: _haughEntry,
+            enabled: _samplingUnlocked && !_haughNotRequired,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(fontSize: 15.5),
+            onChanged: _haughTyped,
+            decoration: InputDecoration(
+              helperText: _haughInlineHint,
+              helperMaxLines: 2,
+            ),
+          ),
+        ),
+        LabelledField(
+          // The trailing space is the original's.
+          label: 'Haugh Unit Value ',
+          child: InputDecorator(
+            isEmpty: false,
+            decoration: const InputDecoration(),
+            child: Text(
+              _haughUnitDisplay,
+              style: TextStyle(
+                fontSize: 15.5,
+                color: _currentEgg?.haugh != null
+                    ? AppColors.ink
+                    : AppColors.muted,
+              ),
+            ),
+          ),
+        ),
+        // Straight on to the next egg, from where the reading was just
+        // typed. Sixty eggs is sixty trips down to the egg picker and back
+        // otherwise, and losing your place in that is easy — E-click has a
+        // Next for the same reason.
+        if (_samplingUnlocked)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: SizedBox(
+              height: 46,
+              child: FilledButton.icon(
+                onPressed: _nextEggNumber <= EggValidation.maxSamples
+                    ? _nextEgg
+                    : null,
+                icon: const Icon(Icons.arrow_forward, size: 18),
+                label: Text(
+                  _nextEggNumber <= EggValidation.maxSamples
+                      ? 'NEXT — EGG $_nextEggNumber'
+                      : 'ALL ${EggValidation.maxSamples} EGGS CAPTURED',
+                ),
+              ),
+            ),
+          ),
+        // The current egg's deviations. The auto-managed rows never
+        // appear — the analysis sets those itself, in the background.
+        Padding(
+          padding: const EdgeInsets.only(top: 6, bottom: 2),
+          child: Row(
+            children: [
+              const Expanded(
                 child: Text(
-                  s.size == null
-                      // Not forced into a band — an out-of-range mass is a
-                      // finding, not a "Small" egg.
-                      ? 'Mass falls outside every size band'
-                      : 'Size: ${s.size!.name}',
-                  style: TextStyle(
+                  'Deviation',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ),
+              Text(
+                'This egg',
+                style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.w700,
-                    color: s.size == null
-                        ? AppColors.noticeForeground
-                        : AppColors.brandTeal,
-                  ),
-                ),
+                    color: AppColors.muted),
               ),
-            if (!_haughNotRequired) ...[
-              const SizedBox(height: 10),
-              TextFormField(
-                // The "Size: …" line above appears the moment a mass is
-                // entered, shifting this field down inside the card.
-                key: ValueKey('albumen-${s.number}'),
-                controller: s.albumenController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                // Message: "No weight has been entered for this sample. No
-                // Haugh Unit can be calculated." The formula needs the mass,
-                // so the field is unusable until it is present.
-                enabled: EggValidation.canRecordDeviations(s.massG),
-                decoration: InputDecoration(
-                  labelText: 'Albumen height (mm)',
-                  helperText: EggValidation.canRecordDeviations(s.massG)
-                      ? 'Haugh meter reading'
-                      : EggValidation.haughNeedsMass,
-                  // Message: "The Haugh meter value cannot be 0 or less."
-                  errorText: EggValidation.albumenHeight(s.albumenHeightMm),
-                ),
-                onChanged: (v) {
-                  s.albumenHeightMm =
-                      double.tryParse(v.trim().replaceAll(',', '.'));
-                  _recalculate(s);
-                },
-              ),
-              if (s.haugh != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    'Haugh unit: ${s.haugh!.toStringAsFixed(1)}',
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.brandTeal,
-                    ),
-                  ),
-                ),
-            ] else
-              // The field is not missing — it was switched off for the whole
-              // consignment on the Product step. Without saying so, it simply
-              // vanishes and looks like the app has lost it.
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
+            ],
+          ),
+        ),
+        // One flat list, worded and ordered exactly as the original's
+        // screen — no category headings.
+        for (final index in _deviationScreenOrder)
+          if (index < _deviationMatrix.length)
+            Builder(builder: (context) {
+              final d = _deviationMatrix[index];
+              final label = index < _deviationScreenLabels.length
+                  ? _deviationScreenLabels[index]
+                  : d.description;
+              final found = _currentEgg?.deviationIds.contains(d.id) ?? false;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.info_outline,
-                        size: 15, color: AppColors.muted),
-                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        'Albumen height is off for this consignment, so no '
-                        'Haugh unit is calculated.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppColors.muted,
-                          height: 1.3,
-                        ),
+                        label,
+                        style: const TextStyle(fontSize: 13),
                       ),
                     ),
-                    TextButton(
-                      onPressed: () => _goto(1),
-                      child: const Text('Turn on'),
+                    const SizedBox(width: 12),
+                    ComplianceSlider(
+                      compliant: !found,
+                      onChanged: (isCompliant) {
+                        final egg = _currentEgg;
+                        if (egg == null || (egg.massG ?? 0) <= 0) {
+                          // DeviationCheckBoxHander's own guard, verbatim.
+                          unawaited(_legacyAlert(
+                              'No Weight Entered',
+                              'A weight reading must be entered for this '
+                                  'sample, before any egg deviations can be '
+                                  'noted.'));
+                          return;
+                        }
+                        if (isCompliant) {
+                          egg.deviationIds.remove(d.id);
+                        } else {
+                          egg.deviationIds.add(d.id);
+                        }
+                        _recalculate(egg);
+                      },
                     ),
                   ],
                 ),
-              ),
-            const SizedBox(height: 10),
-            Text(
-              'DEVIATIONS',
-              style: TextStyle(
-                fontSize: 10.5,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.2,
-                color: AppColors.muted,
+              );
+            }),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '# Eggs Sampled: $_weighedCount',
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
             ),
-            // A weight must be entered before deviations can be
-            // noted. Enforced by disabling them rather than by an alert after
-            // the fact.
-            if (!EggValidation.canRecordDeviations(s.massG))
-              Padding(
-                padding: const EdgeInsets.only(top: 6, bottom: 2),
-                child: Text(
-                  EggValidation.deviationsNeedMass,
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.3,
-                    color: AppColors.noticeForeground,
-                  ),
-                ),
+            Expanded(
+              child: Text(
+                '# Haugh Readings Sampled: $_haughCount',
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
-            for (final category in _categories) ...[
-              Padding(
-                padding: const EdgeInsets.only(top: 8, bottom: 2),
-                child: Text(
-                  category.name,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.ink,
-                  ),
-                ),
-              ),
-              for (final d in _deviationsByCategory[category.id] ??
-                  const <EggDeviation>[])
-                CheckboxListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  activeColor: AppColors.brandRed,
-                  value: s.deviationIds.contains(d.id),
-                  title: Text(
-                    d.description,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: EggValidation.canRecordDeviations(s.massG)
-                          ? AppColors.ink
-                          : AppColors.muted,
-                    ),
-                  ),
-                  onChanged: EggValidation.canRecordDeviations(s.massG)
-                      ? (v) {
-                          if (v ?? false) {
-                            s.deviationIds.add(d.id);
-                          } else {
-                            s.deviationIds.remove(d.id);
-                          }
-                          _recalculate(s);
-                        }
-                      : null,
-                ),
-            ],
+            ),
           ],
         ),
-      );
+        // Reaching the bottom of the checklist with another egg to do —
+        // jump straight to the next fresh egg without scrolling back up.
+        if (_samplingUnlocked && _nextEggNumber <= EggValidation.maxSamples)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: SizedBox(
+              height: 44,
+              child: OutlinedButton.icon(
+                onPressed: _addNextEgg,
+                icon: const Icon(Icons.add, size: 18),
+                label: Text('Add egg $_nextEggNumber'),
+              ),
+            ),
+          ),
+        _overallGradeResults(),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 44,
+          child: OutlinedButton.icon(
+            onPressed: _samples.isEmpty ? null : _clearSamples,
+            icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+            label: const Text('Clear Samples'),
+          ),
+        ),
+      ];
 
-  Widget _requirementsStep() => _pad([
+  /// The original's "Clear Samples" — wipes every captured egg after a
+  /// confirmation, since there is no undo.
+  Future<void> _clearSamples() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear Samples'),
+        content: const Text(
+          'Remove every captured egg from this inspection?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    for (final sample in _samples) {
+      sample.dispose();
+    }
+    _samples.clear();
+    _currentEggNumber = 1;
+    _weightEntry.clear();
+    _haughEntry.clear();
+    _consignmentGrade = null;
+    _updateHaughBaseline();
+    setState(() {});
+  }
+
+  List<Widget> _labellingFields() => [
         Text(
-          'Tick anything the consignment FAILS.',
+          'Every requirement starts Compliant. Mark only the ones the '
+          'consignment fails.',
           style: TextStyle(color: AppColors.muted, height: 1.35),
         ),
         const SizedBox(height: 14),
-        _reqSection('Marking / labelling — packaging', _labelPack),
-        _reqSection('Marking / labelling — outer packaging', _labelOuter),
-        _reqSection('Packing — inner/outer containers (Reg 6)', _packing),
+        _reqSection('Marking/Labelling - Packaging', _labelPack,
+            letteringMinsMm: _labelLetteringMinsMm),
+        YesNoQuestion(
+          label: 'Is the outer labelling available for inspection',
+          bold: true,
+          value: _outerAvailable,
+          onChanged: (v) => setState(() {
+            _outerAvailable = v;
+            if (v) {
+              // Compliant, like every other row on this form. It used to
+              // open with all of them already marked as deviations, so an
+              // inspector who said the outer labelling was available and
+              // moved on served a rejection for the whole outer block
+              // without answering a single row.
+              _failedRequirements
+                  .removeAll([for (final r in _labelOuter) r.id]);
+            } else {
+              // A hidden checklist cannot carry failures — the original's
+              // boxes revert to their initial all-pass state.
+              _failedRequirements
+                  .removeAll([for (final r in _labelOuter) r.id]);
+            }
+          }),
+        ),
+        if (_outerAvailable)
+          _reqSection('Marking/Labelling - Outer Packaging', _labelOuter,
+              letteringMinsMm: _labelLetteringMinsMm),
+        _reqSection(
+            'Packing Requirements - Inner/Outer Containers [Reg 6]', _packing),
+        // The original activates this list from
+        // CheckForRestrictedParticularsActivation — only a deviation on the
+        // tenth labelling row puts it on the page, and until something is
+        // listed the sizing and grading block stays off.
+        if (_restrictedParticularsRequired) ...[
+          Divider(height: 26, color: AppColors.border),
+          Text(
+            'RESTRICTED PARTICULARS PRESENT ON THE LABEL',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.2,
+              color: AppColors.muted,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 6),
+            child: Text(
+              'Optional — add any restricted particulars that appear on the '
+              'label. A label with none is normal. One the list does not '
+              'have can be typed in.',
+              style: TextStyle(
+                  fontSize: 12.5, color: AppColors.muted, height: 1.35),
+            ),
+          ),
+          // The same dropdown every other picker on the form uses; the
+          // original works with a picker, an Add button and a Clear beside
+          // the list, instead of two dozen checkbox rows.
+          RestrictedParticularsPicker<EggRestrictedParticular>(
+            options: _particulars,
+            optionId: (p) => p.id,
+            optionLabel: (p) => p.keyword,
+            selected: _selectedParticulars,
+            typed: _typedParticulars,
+            shared: _sharedParticulars,
+            onChanged: () {
+              if (!mounted) return;
+              setState(() {});
+              unawaited(_saveDraft());
+            },
+            // A duplicate gets the original's own refusal, word for word.
+            onDuplicate: () => _legacyAlert('Already added',
+                'That restricted particular is already on the list.'),
+          ),
+        ],
         Divider(height: 26, color: AppColors.border),
         Text(
-          'RESTRICTED PARTICULARS PRESENT ON THE LABEL',
+          'Selected Rejection for Follow up',
           style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w900,
@@ -1620,27 +2699,371 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             color: AppColors.muted,
           ),
         ),
-        for (final p in _particulars)
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            activeColor: AppColors.brandRed,
-            value: _selectedParticulars.contains(p.id),
-            title: Text(p.keyword, style: const TextStyle(fontSize: 14)),
-            subtitle: p.note.isEmpty
-                ? null
-                : Text(p.note, style: const TextStyle(fontSize: 11.5)),
-            onChanged: (v) => setState(() {
-              if (v ?? false) {
-                _selectedParticulars.add(p.id);
-              } else {
-                _selectedParticulars.remove(p.id);
-              }
-            }),
-          ),
-      ]);
+        const Padding(
+          padding: EdgeInsets.only(top: 4, bottom: 8),
+          child: Text('Not applicable', style: TextStyle(fontSize: 13.5)),
+        ),
+      ];
 
-  Widget _reqSection(String title, List<EggRequirement> items) => Column(
+  /// Whether the marking/labelling block is open at all — the original
+  /// enables it from PickerTraySize_SelectedIndexChanged, so nothing in it
+  /// can be touched until the tray packaging size is chosen.
+  bool get _checklistUnlocked => _traySize != null;
+
+  // ------------------------------------------------- what the page shows
+  //
+  // The original does not grey the blocks below out and wait — it keeps them
+  // off the page and puts each one back when the inspection has earned it.
+  // Every one of them starts life as IsVisible="False" in the XAML.
+
+  /// A deviation on the tenth row of the packaging checklist — or of the
+  /// outer checklist, while outer packaging is being inspected — obliges the
+  /// inspector to list which restricted particulars are on the label.
+  ///
+  /// The original reads `!checkbox10a.IsChecked`: its boxes tick to mean "no
+  /// deviation", and so do these — what the record stores is still the set of
+  /// failures, which is what `_failedRequirements` holds.
+  bool get _restrictedParticularsRequired {
+    bool deviated(List<EggRequirement> list) =>
+        list.length >= 10 && _failedRequirements.contains(list[9].id);
+    return deviated(_labelPack) || (_outerAvailable && deviated(_labelOuter));
+  }
+
+  /// `CheckForQualityChecklistBlockActivation`: the sizing and grading block
+  /// is not on the page until the labelling checklist is confirmed complete
+  /// — and it comes back off it if the inspector records that no weighing
+  /// was possible.
+  ///
+  /// The original also held this behind the restricted-particulars list, but
+  /// the FSA dropped that obligation (2026-08-21): many labels carry no
+  /// restricted particulars at all, so the list is optional.
+  /// The pack declares no grade at all.
+  ///
+  /// A grade designation is a marking requirement, so a consignment that
+  /// carries none is rejected on marking (Reg. 10). It is also nothing to
+  /// weigh against: the sizing and grading block measures eggs against the
+  /// grade the pack claims, and there is no claim to measure. So the block
+  /// comes off and the inspection goes to the rejection instead.
+  bool get _noGradeIndicated => _declaredGrade?.id == _gradeNotIndicated.id;
+
+  /// The same, for the size: a consignment that claims no size is rejected
+  /// on marking and has no declared band to be weighed against.
+  bool get _noSizeIndicated => _declaredSize?.id == _sizeNotIndicated.id;
+
+  bool get _noTrayIndicated => _traySize?.id == _trayNotIndicated.id;
+
+  /// Why this consignment must be seized, per Annexure D — empty when it
+  /// need not be.
+  List<String> get _seizureReasons => EggRules.seizureReasons(
+        sizeNotIndicated: _noSizeIndicated,
+        gradeNotIndicated: _noGradeIndicated,
+        trayNotIndicated: _noTrayIndicated,
+        eggsExpressionAbsent: _eggsExpressionAbsent,
+        bestBeforeAbsent: _bestBeforeAbsent,
+        looseQuantityFailed: _failedRows.any(EggRules.isLooseQuantityRow),
+        qualityStandardFailed: _qualityStandardFailed,
+      );
+
+  /// The requirement rows the inspector has marked as failing.
+  List<EggRequirement> get _failedRows => [
+        for (final r in [..._labelPack, ..._labelOuter, ..._packing])
+          if (_failedRequirements.contains(r.id)) r,
+      ];
+
+  /// Whether the weighed sample fails the size or grade standard the eggs
+  /// are sold as — Annexure D seizes on that.
+  bool get _qualityStandardFailed =>
+      _samples.isNotEmpty && _directionRequired().quality;
+
+  /// The inspector's answers when the "Eggs" row or the best-before row is
+  /// unticked: Annexure D seizes on an omission and gives 30 days for an
+  /// indication that is shown but wrong.
+  bool _eggsExpressionAbsent = false;
+  bool _bestBeforeAbsent = false;
+
+  /// Asks whether an indication is missing altogether or merely wrong, then
+  /// puts the seizure question if the answer raises it.
+  Future<void> _askIndicatedAtAll(
+      String question, ValueChanged<bool> apply) async {
+    final absent = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Not indicated?'),
+        content: Text(question, style: const TextStyle(height: 1.4)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Shown, but not correct'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Not indicated at all'),
+          ),
+        ],
+      ),
+    );
+    if (absent == null || !mounted) return;
+    setState(() => apply(absent));
+    await _askAboutSeizureIfNeeded();
+    unawaited(_saveDraft());
+  }
+
+  /// Puts the seizure question, once, the moment the findings raise it.
+  ///
+  /// Asked as soon as the inspector says an indication is missing, not held
+  /// back to the sign-off: the consignment is in front of them now, and the
+  /// SOP's choice is between seizing it and carrying on.
+  Future<void> _askAboutSeizureIfNeeded() async {
+    final reasons = _seizureReasons;
+    if (reasons.isEmpty || _seizureAsked || !mounted) return;
+    _seizureAsked = true;
+    final answer = await askAboutSeizure(
+      context,
+      reason: reasons.join('\n'),
+    );
+    if (answer == null || !mounted) {
+      // Dismissed without an answer: ask again next time it changes.
+      _seizureAsked = false;
+      return;
+    }
+    setState(() => _seizureDecision = answer);
+    // Seized: the Annexure E sheet is drawn up here, on the premises.
+    if (answer == SeizureDecision.seize) {
+      await recordSeizure(
+        context,
+        database: widget.repository.database,
+        draft: SeizureDraft(
+          recordUuid: _uuid,
+          recordKind: 'egg',
+          visitUuid: widget.visit?.uuid ?? '',
+          inspectorUsername: widget.inspectorName,
+          natureOfDeviation:
+              'Seizure under FSA-SOP-APS-001 Annexure D: ${reasons.join('; ')}',
+          regulation: 'R.541 of 30 June 2017',
+          clientName: _facilityName.text,
+          clientAddress: _facilityAddress.text,
+          clientTelephone: _facilityPhone.text,
+          clientEmail: _clientEmail.text,
+          inspectionPoint: _facilityType?.name ?? '',
+          productName: 'Eggs',
+          receiverName: _managerName.text,
+        ),
+      );
+      if (!mounted) return;
+    }
+    await _saveDraft();
+  }
+
+  /// Whether the question has been put on this visit to the form, so a
+  /// second unticked row does not put it again.
+  bool _seizureAsked = false;
+  SeizureDecision? _seizureDecision;
+
+  bool get _samplingVisible =>
+      _checklistUnlocked &&
+      !_weighingNotRequired &&
+      !_noGradeIndicated &&
+      !_noSizeIndicated;
+
+  /// Eggs cannot be broken open on a retailer's premises, so the original
+  /// offers the two "not required" switches there and nowhere else.
+  bool get _isRetailer {
+    final name = _facilityType?.name.toLowerCase() ?? '';
+    return name.contains('retailer');
+  }
+
+  /// The original's `IsQualitySetReadyToSave`: the full sample set is
+  /// weighed, the Haugh readings are in, and the egg-numbering photograph of
+  /// the tray has been taken — or no weighing was required in the first
+  /// place, in which case the original simulates a complete set.
+  ///
+  /// Nothing below the sampling block appears before this is true: no
+  /// direction form, no signatures, and the record cannot be submitted.
+  bool get _qualitySetReadyToSave {
+    if (_weighingNotRequired) return true;
+    // Nothing to weigh without a declared grade, so the set is as complete
+    // as it is ever going to be.
+    if (_noGradeIndicated) return true;
+    if (!_samplingVisible) return false;
+    final weighed = _samples.where((s) => (s.massG ?? 0) > 0).length;
+    final haughReadings = _samples.where((s) => (s.haugh ?? 0) > 0).length;
+    return weighed >= EggValidation.maxSamples &&
+        (_haughNotRequired ||
+            haughReadings >= EggRules.haughReadingsRequired) &&
+        _photoCount('numbering') >= _minPhotos;
+  }
+
+  /// What is still owed before the inspection can be signed off, phrased as
+  /// the original's own counters. Shown in place of the signature block so
+  /// the inspector can see why it has not appeared rather than assuming the
+  /// page is broken.
+  String get _readinessOutstanding {
+    final weighed = _samples.where((s) => (s.massG ?? 0) > 0).length;
+    final haughReadings = _samples.where((s) => (s.haugh ?? 0) > 0).length;
+    return [
+      if (weighed < EggValidation.maxSamples)
+        '$weighed of ${EggValidation.maxSamples} eggs weighed',
+      if (!_haughNotRequired && haughReadings < EggRules.haughReadingsRequired)
+        '$haughReadings of ${EggRules.haughReadingsRequired} Haugh readings',
+      if (!_photos.any((p) => p.kind == 'numbering'))
+        'the egg numbering photograph',
+    ].join(', ');
+  }
+
+  void _producerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Whether a producer has been settled, which is what opens the Egg
+  /// Size picker in the original.
+  bool get _producerChosen => _producer.text.trim().isNotEmpty;
+
+  /// The original's confirmation when completing the checklist; proceeding
+  /// locks the checklist for the rest of the capture. Before the dialog it
+  /// applies the same two refusals the handset shows, in the same order,
+  /// and after Proceed the same grade/size question.
+  /// The original's follow-up when the size/grade designation row carries a
+  /// deviation: without a size and grade on the label there may be nothing
+  /// to weigh the eggs against. Asked as the deviation is recorded, since
+  /// there is no longer a "checklist complete" step to hang it on.
+  Future<void> _askGradeSizeWeighing() async {
+    final continueWeighing = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('No grade/No size'),
+        content: const Text(
+          'A Grade/Size label non-conformance or deviation was noted. '
+          'Can you continue to perform the egg weighing inspection, i.e. '
+          'there is no missing/incomplete GRADE and/or SIZE present on '
+          'the labelling?',
+          style: TextStyle(fontSize: 14.5, height: 1.4),
+        ),
+        // Two long answers side by side wrap into a mess; stacked
+        // full-width they each read as one line of intent.
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text(
+                  'YES-Continue to do Egg Weighing',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, height: 1.25),
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text(
+                  'NO-Stop inspection and Proceed to signatures',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, height: 1.25),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    // The NO path is the original's l.3296: the sizing and grading block
+    // comes off the page and the inspection goes straight to signatures —
+    // the same machinery as no weighing required.
+    setState(() => _weighingNotRequired = continueWeighing != true);
+    unawaited(_saveDraft());
+  }
+
+  /// The original's btnClearEntireForm: one confirmation, then the whole
+  /// form back to its opening state — same inspection, clean slate.
+  Future<void> _clearEntireForm() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear Form'),
+        // The trailing space is the original's.
+        content: const Text('Do you want to clear/reset the form? '),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('No'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Yes'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    // Photographs first — they live in the database the moment they are
+    // taken, so clearing the form must take the rows with it.
+    for (final shot in _photos.toList()) {
+      await _removePhoto(shot);
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _reason = null;
+      _facilityType = null;
+      _facilityName.clear();
+      _facilityAddress.clear();
+      _facilityPhone.clear();
+      _producer.clear();
+      _clientName.clear();
+      _clientAddress.clear();
+      _contactPerson.clear();
+      _contactNumber.clear();
+      _clientEmail.clear();
+      _representative.clear();
+      _declaredSize = null;
+      _declaredGrade = null;
+      _traySize = null;
+      _failedRequirements.clear();
+      _selectedParticulars.clear();
+      _typedParticulars.clear();
+      _outerAvailable = false;
+      _weighingNotRequired = false;
+      _haughNotRequired = false;
+      _qualityPhotoNoticeShown = false;
+      _bestBefore = null;
+      _batch.clear();
+      _pasteurised = false;
+      for (final sample in _samples) {
+        sample.dispose();
+      }
+      _samples.clear();
+      _currentEggNumber = 1;
+      _weightEntry.clear();
+      _haughEntry.clear();
+      _haughBaseline = null;
+      _consignmentGrade = null;
+      _nonConformance.clear();
+      _managerName.clear();
+      _managerEmail.clear();
+      _signaturesByRole.clear();
+    });
+    unawaited(_saveDraft());
+  }
+
+  /// The "Container (mm)" column of the original's labelling checklists —
+  /// static text in its layout (">= 5" etc.), one entry per row in order.
+  static const _labelLetteringMinsMm = [5, 5, 1, 5, 1, 3, 1, 10, 10, 10];
+
+  Widget _reqSection(String title, List<EggRequirement> items,
+          {List<int>? letteringMinsMm}) =>
+      Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
@@ -1655,57 +3078,134 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
               ),
             ),
           ),
-          for (final r in items)
-            CheckboxListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              activeColor: AppColors.brandRed,
-              value: _failedRequirements.contains(r.id),
-              title: Text(r.description, style: const TextStyle(fontSize: 13.5)),
-              onChanged: (v) => setState(() {
-                if (v ?? false) {
-                  _failedRequirements.add(r.id);
-                } else {
-                  _failedRequirements.remove(r.id);
-                }
-              }),
+          // Both answers are on the row itself, so the small print that
+          // used to explain what an empty tick box meant is gone with it.
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              'Slide each requirement to Compliant or Deviation.',
+              style: TextStyle(fontSize: 11.5, color: AppColors.muted),
+            ),
+          ),
+          for (final (index, r) in items.indexed)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // The original words each row twice: the label on
+                        // its screen and the description it files against
+                        // the record. An inspector reads the screen, so
+                        // that is what is shown here.
+                        Text(
+                          r.screenLabel.isEmpty ? r.description : r.screenLabel,
+                          style: const TextStyle(fontSize: 13.5),
+                        ),
+                        if (r.regulation.isNotEmpty ||
+                            (letteringMinsMm != null &&
+                                index < letteringMinsMm.length))
+                          Text(
+                            [
+                              if (r.regulation.isNotEmpty) r.regulation,
+                              if (letteringMinsMm != null &&
+                                  index < letteringMinsMm.length)
+                                'Lettering \u2265 ${letteringMinsMm[index]} mm',
+                            ].join('  \u00b7  '),
+                            style: TextStyle(
+                                fontSize: 11.5, color: AppColors.muted),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // What is stored is still the failures, exactly as before
+                  // — the slide only changes how the answer is given.
+                  ComplianceSlider(
+                    compliant: !_failedRequirements.contains(r.id),
+                    onChanged: (isCompliant) {
+                      final failed = !isCompliant;
+                      setState(() {
+                        if (failed) {
+                          _failedRequirements.add(r.id);
+                        } else {
+                          _failedRequirements.remove(r.id);
+                        }
+                      });
+                      // A deviation on the grade/size row decides whether
+                      // there is anything to weigh, so the original's
+                      // question follows it.
+                      if (failed &&
+                          _labelPack.isNotEmpty &&
+                          r.id == _labelPack.first.id) {
+                        unawaited(_askGradeSizeWeighing());
+                      }
+                      // FSA-SOP-APS-001 Annexure D: an omission is a
+                      // seizure, a wrong indication is 30 days, so the
+                      // rows that can be either ask which.
+                      if (EggRules.isEggsExpressionRow(r)) {
+                        if (failed) {
+                          unawaited(_askIndicatedAtAll(
+                              'Is the expression "Eggs" shown on the pack '
+                              'at all?',
+                              (absent) => _eggsExpressionAbsent = absent));
+                        } else {
+                          _eggsExpressionAbsent = false;
+                        }
+                      } else if (EggRules.isBestBeforeRow(r)) {
+                        if (failed) {
+                          unawaited(_askIndicatedAtAll(
+                              'Is a best-before date shown on the pack at '
+                              'all?',
+                              (absent) => _bestBeforeAbsent = absent));
+                        } else {
+                          _bestBeforeAbsent = false;
+                        }
+                      } else if (failed) {
+                        unawaited(_askAboutSeizureIfNeeded());
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
         ],
       );
 
-  Widget _photosStep() => _pad([
-        for (final entry in const [
-          ('egg', 'Egg photos'),
-          // Required: a labelling finding cannot be defended without one.
-          ('label', 'Label photos *'),
-          ('deviation', 'Deviation photos'),
-          ('numbering', 'Egg numbering'),
-        ])
-          _photoRow(entry.$1, entry.$2),
-        Divider(height: 26, color: AppColors.border),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.my_location, color: AppColors.brandTeal),
-          title: const Text(
-            'GPS location',
-            style: TextStyle(fontWeight: FontWeight.w700),
-          ),
-          subtitle: Text(
-            _position == null
-                ? 'Not captured'
-                : '${_position!.latitude.toStringAsFixed(5)}, '
-                    '${_position!.longitude.toStringAsFixed(5)}',
-            style: const TextStyle(fontSize: 12.5),
-          ),
-          trailing: TextButton(
-            onPressed: _captureLocation,
-            child: Text(_position == null ? 'Capture' : 'Update'),
-          ),
-        ),
-      ]);
+  /// The original replaces each photograph button's own text with a running
+  /// count once a shot is taken, and turns the button green once the minimum
+  /// is met. These are its strings verbatim, stray spaces and all — they come
+  /// out of its string concatenation and inspectors read them as they are.
+  ///
+  /// One departure: the original's egg-numbering caption prints
+  /// `Count - 1`, because that list is shared with the label photograph and
+  /// it subtracts it back out. Taking one numbering photo therefore reads
+  /// "0Egg Numbering Photo(s) Taken" on the handset. The count here is the
+  /// true one.
+  String _photoCaption(String kind, int count, int minimum) {
+    switch (kind) {
+      case 'label':
+        return 'Label/Container\n[$count Photo(s) Taken]';
+      case 'numbering':
+        return '${count}Egg Numbering\nPhoto(s) Taken';
+      case 'egg':
+        return count >= minimum
+            ? 'Egg Photos [ $count/$minimum Taken]'
+            : 'Egg Photos [$count/$minimum Taken]';
+      case 'deviation':
+        return 'Label Photos - [$count/$minimum  ] Taken';
+    }
+    return '$count photo(s) taken';
+  }
 
-  Widget _photoRow(String kind, String label) {
+  Widget _photoRow(String kind, String label,
+      {int minimum = 0, int maximum = 0}) {
     final shots = _photos.where((p) => p.kind == kind).toList();
+    final metMinimum = minimum > 0 && shots.length >= minimum;
+    final atMaximum = maximum > 0 && shots.length >= maximum;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
@@ -1719,8 +3219,16 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
+              // The original turns the button green once the minimum is
+              // met, so the inspector can see at a glance which rows are done.
+              if (metMinimum)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(Icons.check_circle,
+                      size: 18, color: AppColors.brandTeal),
+                ),
               TextButton.icon(
-                onPressed: _capturingKind == null
+                onPressed: (_capturingKind == null && !atMaximum)
                     ? () => _capturePhoto(kind, label)
                     : null,
                 icon: _capturingKind == kind
@@ -1734,12 +3242,49 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
               ),
             ],
           ),
+          // What the row asks for, on the row itself. The maximum was stated
+          // and the minimum was not, so an inspector took one photograph,
+          // saw nothing asking for another, and met the submit button
+          // refusing without saying why.
+          if (minimum > 0 || maximum > 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                atMaximum
+                    ? 'Maximum of $maximum photos reached.'
+                    : '${[
+                        if (minimum > 0) 'Minimum of $minimum photos',
+                        if (maximum > 0) 'maximum of $maximum',
+                      ].join(', ')}.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: metMinimum || minimum == 0
+                      ? AppColors.muted
+                      : AppColors.brandRed,
+                  fontWeight: metMinimum || minimum == 0
+                      ? FontWeight.normal
+                      : FontWeight.w700,
+                ),
+              ),
+            ),
           if (shots.isEmpty)
             Text(
-              'None captured',
+              minimum > 0 ? _photoCaption(kind, 0, minimum) : 'None captured',
               style: TextStyle(fontSize: 12.5, color: AppColors.muted),
             )
-          else
+          else ...[
+            if (minimum > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  _photoCaption(kind, shots.length, minimum),
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    height: 1.25,
+                    color: metMinimum ? AppColors.brandTeal : AppColors.muted,
+                  ),
+                ),
+              ),
             SizedBox(
               height: 84,
               child: ListView.separated(
@@ -1767,8 +3312,11 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                         iconSize: 18,
                         visualDensity: VisualDensity.compact,
                         tooltip: 'Remove photo',
-                        icon: const Icon(Icons.cancel,
-                            color: AppColors.brandRed),
+                        // Red, not the app's accent: removing a
+                        // photograph is destructive, and in teal it read as
+                        // a confirmation.
+                        icon:
+                            const Icon(Icons.cancel, color: AppColors.brandRed),
                         onPressed: () => _removePhoto(shots[i]),
                       ),
                     ),
@@ -1776,14 +3324,15 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                 ),
               ),
             ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _resultStep() {
+  List<Widget> _resultFields() {
     final sized = _samples.where((s) => s.size != null).length;
-    return _pad([
+    return [
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -1807,7 +3356,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             Text(
               _consignmentGrade?.name ?? 'Not determined',
               style: TextStyle(
-                fontSize: 26,
+                fontSize: 20,
                 fontWeight: FontWeight.w900,
                 color: _consignmentGrade == null
                     ? AppColors.noticeForeground
@@ -1823,76 +3372,99 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
         ),
       ),
       const SizedBox(height: 18),
-      if (_samples.isNotEmpty) ...[
-        Text(
-          'PER EGG',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.4,
-            color: AppColors.muted,
-          ),
-        ),
-        const SizedBox(height: 8),
-        for (final s in _samples)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 5),
-            child: Text(
-              '#${s.number}: '
-              '${s.massG?.toStringAsFixed(1) ?? '—'} g · '
-              '${s.size?.name ?? 'unsized'} · '
-              '${s.grade?.name ?? 'ungraded'}'
-              '${s.haugh == null ? '' : ' · HU ${s.haugh!.toStringAsFixed(1)}'}'
-              '${s.deviationIds.isEmpty ? '' : ' · ${s.deviationIds.length} deviation(s)'}',
-              style: const TextStyle(fontSize: 13, height: 1.35),
-            ),
-          ),
-        const SizedBox(height: 16),
-      ],
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        activeThumbColor: AppColors.brandRed,
-        value: _override,
-        title: const Text(
-          'Override the determined grade',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        subtitle: const Text(
-          'Requires a reason, and is recorded against your name.',
-          style: TextStyle(fontSize: 12),
-        ),
-        onChanged: (v) => setState(() => _override = v),
-      ),
-      if (_override) ...[
-        _Drop<EggGradeRef>(
-          label: 'Override grade',
-          value: _overrideGrade,
-          items: _gradeRefs,
-          itemLabel: (g) => g.name,
-          onChanged: (g) => setState(() => _overrideGrade = g),
-        ),
-        _Text(
-          label: 'Reason for override *',
-          controller: _overrideReason,
-          maxLines: 2,
-        ),
-      ],
+      // No per-egg recap. The original's results grid carries the
+      // deviation counts for the consignment, not a line per egg — the
+      // individual sizes and grades stay behind the form, where its own
+      // analysis keeps them.
       _Text(
         label: 'Non-conformance comments',
         controller: _nonConformance,
         maxLines: 3,
       ),
-      _Text(
-        label: 'General comments',
-        controller: _generalComments,
-        maxLines: 3,
+      const SizedBox(height: 10),
+      Text(
+        'SIGNATURES CONTROL',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 1.2,
+          color: AppColors.muted,
+        ),
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
+      if (widget.visit == null) ...[
+        _Text(label: 'Authorised Manager name', controller: _managerName),
+        _Text(
+          label: 'Manager Email address',
+          controller: _managerEmail,
+          keyboardType: TextInputType.emailAddress,
+        ),
+        _signatureRow('manager', 'Manager Signature Block'),
+        _signatureRow('inspector', 'Inspector Signature Block'),
+      ] else
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            'This inspection is part of a store visit. The manager and '
+            'inspector sign once, at the end of the visit, and those '
+            'signatures are applied to every inspection in it.',
+            style:
+                TextStyle(fontSize: 12.5, color: AppColors.muted, height: 1.4),
+          ),
+        ),
       Text(
         'Inspector: ${widget.inspectorName}',
         style: TextStyle(fontSize: 12.5, color: AppColors.muted),
       ),
-    ]);
+    ];
+  }
+
+  Widget _signatureRow(String role, String label) {
+    final signature = _signaturesByRole[role];
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        signature == null ? Icons.draw_outlined : Icons.check_circle,
+        color: signature == null ? AppColors.muted : const Color(0xFF2E7D32),
+      ),
+      title: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+      subtitle: Text(
+        signature == null ? 'Not signed' : 'Signed',
+        style: const TextStyle(fontSize: 12.5),
+      ),
+      trailing: TextButton(
+        onPressed: () => _sign(role, label),
+        child: Text(signature == null ? 'Sign' : 'Re-sign'),
+      ),
+    );
+  }
+
+  Future<void> _sign(String role, String label) async {
+    final storage = await PhotoStorage.instance();
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final path = storage.pathFor('egg_sig_${_uuid}_${role}_$stamp.png');
+    if (!mounted) return;
+    final saved = await captureSignature(
+      context,
+      title: label,
+      outputPath: path,
+    );
+    if (saved == null) return;
+    await widget.repository.saveSignature(
+      EggSignaturesCompanion.insert(
+        inspectionUuid: _uuid,
+        role: role,
+        filePath: saved,
+        signedName: Value(
+          role == 'inspector' ? widget.inspectorName : _managerName.text.trim(),
+        ),
+        signedAt: Value(DateTime.now()),
+      ),
+    );
+    for (final sig in await widget.repository.signaturesFor(_uuid)) {
+      _signaturesByRole[sig.role] = sig;
+    }
+    if (mounted) setState(() {});
   }
 }
 
@@ -1900,19 +3472,34 @@ class _Text extends StatelessWidget {
   const _Text({
     required this.label,
     required this.controller,
-    this.isRequired = false,
+    this.focusNode,
     this.keyboardType,
     this.maxLines = 1,
-    this.errorText,
+    this.helper,
+    this.enabled = true,
     this.onChanged,
+    this.isRequired = false,
   });
 
   final String label;
   final TextEditingController controller;
+
+  /// Draws the red star beside the label.
   final bool isRequired;
+
+  /// Lets the form tidy what was typed when the field loses focus.
+  final FocusNode? focusNode;
   final TextInputType? keyboardType;
   final int maxLines;
-  final String? errorText;
+
+  /// A quiet line under the field — used to say when it is optional, or
+  /// what opens it.
+  final String? helper;
+
+  /// False while the original keeps this entry locked behind another step.
+  final bool enabled;
+
+  /// Fires per keystroke, for fields other steps unlock from.
   final ValueChanged<String>? onChanged;
 
   @override
@@ -1921,11 +3508,16 @@ class _Text extends StatelessWidget {
         isRequired: isRequired,
         child: TextField(
           controller: controller,
+          focusNode: focusNode,
           keyboardType: keyboardType,
           maxLines: maxLines,
+          enabled: enabled,
           onChanged: onChanged,
           style: const TextStyle(fontSize: 15.5),
-          decoration: InputDecoration(errorText: errorText),
+          decoration: InputDecoration(
+            helperText: helper,
+            helperMaxLines: 2,
+          ),
         ),
       );
 }
@@ -1938,6 +3530,9 @@ class _Drop<T> extends StatelessWidget {
     required this.itemLabel,
     required this.onChanged,
     this.isRequired = false,
+    this.enabled = true,
+    this.disabledHint,
+    this.helper,
   });
 
   final String label;
@@ -1947,55 +3542,29 @@ class _Drop<T> extends StatelessWidget {
   final ValueChanged<T?> onChanged;
   final bool isRequired;
 
-  /// Opens the options in a bottom sheet.
-  ///
-  /// A dropdown menu is positioned over its own button, so on a form it
-  /// covered the fields above and below — the complaint that prompted this.
-  /// A sheet comes up from the bottom over a dimmed page: it cannot be
-  /// mistaken for the form, it names what is being chosen, and each option
-  /// gets a full-width row.
-  Future<void> _choose(BuildContext context) async {
-    if (items.isEmpty) return;
-    final picked = await showPickerSheet<T>(
-      context: context,
-      title: label,
-      items: items,
-      itemLabel: itemLabel,
-      selected: value,
-    );
-    if (picked != null) onChanged(picked);
-  }
+  /// False while the screen's own order says this step is not open yet. The
+  /// original greys the picker rather than hiding it, so the inspector can
+  /// see what is coming.
+  final bool enabled;
+
+  /// Stands in for the value while [enabled] is false, saying what unlocks it.
+  final String? disabledHint;
+
+  /// A note under an open picker — what to do when the answer is nothing.
+  final String? helper;
 
   @override
-  Widget build(BuildContext context) {
-    final empty = items.isEmpty;
-    return LabelledField(
-      label: label,
-      isRequired: isRequired,
-      child: InkWell(
-        onTap: empty ? null : () => _choose(context),
-        borderRadius: BorderRadius.circular(10),
-        // Same chrome as the text and date fields, so the row reads as one
-        // more input rather than a control of its own kind.
-        child: InputDecorator(
-          isEmpty: false,
-          decoration: const InputDecoration(
-            suffixIcon: Icon(Icons.arrow_drop_down),
-          ),
-          child: Text(
-            value != null
-                ? itemLabel(value as T)
-                : (empty ? 'Nothing to choose from' : 'Select'),
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 15.5,
-              // An unchosen value is a prompt, not an answer.
-              fontWeight: value != null ? FontWeight.w700 : FontWeight.w400,
-              color: value != null ? AppColors.ink : AppColors.muted,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => PickerMenuField<T>(
+        label: label,
+        value: items.contains(value) ? value : null,
+        options: [
+          for (final item in items) (value: item, text: itemLabel(item)),
+        ],
+        onChanged: onChanged,
+        isRequired: isRequired,
+        enabled: enabled,
+        hint: enabled ? null : disabledHint,
+        helper: enabled ? helper : disabledHint,
+        emptyHint: 'Nothing to choose from yet',
+      );
 }

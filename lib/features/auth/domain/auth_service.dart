@@ -58,7 +58,8 @@ class AuthResult {
 /// That store does not exist yet, so [LocalStubAuthService] stands in and every
 /// caller is already written against this interface.
 abstract interface class AuthService {
-  Future<AuthResult> signIn({required String username, required String password});
+  Future<AuthResult> signIn(
+      {required String username, required String password});
 
   /// "First Time User" — pulls the organisation's user list so a user who has
   /// never signed in on this handset can be authenticated offline afterwards.

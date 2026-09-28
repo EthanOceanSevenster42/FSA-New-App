@@ -10,6 +10,7 @@ class EggSizes extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
   RealColumn get minMassG => real()();
+
   /// Null on the open-topped band (Jumbo).
   RealColumn get maxMassG => real().nullable()();
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
@@ -52,6 +53,7 @@ class EggDeviations extends Table {
   IntColumn get id => integer()();
   IntColumn get categoryId => integer()();
   TextColumn get description => text()();
+
   /// Grade this deviation forces. Null = recorded but not grade-affecting.
   IntColumn get downgradesToGradeId => integer().nullable()();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
@@ -84,9 +86,21 @@ class EggDeviationTolerances extends Table {
 
 class EggRequirements extends Table {
   IntColumn get id => integer()();
+
   /// 'label_pack' | 'label_outer' | 'packing'
   TextColumn get kind => text()();
   TextColumn get description => text()();
+
+  /// What the original's own screen calls this row.
+  ///
+  /// The original words each checklist row twice: the XAML label an inspector
+  /// reads, and the description its direction and report print. They differ —
+  /// the description prefixes the container and spells several words
+  /// differently. Empty falls back to [description].
+  TextColumn get screenLabel => text().withDefault(const Constant(''))();
+
+  /// The original's own list order, which is not alphabetical.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   TextColumn get regulation => text().withDefault(const Constant(''))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
@@ -98,6 +112,9 @@ class EggRequirements extends Table {
 class EggRestrictedParticulars extends Table {
   IntColumn get id => integer()();
   TextColumn get keyword => text()();
+
+  /// The original's own list order, which is not alphabetical.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   TextColumn get note => text().withDefault(const Constant(''))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
@@ -110,6 +127,9 @@ class EggTraySizes extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
   IntColumn get eggCount => integer()();
+
+  /// Seed order, not numeric — the original lists 15-Pack last.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
 
@@ -120,6 +140,9 @@ class EggTraySizes extends Table {
 class EggFacilityTypes extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
+
+  /// The original lists these in its own seed order, not alphabetically.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
 
@@ -145,6 +168,9 @@ class EggFacilities extends Table {
 class EggInspectionReasons extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
+
+  /// The original's own list order, which is not alphabetical.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
 
@@ -191,11 +217,16 @@ class EggSuppliers extends Table {
 
 class EggDirectionRemarks extends Table {
   IntColumn get id => integer()();
+
   /// 'quality' | 'labelling'
   TextColumn get directionType => text()();
+
   /// Named `remarkText`, not `text`: a getter called `text` would shadow
   /// Drift's own `text()` column builder and the table would not generate.
   TextColumn get remarkText => text().named('text')();
+
+  /// The original's own list order, which is not alphabetical.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
 
@@ -209,6 +240,10 @@ class EggDirectionRemarks extends Table {
 
 class EggInspections extends Table {
   TextColumn get clientUuid => text()();
+
+  /// The store visit this record was captured under, empty when standalone.
+  /// The visit's closing signatures find their members through this.
+  TextColumn get visitUuid => text().withDefault(const Constant(''))();
   TextColumn get status => text().withDefault(const Constant('draft'))();
   DateTimeColumn get inspectedAt => dateTime()();
 
@@ -227,6 +262,11 @@ class EggInspections extends Table {
   TextColumn get clientEmail => text().withDefault(const Constant(''))();
   TextColumn get representativeName => text().withDefault(const Constant(''))();
 
+  /// The original's Signatures Control block: the authorised manager who
+  /// signs, and their email.
+  TextColumn get managerName => text().withDefault(const Constant(''))();
+  TextColumn get managerEmail => text().withDefault(const Constant(''))();
+
   TextColumn get producerSupplier => text().withDefault(const Constant(''))();
   TextColumn get batchNumber => text().withDefault(const Constant(''))();
   DateTimeColumn get bestBefore => dateTime().nullable()();
@@ -244,6 +284,22 @@ class EggInspections extends Table {
   BoolColumn get haughNotRequired =>
       boolean().withDefault(const Constant(false))();
 
+  /// The original's `switchEggWeighingInspectionNotRequired`. Eggs cannot be
+  /// broken open on a retailer's premises, so at a retailer the inspector may
+  /// record that no weighing or grading was possible. The sizing and grading
+  /// block then comes off the page entirely and the inspection goes straight
+  /// to signature.
+  BoolColumn get weighingNotRequired =>
+      boolean().withDefault(const Constant(false))();
+
+  /// The two gating switches a draft must not forget across a restart:
+  /// outer labelling available (opens the outer-packaging checklist) and
+  /// the confirmed-and-locked label checklist (opens sampling).
+  BoolColumn get outerLabellingAvailable =>
+      boolean().withDefault(const Constant(false))();
+  BoolColumn get labelChecklistComplete =>
+      boolean().withDefault(const Constant(false))();
+
   IntColumn get determinedGradeId => integer().nullable()();
   BoolColumn get gradeOverridden =>
       boolean().withDefault(const Constant(false))();
@@ -258,8 +314,33 @@ class EggInspections extends Table {
   TextColumn get restrictedParticularIds =>
       text().withDefault(const Constant(''))();
 
+  /// Particulars typed in at the inspection because the Agency's list
+  /// did not have them; one per line. See TypedParticulars.
+  TextColumn get restrictedParticularsText =>
+      text().withDefault(const Constant(''))();
+
   RealColumn get latitude => real().nullable()();
   RealColumn get longitude => real().nullable()();
+
+
+  /// What the inspector chose when the findings turned out to require a
+  /// seizure: `seize`, or `inspect` to carry on and decide later. Empty
+  /// until the question has been put.
+  ///
+  /// FSA-SOP-APS-001 makes a seizure a different outcome from a rejection,
+  /// not a harder one — an omitted product name or grade designation is
+  /// seized under s.8 rather than given a rectification period. The choice
+  /// is the inspector's to make on the premises, so it is recorded with the
+  /// record that prompted it rather than inferred later by the office.
+  TextColumn get seizureDecision => text().withDefault(const Constant(''))();
+
+  /// The inspector's answers when the "Eggs" expression row or the
+  /// best-before row is unticked: omitted altogether (a seizure under
+  /// FSA-SOP-APS-001 Annexure D) or shown but wrong (30 days).
+  BoolColumn get eggsExpressionAbsent =>
+      boolean().withDefault(const Constant(false))();
+  BoolColumn get bestBeforeAbsent =>
+      boolean().withDefault(const Constant(false))();
 
   BoolColumn get isUploaded => boolean().withDefault(const Constant(false))();
   DateTimeColumn get updatedAt => dateTime()();
@@ -293,6 +374,7 @@ class EggSamples extends Table {
   IntColumn get gradeId => integer().nullable()();
   RealColumn get albumenHeightMm => real().nullable()();
   RealColumn get haughUnit => real().nullable()();
+
   /// Comma-separated deviation ids ticked on this egg.
   TextColumn get deviationIds => text().withDefault(const Constant(''))();
 }
@@ -300,8 +382,10 @@ class EggSamples extends Table {
 /// A direction issued off the back of an inspection.
 class EggDirections extends Table {
   TextColumn get clientUuid => text()();
+
   /// Links back to the inspection, when raised from one.
   TextColumn get inspectionUuid => text().nullable()();
+
   /// One notice may carry either part or both — it is not two directions.
   /// Each part has its own deadline: a mislabelled consignment and a failing
   /// one are not put right on the same timescale.
@@ -316,6 +400,7 @@ class EggDirections extends Table {
 
   TextColumn get directionNumber => text().withDefault(const Constant(''))();
   RealColumn get quantityRemoved => real().nullable()();
+
   /// Comma-separated remark ids.
   TextColumn get remarkIds => text().withDefault(const Constant(''))();
   TextColumn get additionalRemarks => text().withDefault(const Constant(''))();
@@ -339,9 +424,25 @@ class EggDirections extends Table {
   Set<Column> get primaryKey => {clientUuid};
 }
 
+/// A signature captured against an egg inspection.
+///
+/// One row per role ('manager' or 'inspector'), mirroring the server's
+/// unique_together — re-signing replaces the earlier image.
+class EggSignatures extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get inspectionUuid => text()();
+  TextColumn get role => text()();
+  TextColumn get filePath => text()();
+  TextColumn get signedName => text().withDefault(const Constant(''))();
+  BoolColumn get declined => boolean().withDefault(const Constant(false))();
+  DateTimeColumn get signedAt => dateTime().nullable()();
+  BoolColumn get isUploaded => boolean().withDefault(const Constant(false))();
+}
+
 class EggPhotos extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get inspectionUuid => text()();
+
   /// 'egg' | 'label' | 'deviation' | 'numbering'
   TextColumn get kind => text()();
   TextColumn get filePath => text()();

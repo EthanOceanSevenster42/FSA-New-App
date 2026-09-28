@@ -46,9 +46,28 @@ class _CameraPage extends StatefulWidget {
 }
 
 class _CameraPageState extends State<_CameraPage> with WidgetsBindingObserver {
+  /// Resolutions to try, best first.
+  ///
+  /// A camera can only run so many streams at once, and camerax asks for
+  /// three (preview, capture, analysis). Which sizes it will take together
+  /// differs by device: the Lenovo tablet refuses all three at 1080p with
+  /// "No supported surface combination is found for camera device", where a
+  /// handset takes them happily. Rather than drop every device to the lowest
+  /// common denominator, step down until one is accepted — [max] is in the
+  /// list because a basic camera guarantees the combination only when the
+  /// still capture is at its largest size, not a middling one.
+  static const _presets = [
+    ResolutionPreset.veryHigh,
+    ResolutionPreset.high,
+    ResolutionPreset.max,
+    ResolutionPreset.medium,
+    ResolutionPreset.low,
+  ];
+
   CameraController? _controller;
   String? _error;
   bool _shooting = false;
+  int _preset = 0;
 
   @override
   void initState() {
@@ -85,42 +104,119 @@ class _CameraPageState extends State<_CameraPage> with WidgetsBindingObserver {
   }
 
   Future<void> _open() async {
+    // camerax races its preview surface on some Samsungs: initialize() can
+    // throw IllegalStateException("surfaceProducerHandlesCropAndRotation()
+    // cannot be called if the flutterSurfaceProducer ... has not yet been
+    // initialized"). A moment later the same call succeeds, so the transient
+    // failure earns one quiet retry before the inspector sees anything.
+    // Enough attempts to walk the whole resolution list as well as ride out
+    // the surface race.
+    for (var attempt = 0; attempt < _presets.length + 2; attempt++) {
+      final failed = await _tryOpen();
+      if (!failed || !mounted) return;
+      // Only the retryable states get here; everything else surfaced already.
+      if (_error != null) return;
+      // A resolution step-down can go straight round again; the surface race
+      // needs a moment to settle.
+      if (_preset > 0) continue;
+      await Future<void>.delayed(Duration(milliseconds: 400 * (attempt + 1)));
+    }
+    if (mounted && _error == null && _controller == null) {
+      setState(() => _error = 'The camera could not start. Please try again.');
+    }
+  }
+
+  /// One attempt at opening the camera. True means the surface race hit and
+  /// a retry is worthwhile; other failures set [_error] themselves.
+  /// True when [error] is one of camerax's transient start-up states —
+  /// the surface race itself, and the null-state it leaves behind when a
+  /// failed controller was still in the plugin's hands.
+  static bool _isTransientStartupFailure(String error) =>
+      error.contains('surfaceProducerHandlesCropAndRotation') ||
+      error.contains('has not yet been initialized') ||
+      error.contains('Null check operator');
+
+  /// This camera will not run the three streams at the size just asked for.
+  /// Worth retrying at a different size; not worth showing anyone.
+  static bool _isUnsupportedCombination(String error) =>
+      error.contains('No supported surface combination') ||
+      error.contains('too many use cases');
+
+  /// Steps down to the next resolution. False once they are exhausted.
+  bool _stepDownResolution() {
+    if (_preset + 1 >= _presets.length) return false;
+    _preset++;
+    return true;
+  }
+
+  Future<bool> _tryOpen() async {
+    // Held outside the try so a failure part-way through initialisation can
+    // still dispose it — a half-built controller left behind is exactly what
+    // made the retry crash with "Null check operator used on a null value".
+    CameraController? controller;
+    Future<void> discard() async {
+      final failed = controller;
+      controller = null;
+      if (failed != null) {
+        try {
+          await failed.dispose();
+        } on Object {
+          // Already broken; nothing to release.
+        }
+      }
+    }
+
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
         if (mounted) setState(() => _error = 'This handset has no camera.');
-        return;
+        return false;
       }
       final back = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
 
-      final controller = CameraController(
+      controller = CameraController(
         back,
         // Enough to read a printed best-before code off a label, without the
-        // buffers a full-sensor preset would hold open for the whole capture.
-        ResolutionPreset.veryHigh,
+        // buffers a full-sensor preset would hold open for the whole capture
+        // — stepped down if this camera will not run three streams that big.
+        _presets[_preset],
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
       // The Android plugin asks for the camera permission here, so there is no
       // separate prompt to manage.
-      await controller.initialize();
+      await controller!.initialize();
 
       if (!mounted) {
-        await controller.dispose();
-        return;
+        await discard();
+        return false;
       }
       setState(() {
         _controller = controller;
         _error = null;
       });
+      return false;
     } on CameraException catch (e) {
+      await discard();
+      // The camerax surface race surfaces as a CameraException with the
+      // IllegalStateException text in its description — it must retry, not
+      // report. (It was only caught in the generic branch below before,
+      // which this branch shadowed, so the inspector kept seeing it.)
+      final text = '${e.code} ${e.description ?? ''}';
+      if (_isTransientStartupFailure(text)) {
+        return true;
+      }
+      if (_isUnsupportedCombination(text) && _stepDownResolution()) {
+        return true;
+      }
       if (mounted) {
         setState(
           () => _error = switch (e.code) {
-            'CameraAccessDenied' || 'CameraAccessDeniedWithoutPrompt' =>
+            'CameraAccessDenied' ||
+            'CameraAccessDeniedWithoutPrompt' =>
               'The app has not been allowed to use the camera. Enable it in '
                   'Settings › Apps › FSA Inspector › Permissions.',
             'CameraAccessRestricted' =>
@@ -130,8 +226,18 @@ class _CameraPageState extends State<_CameraPage> with WidgetsBindingObserver {
         );
       }
     } on Object catch (e) {
+      await discard();
+      // The known transient start-up states retry silently; anything else
+      // is reported.
+      if (_isTransientStartupFailure(e.toString())) {
+        return true;
+      }
+      if (_isUnsupportedCombination(e.toString()) && _stepDownResolution()) {
+        return true;
+      }
       if (mounted) setState(() => _error = 'The camera could not start. $e');
     }
+    return false;
   }
 
   Future<void> _shutter() async {
@@ -162,10 +268,12 @@ class _CameraPageState extends State<_CameraPage> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           if (_error != null)
-            _CameraError(message: _error!, onRetry: () {
-              setState(() => _error = null);
-              unawaited(_open());
-            })
+            _CameraError(
+                message: _error!,
+                onRetry: () {
+                  setState(() => _error = null);
+                  unawaited(_open());
+                })
           else if (controller == null)
             const Center(
               child: CircularProgressIndicator(color: Colors.white),
@@ -311,7 +419,8 @@ class _CameraError extends StatelessWidget {
             const SizedBox(height: 20),
             FilledButton(
               onPressed: onRetry,
-              style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
+              style:
+                  FilledButton.styleFrom(backgroundColor: AppColors.brandPrimary),
               child: const Text('Try again'),
             ),
           ],

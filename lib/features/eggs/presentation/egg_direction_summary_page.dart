@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/responsive.dart';
+
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
 import '../data/eggs_repository.dart';
@@ -66,7 +68,7 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text(
-          'Direction summary',
+          'Rejection summary',
           style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17),
         ),
         backgroundColor: AppColors.surface,
@@ -74,7 +76,8 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
         elevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      body: FutureBuilder<_Data?>(
+      body: ContentWidth(
+          child: FutureBuilder<_Data?>(
         future: _future,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -86,7 +89,7 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
               child: Padding(
                 padding: const EdgeInsets.all(28),
                 child: Text(
-                  'This direction is no longer on the device.',
+                  'This rejection is no longer on the device.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.muted, height: 1.4),
                 ),
@@ -95,7 +98,7 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
           }
           return _body(data);
         },
-      ),
+      )),
     );
   }
 
@@ -123,9 +126,9 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
           status: direction.status,
         ),
         const SizedBox(height: 18),
-
         SummarySection(
-          title: 'Direction',
+          title: 'Rejection',
+          accent: AppColors.brandRed,
           children: [
             SummaryField(
               label: 'Covers',
@@ -139,9 +142,7 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
                 label: 'Quality correct by',
                 value: qualityBy == null ? '—' : formatDate(qualityBy),
                 warn: qualityOverdue,
-                note: qualityOverdue
-                    ? 'The correction date has passed.'
-                    : null,
+                note: qualityOverdue ? 'The correction date has passed.' : null,
               ),
             if (direction.labellingPart)
               SummaryField(
@@ -159,7 +160,6 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
             ),
           ],
         ),
-
         SummarySection(
           title: 'Client',
           children: [
@@ -168,14 +168,12 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
                 label: 'Producer', value: orDash(direction.producerSupplier)),
           ],
         ),
-
         SummarySection(
           title: 'Remarks',
           children: d.remarks.isEmpty
               ? const [SummaryEmpty(text: 'No standard remarks were ticked.')]
               : [for (final r in d.remarks) SummaryBullet(text: r)],
         ),
-
         if (direction.additionalRemarks.isNotEmpty)
           SummarySection(
             title: 'Additional remarks',
@@ -187,9 +185,7 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
               ),
             ],
           ),
-
         _sourceSection(d),
-
         SummarySection(
           title: 'Record',
           children: [

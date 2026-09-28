@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fsa_app/core/theme/app_theme.dart';
 import 'package:fsa_app/features/eggs/presentation/date_field.dart';
-import 'package:fsa_app/features/eggs/presentation/required_label.dart';
+import 'package:fsa_app/core/widgets/required_label.dart';
 
 void main() {
   DateTime? value;
@@ -15,6 +15,8 @@ void main() {
     bool isRequired = false,
     String? errorText,
     String? helperText,
+    DateTime? firstDate,
+    DateTime? lastDate,
   }) async {
     value = initial;
     tester.view.physicalSize = const Size(360, 800);
@@ -29,8 +31,8 @@ void main() {
               label: 'Best before',
               value: value,
               onChanged: (d) => setState(() => value = d),
-              firstDate: DateTime(2026, 8, 2),
-              lastDate: DateTime(2029, 1, 1),
+              firstDate: firstDate ?? DateTime(2026, 8, 2),
+              lastDate: lastDate ?? DateTime(2029, 1, 1),
               isRequired: isRequired,
               errorText: errorText,
               helperText: helperText,
@@ -128,6 +130,48 @@ void main() {
         (tester) async {
       await pump(tester);
       expect(find.byTooltip('Clear date'), findsNothing);
+    });
+
+    testWidgets('an unset date opens on today, not on the earliest allowed',
+        (tester) async {
+      final today = DateTime.now();
+      // The window the QUID verification date uses: two years back, so
+      // opening at its start left the inspector paging forward month by
+      // month to reach a record from last week.
+      await pump(
+        tester,
+        firstDate: DateTime(today.year - 2),
+        lastDate: DateTime(today.year + 1),
+      );
+      await tester.tap(find.byType(InputDecorator));
+      await tester.pumpAndSettle();
+
+      final dialog = tester.widget<DatePickerDialog>(
+        find.byType(DatePickerDialog),
+      );
+      expect(dialog.initialDate!.year, today.year);
+      expect(dialog.initialDate!.month, today.month);
+      expect(dialog.initialDate!.day, today.day);
+    });
+
+    testWidgets('a deadline opens on the first date it will take',
+        (tester) async {
+      // A correct-by date cannot be earlier than tomorrow, so today is
+      // outside the window and the nearest date it will take is the answer.
+      final tomorrow = DateTime.now().add(const Duration(days: 1));
+      await pump(
+        tester,
+        firstDate: tomorrow,
+        lastDate: DateTime(tomorrow.year + 2),
+      );
+      await tester.tap(find.byType(InputDecorator));
+      await tester.pumpAndSettle();
+
+      final dialog = tester.widget<DatePickerDialog>(
+        find.byType(DatePickerDialog),
+      );
+      expect(dialog.initialDate!.day, tomorrow.day);
+      expect(dialog.initialDate!.month, tomorrow.month);
     });
 
     testWidgets('a stored date outside the allowed window still opens',

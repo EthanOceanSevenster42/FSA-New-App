@@ -88,9 +88,11 @@ void main() {
     // ladder has a hole an egg could fall through.
     expect(ladder.where((b) => b.maxMassG == null).length, 1);
     // And the declaration is present but out of the ladder.
+    // "Mixed Sizes" — plural at the FSA's request (2026-08-21); the
+    // original's own picker says "Mixed Size".
     expect(
       bands.where((b) => !b.isMassBand).map((b) => b.name),
-      ['Mixed Size'],
+      ['Mixed Sizes'],
     );
   });
 
