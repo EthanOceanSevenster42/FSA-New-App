@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'missing_fields.dart';
 import 'picker_field.dart';
 import 'required_label.dart';
 
@@ -251,7 +252,10 @@ class _PickerMenuFieldState<T> extends State<PickerMenuField<T>> {
             isEmpty: false,
             decoration: PickerField.decoration(
               helperText: _empty ? widget.emptyHint : widget.helper,
-            ).copyWith(errorText: state.errorText),
+            ).copyWith(
+              errorText:
+                  state.errorText ?? MissingFieldScope.errorOf(context),
+            ),
             child: Row(
               children: [
                 Expanded(

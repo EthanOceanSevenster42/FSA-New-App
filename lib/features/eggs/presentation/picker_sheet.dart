@@ -17,6 +17,11 @@ Future<T?> showPickerSheet<T>({
   required String Function(T) itemLabel,
   T? selected,
   String Function(T)? itemSubtitle,
+
+  /// A status icon in front of each option. The chosen option is then shown
+  /// by a tinted row rather than a trailing tick, so the tick cannot be
+  /// mistaken for the option's status.
+  Widget? Function(T)? itemLeading,
 }) {
   return showModalBottomSheet<T>(
     context: context,
@@ -80,7 +85,12 @@ Future<T?> showPickerSheet<T>({
                   final item = items[i];
                   final isSelected = selected != null && item == selected;
                   final subtitle = itemSubtitle?.call(item);
+                  final leading = itemLeading?.call(item);
                   return ListTile(
+                    leading: leading,
+                    tileColor: itemLeading != null && isSelected
+                        ? AppColors.brandPrimary.withValues(alpha: 0.08)
+                        : null,
                     contentPadding:
                         const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
                     title: Text(
@@ -99,7 +109,7 @@ Future<T?> showPickerSheet<T>({
                             style: TextStyle(
                                 fontSize: 12.5, color: AppColors.muted),
                           ),
-                    trailing: isSelected
+                    trailing: isSelected && itemLeading == null
                         ? const Icon(Icons.check,
                             color: AppColors.brandPrimary, size: 22)
                         : null,

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'missing_fields.dart';
 import 'required_label.dart';
 
 /// A text field that offers matching records as you type.
@@ -318,6 +319,7 @@ class _SearchPickerFieldState<T> extends State<SearchPickerField<T>> {
             onChanged: _onChanged,
             decoration: InputDecoration(
               hintText: 'Search by name',
+              errorText: MissingFieldScope.errorOf(context),
               prefixIcon: const Icon(Icons.search, size: 20),
               suffixIcon: widget.controller.text.isEmpty
                   ? null

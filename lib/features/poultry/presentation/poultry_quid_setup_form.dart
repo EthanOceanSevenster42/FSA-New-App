@@ -14,6 +14,7 @@ import '../../visits/domain/visit_prefill.dart';
 import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
 import '../domain/poultry_rules.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/search_picker.dart';
 import 'poultry_form_widgets.dart';
 import '../domain/quid_flow.dart';
@@ -127,6 +128,10 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
   bool _setupComplete = false;
   bool _saving = false;
 
+  /// The required fields a refused Add or set-up flagged, so the page can
+  /// take the inspector to the first and mark each red.
+  final _missing = MissingFields();
+
   /// The percentage an injector is held to, as the list shows it.
   String _percentOf(({String name, bool dispensation, String percent}) i) =>
       i.dispensation
@@ -178,6 +183,7 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -192,6 +198,11 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
           content: Text('Name the injector before adding it to the list.'),
         ),
       );
+      await _missing.flag(
+        context,
+        const ['injectorName'],
+        stillMissing: (_) => _injectorName.text.trim().isEmpty,
+      );
       return;
     }
     final typed = _dispensation.text.trim().replaceAll(',', '.');
@@ -202,9 +213,20 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
             'Injector Add Error',
             'Dispensation QUID option selected, but no Dispensation Value '
                 'has been entered.');
+        if (!mounted) return;
+        await _missing.flag(
+          context,
+          const ['dispensation'],
+          stillMissing: (_) {
+            final v = double.tryParse(
+                _dispensation.text.trim().replaceAll(',', '.'));
+            return _nextIsDispensation && (v == null || v <= 0);
+          },
+        );
         return;
       }
     }
+    _missing.clear();
     setState(() {
       _injectors.add((
         name: name,
@@ -243,8 +265,15 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
     if (_injectors.isEmpty) {
       await _alert('Injector Details Error',
           'No Injector details has been added. Please address.');
+      if (!mounted) return;
+      await _missing.flag(
+        context,
+        const ['injectors'],
+        stillMissing: (_) => _injectors.isEmpty,
+      );
       return;
     }
+    _missing.clear();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -571,7 +600,14 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                         fontSize: 12.5, color: AppColors.muted, height: 1.35),
                   ),
                 ),
-                poultryField(_injectorName, 'Injector Name/Identifier'),
+                MissingFieldAnchor(
+                  fields: _missing,
+                  id: 'injectorName',
+                  framed: false,
+                  listenable: _injectorName,
+                  child:
+                      poultryField(_injectorName, 'Injector Name/Identifier'),
+                ),
                 poultryChoice(
                   label: 'QUID Percentage for this Injector',
                   options: const ['Regulated Standard', 'Dispensation'],
@@ -581,7 +617,12 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                     if (!_nextIsDispensation) _dispensation.clear();
                   }),
                 ),
-                poultryField(
+                MissingFieldAnchor(
+                  fields: _missing,
+                  id: 'dispensation',
+                  framed: false,
+                  listenable: _dispensation,
+                  child: poultryField(
                   _dispensation,
                   'Dispensation QUID %',
                   enabled: _nextIsDispensation,
@@ -592,6 +633,7 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                       : 'Not Used — the regulated '
                           '${quidRegulatedPercent(isWholeCarcass: _isWholeCarcass).toStringAsFixed(0)}% '
                           'applies.',
+                ),
                 ),
                 Row(
                   children: [
@@ -618,7 +660,12 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                     ),
                   ],
                 ),
-                _injectorList(),
+                MissingFieldAnchor(
+                  fields: _missing,
+                  id: 'injectors',
+                  message: 'Add at least one injector',
+                  child: _injectorList(),
+                ),
                 // The original saves the set-up from this switch: it checks
                 // there is an injector, asks for confirmation, then saves.
                 poultrySwitch(

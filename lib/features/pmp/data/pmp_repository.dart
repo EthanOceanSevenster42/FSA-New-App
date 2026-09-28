@@ -11,6 +11,7 @@ import '../../../core/documents/direction_pdf.dart';
 import '../../../core/documents/fsa_checklist_pdf.dart';
 import '../../../core/documents/fsa_documents.dart';
 import '../domain/pmp_rules.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// PMP reference data and captured work.
 ///
@@ -361,7 +362,7 @@ class PmpRepository {
           },
           originalId: r.originalId,
           description: r.description,
-          regulationReference: r.regulationReference,
+          regulationReference: cleanRegulation(r.regulationReference),
           minLetteringHeight: r.minLetteringHeight,
         ),
     ];
@@ -529,7 +530,7 @@ class PmpRepository {
           DirectionDeviation(
             product: product,
             nature: f.description,
-            regulation: f.regulationReference,
+            regulation: cleanRegulation(f.regulationReference),
           ),
       ],
       correctByDate: dmy(i.correctByDate),
@@ -605,7 +606,7 @@ class PmpRepository {
           for (final r in rows)
             FsaChecklistRow(
               requirement: r.description,
-              regulation: r.regulationReference,
+              regulation: cleanRegulation(r.regulationReference),
               standard:
                   r.minLetteringHeight.isEmpty ? '-' : r.minLetteringHeight,
               deviation: !checked

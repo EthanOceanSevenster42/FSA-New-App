@@ -15,6 +15,7 @@ import '../../../core/services/in_app_camera.dart';
 import '../../../core/services/photo_storage.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../data/eggs_repository.dart';
 import '../../seizures/presentation/record_seizure.dart';
@@ -33,6 +34,7 @@ import '../../../core/widgets/search_picker.dart';
 import '../domain/egg_rules.dart';
 import '../../poultry/presentation/signature_pad.dart';
 import '../../../core/widgets/picker_menu_field.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// Poultry Egg inspection capture.
 ///
@@ -308,6 +310,10 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
 
   EggGradeRef? _consignmentGrade;
 
+  /// The required fields a refused submit flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
+
   @override
   void initState() {
     super.initState();
@@ -347,6 +353,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -831,39 +838,63 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
   /// Each check corresponds to a rule the
   /// `NewPoultyEggInspectionPage` performed, so an inspector cannot save
   /// something here that the old app would have rejected.
-  String? _blockingIssue() {
+  ///
+  /// Every problem, in the order the checks run — the first is the one the
+  /// submit names — each with the [_missing] id of the field that answers
+  /// it. The id is null where that field is not on the page, so there is
+  /// nothing to take the inspector to.
+  List<({String? id, String message})> _blockingIssues() {
+    final issues = <({String? id, String message})>[];
+    void add(String? id, String message) =>
+        issues.add((id: id, message: message));
+    // The sizing block, which holds the best-before date, the batch number
+    // and the egg entry, is only on the page while sampling is.
+    String? sizing(String id) => _samplingVisible ? id : null;
+
     // --- Facility
     if (_facilityName.text.trim().isEmpty) {
-      return 'Inspection facility name is required.';
+      add(widget.visit == null ? 'facilityName' : null,
+          'Inspection facility name is required.');
     }
     // Inside a visit these are the door's answers, not this form's, and the
     // form no longer shows them — so it must not refuse to save on a field
     // the inspector cannot see. Where the door's answer is not one the egg
     // rules offer, the record simply carries none.
     if (widget.visit == null) {
-      if (_facilityType == null) return 'Facility type must be selected.';
-      if (_reason == null) return 'Reason for inspection must be selected.';
+      if (_facilityType == null) {
+        add('facilityType', 'Facility type must be selected.');
+      }
+      if (_reason == null) {
+        add('reason', 'Reason for inspection must be selected.');
+      }
     }
 
     // --- Product
     if (_producer.text.trim().isEmpty) {
-      return 'Egg producer / supplier is required.';
+      add(_producerFromVisit ? null : 'producer',
+          'Egg producer / supplier is required.');
     }
     final batch = BatchNumber.missing(_batch.text);
-    if (batch != null) return batch;
-    if (!_batchEntryValid(_batch.text)) {
-      return 'The batch number must be a number, or N/A — nothing else '
-          'counts as a batch.';
+    if (batch != null) {
+      add(sizing('batch'), batch);
+    } else if (!_batchEntryValid(_batch.text)) {
+      add(
+          sizing('batch'),
+          'The batch number must be a number, or N/A — nothing else '
+          'counts as a batch.');
     }
-    if (_traySize == null) return 'Tray packaging size must be selected.';
+    if (_traySize == null) {
+      add('traySize', 'Tray packaging size must be selected.');
+    }
     // Without these there is no tolerance band to judge deviations against,
     // so whether a direction must be served cannot be answered.
     if (_declaredSize == null) {
-      return 'The size the consignment is sold as must be selected.';
+      add('declaredSize',
+          'The size the consignment is sold as must be selected.');
     }
 
     final bestBefore = EggValidation.bestBefore(_bestBefore);
-    if (bestBefore != null) return bestBefore;
+    if (bestBefore != null) add(sizing('bestBefore'), bestBefore);
 
     // --- Samples
     //
@@ -871,8 +902,10 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     // possible at this retailer: the sizing and grading block is off the
     // screen, so demanding an egg from it asks for something the form no
     // longer offers, and the inspection could not be saved at all.
-    if (EggValidation.samplesRequired(
-        weighingNotRequired: _weighingNotRequired)) {
+    //
+    // Only the first problem with the samples is named: each one is answered
+    // at the same egg entry.
+    String? sampleIssue() {
       if (_samples.isEmpty) return 'Capture at least one egg before saving.';
       if (_samples.length > EggValidation.maxSamples) {
         return 'Maximum number of samples reached '
@@ -897,20 +930,80 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             '${EggRules.haughAdditionalSampleThreshold.toStringAsFixed(0)} '
             'HU — $_outstandingSamples further sample(s) required.';
       }
+      return null;
+    }
+
+    if (EggValidation.samplesRequired(
+        weighingNotRequired: _weighingNotRequired)) {
+      final sample = sampleIssue();
+      if (sample != null) add(sizing('eggEntry'), sample);
     }
 
     // --- Evidence. Message: "No photo of the label has been taken. Please
     // address." A labelling finding without a photograph cannot be defended.
     if (!_photos.any((p) => p.kind == 'label')) {
-      return 'No photo of the label has been taken. Please address.';
+      add('photo:label',
+          'No photo of the label has been taken. Please address.');
     }
 
     // An address is taken as typed. A malformed one is a typo, not a
     // reason to refuse an inspection: the server keeps it either way, and
     // blocking sign-off here stranded finished inspections on the handset
     // over an address the inspector often did not have to begin with.
-    return null;
+    return issues;
   }
+
+  /// The [_missing] ids of the sample set still owed before the inspection
+  /// can be signed off — what [_qualitySetReadyToSave] waits on — in page
+  /// order.
+  List<String> _readinessMissing() => [
+        if (_samplingVisible && !_qualitySetReadyToSave) ...[
+          if (_photoCount('numbering') < _minPhotos) 'photo:numbering',
+          if (_weighedCount < EggValidation.maxSamples ||
+              (!_haughNotRequired &&
+                  _haughCount < EggRules.haughReadingsRequired))
+            'eggEntry',
+        ],
+      ];
+
+  /// Every field a refused submit would flag now, for [_missing] to clear
+  /// each one's red as it is answered.
+  bool _stillMissing(String id) {
+    if (_blockingIssues().any((i) => i.id == id)) return true;
+    if (_readinessMissing().contains(id)) return true;
+    if (id == 'photo:egg') return !_directionPhotosComplete;
+    return false;
+  }
+
+  /// Shows [message], then takes the inspector to [ids] and marks them red.
+  Future<void> _refuse(String message, List<String> ids) async {
+    _toast(message);
+    if (!mounted) return;
+    // The egg entry shows one egg at a time; open the one that is short,
+    // rather than point at whichever egg happens to be on screen.
+    final short = _firstUnweighedEgg;
+    if (ids.contains('eggEntry') && short != null && _samplingVisible) {
+      _showEgg(short);
+    }
+    await _missing.flag(context, ids, stillMissing: _stillMissing);
+  }
+
+  /// Wraps a required field so a refused submit can scroll to it and mark
+  /// it. [framed] outlines it for inputs that do not turn their own border
+  /// red.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
 
   /// Message: "Please confirm that you want to save the entire inspection with
   /// the info captured as is?" — and inside a grouped inspection, that
@@ -1064,15 +1157,45 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
       ];
 
   Future<void> _save() async {
-    final issue = _blockingIssue();
-    if (issue != null) {
-      _toast(issue);
+    final issues = _blockingIssues();
+    if (issues.isNotEmpty) {
+      // Taken to the first problem, the one the message names; every other
+      // field still owed is marked red with it.
+      await _refuse(issues.first.message, [
+        for (final i in issues)
+          if (i.id != null) i.id!,
+      ]);
+      return;
+    }
+    // The button used to stay greyed until the sample set was complete and
+    // any rejection carried its photographs, which left the inspector with
+    // nothing to press to find out what was still owed. The same two rules
+    // now refuse the submit here instead, and point at the field.
+    if (!_qualitySetReadyToSave) {
+      final outstanding = _readinessOutstanding;
+      await _refuse(
+        _samplingVisible
+            ? 'The sample set is not complete. Still outstanding: '
+                '${outstanding.isEmpty ? 'the egg numbering photographs' : outstanding}.'
+            : 'Signatures open once the labelling checklist is confirmed '
+                'complete and the sample set has been captured.',
+        _readinessMissing(),
+      );
+      return;
+    }
+    if (!_directionPhotosComplete) {
+      await _refuse(
+        'The rejection still needs: $_directionPhotosOutstanding.',
+        const ['photo:egg'],
+      );
       return;
     }
     if (_photos.isEmpty) {
-      _toast('Capture at least one inspection photo before saving.');
+      await _refuse('Capture at least one inspection photo before saving.',
+          const ['photo:label']);
       return;
     }
+    _missing.clear();
     if (!await _confirmSubmit()) return;
     if (!mounted) return;
 
@@ -1407,11 +1530,10 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             // The original enables btnSaveRecords only once the sample set
             // is ready, the GPS reading is stored, both signatures are on the
             // record and any direction it raises carries its photographs.
-            onPressed: (_saving ||
-                    !_qualitySetReadyToSave ||
-                    !_directionPhotosComplete)
-                ? null
-                : _save,
+            //
+            // Those rules still hold, but in _save: the button stays pressable
+            // so a press can take the inspector to whatever is still owed.
+            onPressed: _saving ? null : _save,
             child: _saving
                 ? const SizedBox(
                     width: 20,
@@ -1610,22 +1732,22 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
         // a second time — and lets one record disagree with the visit it
         // belongs to.
         if (widget.visit == null) ...[
-          _Drop<EggInspectionReason>(
+          _anchor('reason', _Drop<EggInspectionReason>(
             label: 'Reason for Inspection',
             value: _reason,
             items: _reasons,
             itemLabel: (r) => r.name,
             onChanged: (r) => setState(() => _reason = r),
             isRequired: true,
-          ),
-          _Drop<EggFacilityType>(
+          )),
+          _anchor('facilityType', _Drop<EggFacilityType>(
             label: 'Inspection Facility Type',
             value: _facilityType,
             items: _facilityTypes,
             itemLabel: (f) => f.name,
             onChanged: (f) => setState(() => _facilityType = f),
             isRequired: true,
-          ),
+          )),
         ],
         // The facility is captured once, at the top of the grouped
         // inspection, so it is not asked for again on every record inside
@@ -1635,7 +1757,8 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           // and so the same facility is spelled the same way on every record.
           // One field, not two: type the premises and pick it from the list, or
           // type a name that is not on the list and carry on.
-          SearchPickerField<EggFacility>(
+          _anchor('facilityName', listenable: _facilityName,
+              SearchPickerField<EggFacility>(
             label: 'Inspection Facility Name',
             controller: _facilityName,
             options: _facilities,
@@ -1654,7 +1777,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             isRequired: true,
             emptyHint: 'No facilities on this device yet. Sync from the Eggs '
                 'menu to download them.',
-          ),
+          )),
         ],
       ];
 
@@ -1664,7 +1787,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
 
   List<Widget> _declarationFields() => [
         if (!_producerFromVisit)
-          SearchPickerField<EggSupplier>(
+          _anchor('producer', SearchPickerField<EggSupplier>(
             label: 'Egg Producer/Supplier',
             controller: _producer,
             options: _suppliers,
@@ -1676,10 +1799,10 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             onAddNew: _addSupplier,
             emptyHint: 'No suppliers on this device yet. Sync from the Eggs '
                 'menu, or add one here.',
-          ),
+          )),
         // What the consignment claims to be. The deviation tolerances are
         // keyed on these, so they decide how strictly the sample is judged.
-        _Drop<EggSizeBand>(
+        _anchor('declaredSize', _Drop<EggSizeBand>(
           label: 'Egg Size',
           value: _declaredSize,
           items: _sizeOptions,
@@ -1711,7 +1834,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           // the inspector is expected to answer out of their own head.
           helper: 'Choose "Not indicated" if the pack shows no size.',
           isRequired: true,
-        ),
+        )),
         _Drop<EggGradeRef>(
           label: 'Egg Grade',
           value: _declaredGrade,
@@ -1735,7 +1858,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           // invent a grade to get the inspection submitted.
           helper: 'Choose "Not indicated" if the pack shows no grade.',
         ),
-        _Drop<EggTraySize>(
+        _anchor('traySize', _Drop<EggTraySize>(
           label: 'Tray Packaging Size',
           value: _traySize,
           items: _trayOptions,
@@ -1751,11 +1874,11 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             unawaited(_askAboutSeizureIfNeeded());
           },
           isRequired: true,
-        ),
+        )),
       ];
 
   List<Widget> _sizingChecklistFields() => [
-        DateField(
+        _anchor('bestBefore', DateField(
           label: 'Best Before/Best Quality Before Date',
           value: _bestBefore,
           onChanged: (d) => setState(() => _bestBefore = d),
@@ -1775,8 +1898,8 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                   'carries the finding.'
               : 'Printed on the pack. The Batch Number opens once the '
                   'date is set.',
-        ),
-        _Text(
+        )),
+        _anchor('batch', _Text(
           label: 'Batch Number',
           isRequired: true,
           controller: _batch,
@@ -1791,7 +1914,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                   ? 'The number off the pack, or N/A if it has none.'
                   : 'A number, or N/A — nothing else counts as a batch.',
           onChanged: (_) => setState(() {}),
-        ),
+        )),
         YesNoQuestion(
           label: 'Is Pasteurised Eggs Present',
           value: _pasteurised,
@@ -2070,11 +2193,27 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     final highest = _highestEggNumber;
     final furthest = _currentEggNumber > highest ? _currentEggNumber : highest;
     final options = [for (var n = 1; n <= furthest; n++) n];
+    // Opened and moved off with no weight — not the egg on screen now.
+    bool skipped(int n) =>
+        n <= highest && !_eggWeighed(n) && n != _currentEggNumber;
     final picked = await showPickerSheet<int>(
       context: context,
       title: 'Egg #',
       items: options,
-      itemLabel: (n) => n <= highest ? 'Egg $n of $highest' : 'Egg $n (new)',
+      itemLabel: (n) => n > highest
+          ? 'Egg $n (new)'
+          : skipped(n)
+              ? 'Egg $n of $highest — skipped, no weight'
+              : 'Egg $n of $highest',
+      // A tick on every egg captured, a cross on one skipped with no weight,
+      // so a gap in sixty can be found at a glance instead of by counting.
+      itemLeading: (n) => _eggWeighed(n)
+          ? const Icon(Icons.check_circle,
+              color: AppColors.brandPrimary, size: 22)
+          : skipped(n)
+              ? const Icon(Icons.cancel, color: AppColors.brandRed, size: 22)
+              : Icon(Icons.radio_button_unchecked,
+                  color: AppColors.border, size: 22),
       selected: _currentEggNumber,
     );
     if (picked == null || !mounted) return;
@@ -2101,14 +2240,44 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
         _loadCurrentEggIntoEntries();
       });
 
-  /// The number the "Add egg" button offers: one past whichever is further
-  /// along — the highest weighed egg or the fresh one already on screen —
-  /// so adding egg 2 immediately moves the offer on to egg 3.
-  int get _nextEggNumber =>
-      (_currentEggNumber > _highestEggNumber
-          ? _currentEggNumber
-          : _highestEggNumber) +
-      1;
+  /// Whether egg [number] carries a weight — what the sample count counts.
+  bool _eggWeighed(int number) =>
+      _samples.any((x) => x.number == number && (x.massG ?? 0) > 0);
+
+  /// The lowest egg number still without a weight, or null once all
+  /// [EggValidation.maxSamples] are weighed.
+  int? get _firstUnweighedEgg {
+    for (var n = 1; n <= EggValidation.maxSamples; n++) {
+      if (!_eggWeighed(n)) return n;
+    }
+    return null;
+  }
+
+  /// Egg numbers below the highest one opened that were left without a
+  /// weight — skipped with NEXT before a reading was typed.
+  List<int> get _skippedEggs => [
+        for (var n = 1; n < _highestEggNumber; n++)
+          if (!_eggWeighed(n) && n != _currentEggNumber) n,
+      ];
+
+  /// The number NEXT and "Add egg" offer: the next egg after this one still
+  /// without a weight, so adding egg 2 moves the offer on to egg 3.
+  ///
+  /// Past the end it comes back round to any egg skipped on the way. It used
+  /// to be one past the highest egg, so an egg NEXT moved off before its
+  /// weight was typed was never offered again: the button read "ALL 60 EGGS
+  /// CAPTURED" over 59 weighed eggs and the inspection could not be signed
+  /// off, with nothing on screen saying which egg was short.
+  ///
+  /// Past [EggValidation.maxSamples] when there is nowhere left to go.
+  int get _nextEggNumber {
+    for (var n = _currentEggNumber + 1; n <= EggValidation.maxSamples; n++) {
+      if (!_eggWeighed(n)) return n;
+    }
+    final skipped = _firstUnweighedEgg;
+    if (skipped != null && skipped != _currentEggNumber) return skipped;
+    return EggValidation.maxSamples + 1;
+  }
 
   /// The bottom-of-form shortcut: jump to the next fresh egg and scroll the
   /// capture fields back into view so the weight can be typed right away.
@@ -2393,7 +2562,8 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
             ),
           ),
         ),
-        LabelledField(
+        _anchor('eggEntry', framed: true, listenable: _weightEntry,
+            LabelledField(
           label: 'Egg Weight (g)',
           child: TextField(
             controller: _weightEntry,
@@ -2407,7 +2577,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
               errorMaxLines: 2,
             ),
           ),
-        ),
+        )),
         LabelledField(
           label: 'Haugh Meter Value (mm)',
           child: TextField(
@@ -2456,7 +2626,9 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                 label: Text(
                   _nextEggNumber <= EggValidation.maxSamples
                       ? 'NEXT — EGG $_nextEggNumber'
-                      : 'ALL ${EggValidation.maxSamples} EGGS CAPTURED',
+                      : _firstUnweighedEgg == null
+                          ? 'ALL ${EggValidation.maxSamples} EGGS CAPTURED'
+                          : 'EGG $_currentEggNumber STILL NEEDS A WEIGHT',
                 ),
               ),
             ),
@@ -2902,7 +3074,8 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     final haughReadings = _samples.where((s) => (s.haugh ?? 0) > 0).length;
     return [
       if (weighed < EggValidation.maxSamples)
-        '$weighed of ${EggValidation.maxSamples} eggs weighed',
+        '$weighed of ${EggValidation.maxSamples} eggs weighed'
+            '${_skippedEggs.isEmpty ? '' : ' (no weight on egg ${_skippedEggs.join(', ')})'}',
       if (!_haughNotRequired && haughReadings < EggRules.haughReadingsRequired)
         '$haughReadings of ${EggRules.haughReadingsRequired} Haugh readings',
       if (!_photos.any((p) => p.kind == 'numbering'))
@@ -3105,12 +3278,13 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                           r.screenLabel.isEmpty ? r.description : r.screenLabel,
                           style: const TextStyle(fontSize: 13.5),
                         ),
-                        if (r.regulation.isNotEmpty ||
+                        if (cleanRegulation(r.regulation).isNotEmpty ||
                             (letteringMinsMm != null &&
                                 index < letteringMinsMm.length))
                           Text(
                             [
-                              if (r.regulation.isNotEmpty) r.regulation,
+                              if (cleanRegulation(r.regulation).isNotEmpty)
+                                cleanRegulation(r.regulation),
                               if (letteringMinsMm != null &&
                                   index < letteringMinsMm.length)
                                 'Lettering \u2265 ${letteringMinsMm[index]} mm',
@@ -3206,7 +3380,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
     final shots = _photos.where((p) => p.kind == kind).toList();
     final metMinimum = minimum > 0 && shots.length >= minimum;
     final atMaximum = maximum > 0 && shots.length >= maximum;
-    return Padding(
+    return _anchor('photo:$kind', framed: true, Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3327,7 +3501,7 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
           ],
         ],
       ),
-    );
+    ));
   }
 
   List<Widget> _resultFields() {
@@ -3517,6 +3691,8 @@ class _Text extends StatelessWidget {
           decoration: InputDecoration(
             helperText: helper,
             helperMaxLines: 2,
+            // Red while a refused submit has flagged this field.
+            errorText: MissingFieldScope.errorOf(context),
           ),
         ),
       );

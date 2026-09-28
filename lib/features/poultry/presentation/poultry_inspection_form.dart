@@ -18,6 +18,7 @@ import '../../seizures/presentation/record_seizure.dart';
 import '../../visits/domain/visit_prefill.dart';
 import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/search_picker.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import 'poultry_evidence_section.dart';
@@ -183,6 +184,10 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   /// the top of the screen instead of leaving the inspector halfway down a
   /// form they have already filled in.
   final _sampleAnchor = GlobalKey();
+
+  /// The required fields a refused save flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
 
   /// A photograph is tied to its sample by its caption, which is also what
   /// the printed sheet shows beside it.
@@ -382,6 +387,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -898,25 +904,53 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   /// over them — an inspection completed with no poultry type and no grade,
   /// asterisks and all. These are read from the state itself, which is
   /// always there.
-  List<String> _missingRequired(_Reference reference) => [
-        if (_reasonId == null) 'Reason for Inspection',
-        if (_locationId == null) 'Inspection Facility Type',
-        if (_meatTypeId == null) 'Poultry Type',
+  ///
+  /// In page order, as ids for [_missing] with the caption each is shown by.
+  List<({String id, String label})> _missingRequired(_Reference reference) => [
+        if (_reasonId == null) (id: 'reason', label: 'Reason for Inspection'),
+        if (_locationId == null)
+          (id: 'location', label: 'Inspection Facility Type'),
+        if (_meatTypeId == null) (id: 'meatType', label: 'Poultry Type'),
         if (_gradingApplies(reference)) ...[
-          if (_designationId == null) 'Class Designation Type',
-          if (_gradeId == null) 'Grade',
+          if (_designationId == null)
+            (id: 'designation', label: 'Class Designation Type'),
+          if (_gradeId == null) (id: 'grade', label: 'Grade'),
         ],
       ];
 
+  /// Wraps a required field so a refused save can scroll to it and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    bool enabled = true,
+  }) =>
+      enabled
+          ? MissingFieldAnchor(
+              fields: _missing,
+              id: id,
+              framed: framed,
+              child: child,
+            )
+          : child;
+
   Future<void> _save(_Reference reference, {required bool completed}) async {
-    if (completed && !(_formKey.currentState?.validate() ?? false)) return;
     if (completed) {
+      // Marks whatever is on screen red; the list below finds the rest.
+      final formValid = _formKey.currentState?.validate() ?? false;
       final missing = _missingRequired(reference);
       if (missing.isNotEmpty) {
-        _toast('Answer ${missing.join(', ')} before completing this '
-            'inspection.');
+        _toast('Answer ${missing.map((m) => m.label).join(', ')} before '
+            'completing this inspection.');
+        await _missing.flag(
+          context,
+          [for (final m in missing) m.id],
+          stillMissing: (id) =>
+              _missingRequired(reference).any((m) => m.id == id),
+        );
         return;
       }
+      if (!formValid) return;
     }
     final sampleCount = _sampleCount(reference);
     if (completed) {
@@ -925,8 +959,10 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
       if (photos.length < requiredPhotos) {
         _toast(
             'Take $requiredPhotos grading ${requiredPhotos == 1 ? 'photo' : 'photos'} before completing this inspection.');
+        if (mounted) await _missing.flag(context, const ['photos']);
         return;
       }
+      _missing.clear();
     }
     setState(() => _saving = true);
 
@@ -1096,19 +1132,19 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           // form should be reading the same words in the same order.
           poultrySection('Inspection Details'),
           if (!_reasonFromVisit)
-            poultryDropdown(
+            _anchor('reason', poultryDropdown(
               label: 'Reason for Inspection',
               value: _reasonId,
               items: reference.reasons,
               onChanged: (v) => setState(() => _reasonId = v),
-            ),
+            )),
           if (!_locationFromVisit)
-            poultryDropdown(
+            _anchor('location', poultryDropdown(
               label: 'Inspection Facility Type',
               value: _locationId,
               items: reference.locations,
               onChanged: (v) => setState(() => _locationId = v),
-            ),
+            )),
           // Pulls from the synced premises directory the way the egg form
           // does — pick a known facility and its details fill themselves, or
           // type a name that is not on the list and carry on.
@@ -1153,7 +1189,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           poultryField(_companyReg, 'Company Registration Number'),
 
           poultrySection('Classifcation and Grading Checklist'),
-          poultryDropdown(
+          _anchor('meatType', poultryDropdown(
             label: 'Poultry Type',
             value: _meatTypeId,
             items: [
@@ -1169,14 +1205,14 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
               _designationId = null;
               _gradeId = null;
             }),
-          ),
+          )),
           poultryDropdown(
             label: 'Portion Type',
             value: _portionTypeId,
             items: reference.portionTypes,
             onChanged: (v) => setState(() => _portionTypeId = v),
           ),
-          poultryDropdown(
+          _anchor('designation', poultryDropdown(
             label: 'Class Designation Type',
             value: _designationId,
             items: designations,
@@ -1188,7 +1224,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
               _designationId = v;
               _gradeId = null;
             }),
-          ),
+          )),
           poultryDropdown(
             label: 'Alternative Class Designation',
             value: _altDesignationId,
@@ -1210,7 +1246,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                 // on, so it cannot drift from the readings captured under it.
                 readOnly: true,
               ),
-            poultryDropdown(
+            _anchor('grade', poultryDropdown(
               label: 'Grade',
               value: _gradeId,
               items: [
@@ -1222,7 +1258,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                   ? 'Choose a class designation first'
                   : 'No grades permitted for this combination',
               onChanged: (v) => unawaited(_selectGrade(v, grades)),
-            ),
+            )),
           ] else
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -1252,7 +1288,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                 ? 'Photograph taken for $subject.'
                 : 'Photograph $subject — the carcass whole, with its '
                     'class and grade mark legible.';
-            return Column(
+            return _anchor('photos', framed: true, Column(
               key: _sampleAnchor,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1372,7 +1408,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                     ),
                   ),
               ],
-            );
+            ));
           }),
           // Portions (Reg. 5) belongs to portions, so it is asked wherever a
           // portion is inspected. It used to sit inside the grading block,
@@ -1391,7 +1427,12 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
             onToggle: _toggleCompliant,
           ),
 
-          PoultryEvidenceSection(
+          _anchor(
+            'photos',
+            framed: true,
+            // Up in the sample block instead while grading applies.
+            enabled: !_gradingApplies(reference),
+            PoultryEvidenceSection(
             repository: widget.captureRepository,
             recordUuid: _clientUuid,
             kind: 'grading',
@@ -1442,6 +1483,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
             // A draft is persisted the moment evidence lands, so a photograph
             // never points at a record that was never saved.
             onChanged: () => unawaited(_persist(completed: false)),
+          ),
           ),
 
           poultrySection('Rejection Form'),

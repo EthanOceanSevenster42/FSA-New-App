@@ -13,6 +13,7 @@ import '../../../core/documents/fsa_documents.dart';
 import '../domain/composition_checklist.dart';
 import '../domain/rawrmp_rules.dart';
 import 'composition_checklist_pdf.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// RawRMP reference data and captured work.
 ///
@@ -350,7 +351,7 @@ class RawRmpRepository {
           },
           originalId: r.originalId,
           description: r.description,
-          regulationReference: r.regulationReference,
+          regulationReference: cleanRegulation(r.regulationReference),
           minLetteringHeight: r.minLetteringHeight,
         ),
     ];
@@ -518,7 +519,7 @@ class RawRmpRepository {
           DirectionDeviation(
             product: product,
             nature: f.description,
-            regulation: f.regulationReference,
+            regulation: cleanRegulation(f.regulationReference),
           ),
       ],
       correctByDate: ymd(direction.correctByDate ?? i.correctByDate),
@@ -596,7 +597,7 @@ class RawRmpRepository {
           for (final r in rows)
             FsaChecklistRow(
               requirement: r.description,
-              regulation: r.regulationReference,
+              regulation: cleanRegulation(r.regulationReference),
               standard:
                   r.minLetteringHeight.isEmpty ? '-' : r.minLetteringHeight,
               deviation: !checked

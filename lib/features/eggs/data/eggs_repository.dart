@@ -15,6 +15,7 @@ import '../../../core/documents/fsa_documents.dart';
 import 'egg_weighing_checklist_pdf.dart';
 import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// What the server holds that this device does not.
 class ReferenceUpdates {
@@ -1087,7 +1088,7 @@ class EggsRepository {
           deviations.add(DirectionDeviation(
             product: product.isEmpty ? 'Eggs' : product,
             nature: r.description,
-            regulation: r.regulation,
+            regulation: cleanRegulation(r.regulation),
           ));
         }
       }
@@ -1233,7 +1234,7 @@ class EggsRepository {
           for (final r in rows)
             FsaChecklistRow(
               requirement: r.description,
-              regulation: r.regulation,
+              regulation: cleanRegulation(r.regulation),
               deviation:
                   failed.contains(r.id) ? FsaDeviation.yes : FsaDeviation.no,
             ),

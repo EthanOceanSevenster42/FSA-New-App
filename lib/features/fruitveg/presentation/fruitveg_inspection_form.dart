@@ -14,6 +14,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/data/local_database.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../data/fruitveg_repository.dart';
 import '../domain/grading_engine.dart';
 import '../../../core/widgets/picker_menu_field.dart';
@@ -59,6 +60,14 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
   final _page = PageController();
   int _step = 0;
   bool _saving = false;
+
+  /// Whether [_goto] is turning the page, so [_holdPage] leaves it be.
+  bool _turning = false;
+  bool _holdQueued = false;
+
+  /// The required fields a refused step or save flagged, so the page can
+  /// take the inspector to the first and mark each red.
+  final _missing = MissingFields();
 
   // Reference data
   List<FvInspectionPoint> _points = [];
@@ -119,6 +128,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
   @override
   void initState() {
     super.initState();
+    _page.addListener(_holdPage);
     _loadReference();
     unawaited(_captureLocation(silent: true));
   }
@@ -146,6 +156,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -265,16 +276,88 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     return null;
   }
 
+  /// The fields marked required (asterisked) that are still empty, in page
+  /// order, as ids for [_missing] with the step each sits on and its caption.
+  ///
+  /// Ids carry their step: the page view can hold two steps built at once.
+  List<({int step, String id, String label})> _missingRequired() => [
+        if (_point == null)
+          (step: 0, id: 'details.point', label: 'Inspection point'),
+        if (_group == null)
+          (step: 1, id: 'consignment.group', label: 'Commodity group'),
+        if (_commodity == null)
+          (step: 1, id: 'consignment.commodity', label: 'Commodity'),
+        if (_override && _overrideReason.text.trim().isEmpty)
+          (step: 6, id: 'result.overrideReason', label: 'Reason for override'),
+      ];
+
+  static const _photosId = 'photos.photos';
+
+  bool _stillMissing(String id) => id == _photosId
+      ? _photos.isEmpty
+      : _missingRequired().any((m) => m.id == id);
+
+  /// Takes the inspector to the step of the first of [missing], and marks
+  /// every one of them red.
+  Future<void> _flagMissing(
+    List<({int step, String id, String label})> missing,
+  ) async {
+    if (missing.isEmpty) return;
+    final step = missing.first.step;
+    // The step's list must be on screen for the field to be scrolled to.
+    if (step != _step) await _goto(step);
+    if (!mounted) return;
+    await _missing.flag(
+      context,
+      [for (final m in missing) m.id],
+      stillMissing: _stillMissing,
+    );
+  }
+
+  /// Wraps a required field so a refused step or save can scroll to it and
+  /// mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
+
+  /// NEXT: refuses to leave a step with an asterisked field still empty.
+  Future<void> _next() async {
+    final missing =
+        _missingRequired().where((m) => m.step == _step).toList();
+    if (missing.isNotEmpty) {
+      _toast('Fill in ${missing.map((m) => m.label).join(', ')} before '
+          'continuing.');
+      await _flagMissing(missing);
+      return;
+    }
+    if (_step == 3) await _computeGrade();
+    await _goto(_step + 1);
+  }
+
   Future<void> _save() async {
     final issue = _blockingIssue();
     if (issue != null) {
       _toast(issue);
+      await _flagMissing(_missingRequired());
       return;
     }
     if (_photos.isEmpty) {
       _toast('Capture at least one inspection photo before saving.');
+      await _flagMissing(
+          const [(step: 5, id: _photosId, label: 'Inspection photo')]);
       return;
     }
+    _missing.clear();
     setState(() => _saving = true);
 
     final sampleWeightKg = _num(_sampleWeight);
@@ -346,13 +429,36 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
     }
   }
 
-  void _goto(int step) {
+  Future<void> _goto(int step) async {
     setState(() => _step = step);
-    _page.animateToPage(
-      step,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-    );
+    _turning = true;
+    try {
+      await _page.animateToPage(
+        step,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    } finally {
+      _turning = false;
+    }
+  }
+
+  /// Keeps the wizard square on its step. Scrolling a flagged field into
+  /// view scrolls every list it sits in, the page view included, which
+  /// would otherwise leave the step nudged a few pixels sideways. Put back
+  /// in a microtask, before the frame is laid out, rather than from inside
+  /// the scroll animation's own tick.
+  void _holdPage() {
+    if (_turning || _holdQueued) return;
+    _holdQueued = true;
+    scheduleMicrotask(() {
+      _holdQueued = false;
+      if (_turning || !mounted || !_page.hasClients) return;
+      final p = _page.position;
+      if (!p.hasViewportDimension) return;
+      final settled = _step * p.viewportDimension;
+      if ((p.pixels - settled).abs() > 0.5) p.jumpTo(settled);
+    });
   }
 
   @override
@@ -432,7 +538,8 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
                   child: SizedBox(
                     height: 52,
                     child: OutlinedButton(
-                      onPressed: _saving ? null : () => _goto(_step - 1),
+                      onPressed:
+                          _saving ? null : () => unawaited(_goto(_step - 1)),
                       child: const Text('Back'),
                     ),
                   ),
@@ -449,8 +556,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
                             if (_step == _titles.length - 1) {
                               await _save();
                             } else {
-                              if (_step == 3) await _computeGrade();
-                              _goto(_step + 1);
+                              await _next();
                             }
                           },
                     child: _saving
@@ -489,13 +595,13 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
       );
 
   Widget _detailsStep() => _pad([
-        _DropdownField<FvInspectionPoint>(
+        _anchor('details.point', _DropdownField<FvInspectionPoint>(
           label: 'Inspection point *',
           value: _point,
           items: _points,
           itemLabel: (p) => p.name,
           onChanged: (p) => setState(() => _point = p),
-        ),
+        )),
         _TextField(label: 'Client name', controller: _clientName),
         _TextField(label: 'Client address', controller: _clientAddress),
         _TextField(label: 'Contact person', controller: _contactPerson),
@@ -508,21 +614,21 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
       ]);
 
   Widget _consignmentStep() => _pad([
-        _DropdownField<FvCommodityGroup>(
+        _anchor('consignment.group', _DropdownField<FvCommodityGroup>(
           label: 'Commodity group *',
           value: _group,
           items: _groups,
           itemLabel: (g) => g.name,
           onChanged: _onGroupChanged,
-        ),
-        _DropdownField<FvCommodity>(
+        )),
+        _anchor('consignment.commodity', _DropdownField<FvCommodity>(
           label: 'Commodity *',
           value: _commodity,
           items: _commodities,
           itemLabel: (c) => c.name,
           onChanged: _onCommodityChanged,
           hint: _group == null ? 'Select a commodity group first' : null,
-        ),
+        )),
         _DropdownField<FvCultivar>(
           label: 'Cultivar / variety',
           value: _cultivar,
@@ -740,12 +846,19 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
       );
 
   Widget _photosStep() => _pad([
-        for (final entry in const [
-          ('grn', 'GRN / delivery note'),
-          ('label', 'Business end (packaging) label'),
-          ('defect', 'Defect photo'),
-        ])
-          _photoRow(entry.$1, entry.$2),
+        // Any one photo lets the inspection save, so the rows are marked
+        // together.
+        _anchor(_photosId, framed: true, Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final entry in const [
+              ('grn', 'GRN / delivery note'),
+              ('label', 'Business end (packaging) label'),
+              ('defect', 'Defect photo'),
+            ])
+              _photoRow(entry.$1, entry.$2),
+          ],
+        )),
         Divider(height: 28, color: AppColors.border),
         ListTile(
           contentPadding: EdgeInsets.zero,
@@ -901,10 +1014,14 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           itemLabel: (g) => g.name,
           onChanged: (g) => setState(() => _overrideGrade = g),
         ),
-        _TextField(
-          label: 'Reason for override *',
-          controller: _overrideReason,
-          maxLines: 2,
+        _anchor(
+          'result.overrideReason',
+          listenable: _overrideReason,
+          _TextField(
+            label: 'Reason for override *',
+            controller: _overrideReason,
+            maxLines: 2,
+          ),
         ),
       ],
       _TextField(
@@ -943,7 +1060,12 @@ class _TextField extends StatelessWidget {
           keyboardType: keyboardType,
           maxLines: maxLines,
           style: const TextStyle(fontSize: 15.5),
-          decoration: InputDecoration(labelText: label, helperText: helper),
+          decoration: InputDecoration(
+            labelText: label,
+            helperText: helper,
+            // Red while a refused step or save has flagged it.
+            errorText: MissingFieldScope.errorOf(context),
+          ),
         ),
       );
 }

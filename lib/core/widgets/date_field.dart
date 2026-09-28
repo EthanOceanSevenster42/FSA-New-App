@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'missing_fields.dart';
 import 'required_label.dart';
 
 /// A tappable date input that looks and behaves like the other fields.
@@ -135,7 +136,7 @@ class DateField extends StatelessWidget {
         child: InputDecorator(
           isEmpty: false,
           decoration: InputDecoration(
-            errorText: errorText,
+            errorText: errorText ?? MissingFieldScope.errorOf(context),
             helperText: helperText,
             helperMaxLines: 2,
             prefixIcon: const Icon(Icons.event_outlined, size: 20),

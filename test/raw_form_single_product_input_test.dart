@@ -53,7 +53,7 @@ void main() {
 
     // Exact text: the page title also contains the phrase.
     expect(
-        find.text('Certain Raw Processed Meat Product', findRichText: true),
+        find.text('Certain Raw Processed Meat Product Name', findRichText: true),
         findsOneWidget,
         reason: 'the product section rendered');
     expect(find.text('New Raw Meat Product Item', findRichText: true), findsNothing);

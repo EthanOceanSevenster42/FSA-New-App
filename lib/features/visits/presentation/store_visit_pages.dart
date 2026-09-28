@@ -14,6 +14,7 @@ import '../../../core/services/photo_storage.dart';
 import '../../../core/services/in_app_camera.dart';
 import '../../sync/auto_sync.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/required_label.dart';
 import '../../../core/widgets/search_picker.dart';
 import '../domain/facility_type_match.dart';
@@ -403,6 +404,10 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   String _inspectionReason = '';
   List<String> _inspectionReasonOptions = const [];
 
+  /// The required fields a refused start or sign-off flagged, so the page
+  /// can take the inspector to the first and mark each red.
+  final _missing = MissingFields();
+
   @override
   void initState() {
     super.initState();
@@ -424,6 +429,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     _additionalEmail2.dispose();
     _additionalEmail3.dispose();
     _distanceTravelled.dispose();
+    _missing.dispose();
     super.dispose();
   }
 
@@ -640,20 +646,28 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           ),
           _field('Registration code (optional — if the premises has one)',
               _occurrenceRegistration),
-          LabelledField(
-            label: 'Description of events',
-            isRequired: true,
-            child: TextField(
-              controller: _occurrenceDescription,
-              maxLines: 7,
-              minLines: 4,
-              style: const TextStyle(fontSize: 15.5, height: 1.35),
-              decoration: const InputDecoration(
-                hintText: 'Describe in detail what was found during the '
-                    'visit, including any non-conformances, observations, '
-                    'and corrective actions discussed...',
+          _anchor(
+            'occurrenceDescription',
+            listenable: _occurrenceDescription,
+            LabelledField(
+              label: 'Description of events',
+              isRequired: true,
+              child: Builder(
+                builder: (context) => TextField(
+                  controller: _occurrenceDescription,
+                  maxLines: 7,
+                  minLines: 4,
+                  style: const TextStyle(fontSize: 15.5, height: 1.35),
+                  decoration: InputDecoration(
+                    hintText: 'Describe in detail what was found during the '
+                        'visit, including any non-conformances, observations, '
+                        'and corrective actions discussed...',
+                    // Red while a refused sign-off has flagged it.
+                    errorText: MissingFieldScope.errorOf(context),
+                  ),
+                  onChanged: (_) => unawaited(_persist()),
+                ),
               ),
-              onChanged: (_) => unawaited(_persist()),
             ),
           ),
           // Photographs, laid out the way every inspection's evidence section
@@ -662,7 +676,10 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // Document carries.
           // At least one, so the report shows what was found
           // (Ethan, 2026-09-24).
-          LabelledField(
+          _anchor(
+            'occurrencePhotos',
+            framed: true,
+            LabelledField(
             label: 'Photographs',
             isRequired: true,
             child: Column(
@@ -707,6 +724,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
                 ),
               ],
             ),
+          ),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 2),
@@ -1188,25 +1206,91 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   /// facility's name and address; the documents go to the contact email;
   /// the invoice is billed on the distance. The person in charge is asked
   /// for at sign-off, because an occurrence report may have found nobody.
-  List<String> _detailsMissing({required bool signingOff}) => [
-        if (_facilityName.text.trim().isEmpty) 'the facility name',
+  ///
+  /// Each with its id for [_missing]; see [_flagMissing] for page order.
+  List<({String id, String label})> _detailsMissing(
+          {required bool signingOff}) =>
+      [
+        if (_facilityName.text.trim().isEmpty)
+          (id: 'facilityName', label: 'the facility name'),
         // Marked mandatory and now held to it (Ethan, 2026-09-24): every
         // inspection in the visit takes both from here.
         if (!_isOccurrence && _facilityType.trim().isEmpty)
-          'the inspection facility type',
+          (id: 'facilityType', label: 'the inspection facility type'),
         if (!_isOccurrence && _inspectionReason.trim().isEmpty)
-          'the reason for inspection',
+          (id: 'inspectionReason', label: 'the reason for inspection'),
         // The forms no longer ask for it (Ethan, 2026-09-25).
         if (_producerApplies && _producer.text.trim().isEmpty)
-          'the producer / supplier',
-        if (_facilityAddress.text.trim().isEmpty) 'the facility address',
+          (id: 'producer', label: 'the producer / supplier'),
+        if (_facilityAddress.text.trim().isEmpty)
+          (id: 'facilityAddress', label: 'the facility address'),
         if (signingOff && !_isOccurrence && _contactPerson.text.trim().isEmpty)
-          'the person in charge / representative at store',
+          (
+            id: 'contactPerson',
+            label: 'the person in charge / representative at store',
+          ),
         if (!_isOccurrence && _contactEmail.text.trim().isEmpty)
-          'the contact email',
+          (id: 'contactEmail', label: 'the contact email'),
         if (double.tryParse(_distanceTravelled.text.trim()) == null)
-          'the distance travelled (km)',
+          (id: 'distance', label: 'the distance travelled (km)'),
       ];
+
+  /// The anchors of the page, top to bottom, so a refused start or sign-off
+  /// is taken to the highest of its missing fields.
+  static const _pageOrder = [
+    'facilityName',
+    'facilityType',
+    'inspectionReason',
+    'facilityAddress',
+    'producer',
+    'contactPerson',
+    'contactEmail',
+    'distance',
+    'occurrenceDescription',
+    'occurrencePhotos',
+  ];
+
+  /// Every required field that stops the start ([signingOff] false) or the
+  /// sign-off, as ids for [_missing] in page order.
+  List<String> _missingIds({required bool signingOff}) {
+    final ids = {
+      for (final m in _detailsMissing(signingOff: signingOff)) m.id,
+      if (signingOff && _isOccurrence) ...[
+        if (_occurrenceDescription.text.trim().isEmpty) 'occurrenceDescription',
+        if (_occurrencePhotos.isEmpty) 'occurrencePhotos',
+      ],
+    };
+    return [
+      for (final id in _pageOrder)
+        if (ids.contains(id)) id,
+    ];
+  }
+
+  /// Scrolls to the first field stopping the start or sign-off and marks
+  /// each red, beside the message saying what is missing.
+  void _flagMissing({required bool signingOff}) {
+    unawaited(_missing.flag(
+      context,
+      _missingIds(signingOff: signingOff),
+      stillMissing: (id) => _missingIds(signingOff: signingOff).contains(id),
+    ));
+  }
+
+  /// Wraps a required field so a refused start or sign-off can scroll to it
+  /// and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
 
   /// "a, b and c" — a sentence, not a list.
   static String _listed(List<String> items) => switch (items.length) {
@@ -1224,10 +1308,11 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
         content: Text(
-          'Fill in ${_listed(missing)} before '
+          'Fill in ${_listed([for (final m in missing) m.label])} before '
           '${signingOff ? 'signing off' : 'starting an inspection'}.',
         ),
       ));
+    _flagMissing(signingOff: signingOff);
     return true;
   }
 
@@ -1235,6 +1320,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     final slot = _nextSlot;
     if (slot == null) return;
     if (_stoppedByMissingDetails(signingOff: false)) return;
+    _missing.clear();
     await _persist();
     final visitRow = await widget.visits.byUuid(widget.visitUuid);
     if (visitRow == null || !mounted) return;
@@ -1409,6 +1495,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           content: Text('Describe the events of the occurrence before '
               'signing off.'),
         ));
+      _flagMissing(signingOff: true);
       return;
     }
     if (_isOccurrence && _occurrencePhotos.isEmpty) {
@@ -1418,6 +1505,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           content: Text('Take at least one photograph before signing off '
               'the occurrence report.'),
         ));
+      _flagMissing(signingOff: true);
       return;
     }
     // Someone has to be named as having been there for an inspection: the
@@ -1425,6 +1513,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     // report may have found nobody in charge, and says so by leaving the
     // name blank — but it was still a trip to an address.
     if (_stoppedByMissingDetails(signingOff: true)) return;
+    _missing.clear();
     // Addresses are taken as typed: the server keeps a malformed one
     // rather than refusing the record, so a typo cannot hold a signed-off
     // visit on the handset.
@@ -1524,12 +1613,17 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   /// [revealing] fields redraw the page as they are typed, because what is
   /// on it depends on them — the next recipient box only exists once the
   /// one above it is filled.
+  /// [missingId] anchors a required field for [_missing].
   Widget _field(String label, TextEditingController controller,
-          {bool required = false, bool revealing = false, FocusNode? focus}) =>
-      LabelledField(
-        label: label,
-        isRequired: required,
-        child: TextField(
+      {bool required = false,
+      bool revealing = false,
+      FocusNode? focus,
+      String? missingId}) {
+    final field = LabelledField(
+      label: label,
+      isRequired: required,
+      child: Builder(
+        builder: (context) => TextField(
           controller: controller,
           focusNode: focus,
           enabled: !_completed,
@@ -1538,8 +1632,16 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
             unawaited(_persist());
           },
           style: const TextStyle(fontSize: 15.5),
+          // Red while a refused start or sign-off has flagged it.
+          decoration:
+              InputDecoration(errorText: MissingFieldScope.errorOf(context)),
         ),
-      );
+      ),
+    );
+    return missingId == null
+        ? field
+        : _anchor(missingId, listenable: controller, field);
+  }
 
   /// Takes one off the plan, and the draft with it if there is one.
   Future<void> _reducePlan(
@@ -1780,7 +1882,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // Picking a premises from the directory fills the address and
           // telephone, exactly as the egg form's facility box does. A store
           // that is not on the list can still be typed in.
-          IgnorePointer(
+          _anchor('facilityName', listenable: _facilityName, IgnorePointer(
             ignoring: _completed,
             child: SearchPickerField<EggFacility>(
               label: 'Facility name',
@@ -1799,11 +1901,11 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
               emptyHint: 'No premises on this device yet. Sync from the Eggs '
                   'menu to download the directory.',
             ),
-          ),
+          )),
           // Asked once here for the whole group instead of on every
           // inspection inside it; each form finds its own row for the
           // answer and only asks again if its list has nothing like it.
-          IgnorePointer(
+          _anchor('facilityType', IgnorePointer(
             ignoring: _completed,
             child: PickerMenuField<String>(
               label: 'Inspection facility type',
@@ -1820,10 +1922,10 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
                 unawaited(_persist());
               },
             ),
-          ),
+          )),
           // Likewise the reason: one answer for the errand, not one per
           // inspection captured during it.
-          IgnorePointer(
+          _anchor('inspectionReason', IgnorePointer(
             ignoring: _completed,
             child: PickerMenuField<String>(
               label: 'Reason for inspection',
@@ -1840,16 +1942,19 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
                 unawaited(_persist());
               },
             ),
-          ),
+          )),
           _field('Facility address', _facilityAddress,
-              required: true, focus: _facilityAddressFocus),
+              required: true,
+              focus: _facilityAddressFocus,
+              missingId: 'facilityAddress'),
           _field('Facility telephone / cellphone', _facilityPhone),
           // Asked once for the whole visit (Ethan, 2026-09-24): every raw,
           // processed meat and egg inspection under it starts with this
           // producer filled in. Only those commodities have a producer, so
           // the question is only asked when one of them is on the plan.
           if (_producerApplies) ...[
-            _field('Producer / supplier', _producer, required: true),
+            _field('Producer / supplier', _producer,
+                required: true, missingId: 'producer'),
             Padding(
               padding: const EdgeInsets.only(top: 2, bottom: 6),
               child: Text(
@@ -1867,8 +1972,9 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // Named for an inspection — the documents are addressed to them.
           // An occurrence report may have found nobody in charge to name.
           _field('Person in charge / Representative at store', _contactPerson,
-              required: !_isOccurrence),
-          _field('Contact email', _contactEmail, required: !_isOccurrence),
+              required: !_isOccurrence, missingId: 'contactPerson'),
+          _field('Contact email', _contactEmail,
+              required: !_isOccurrence, missingId: 'contactEmail'),
           // The original asks for these two on every commodity form. A visit
           // is one errand to one site, so they are asked once, here, and
           // carried onto every record captured under it.
@@ -1886,7 +1992,8 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
             _field('Additional email #3 (optional)', _additionalEmail3),
           // The trip, not the product: one journey to one facility, whatever
           // was inspected there.
-          _field('Distance travelled (km)', _distanceTravelled, required: true),
+          _field('Distance travelled (km)', _distanceTravelled,
+              required: true, missingId: 'distance'),
           Padding(
             padding: const EdgeInsets.only(top: 2, bottom: 6),
             child: Text(

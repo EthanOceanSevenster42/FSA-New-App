@@ -1,4 +1,5 @@
 import '../../../core/widgets/restricted_particulars_picker.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/required_label.dart';
 import 'package:flutter/material.dart';
 
@@ -55,7 +56,10 @@ Widget poultryField(
     LabelledField(
       label: label,
       isRequired: required,
-      child: TextFormField(
+      // Builder so the field can see whether its [MissingFieldAnchor] has
+      // flagged it, and draw its own border red.
+      child: Builder(
+        builder: (context) => TextFormField(
         controller: controller,
         focusNode: focusNode,
         maxLines: lines,
@@ -72,10 +76,12 @@ Widget poultryField(
           // than nudging the format runs longer, and a clipped explanation
           // is worse than none.
           helperMaxLines: 3,
+          errorText: MissingFieldScope.errorOf(context),
         ),
         validator: required
             ? (v) => (v ?? '').trim().isEmpty ? 'Required' : null
             : null,
+        ),
       ),
     );
 

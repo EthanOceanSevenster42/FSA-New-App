@@ -19,6 +19,7 @@ import '../domain/quid_determination.dart';
 import '../domain/quid_flow.dart';
 import 'poultry_evidence_section.dart';
 import 'poultry_form_widgets.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/picker_menu_field.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../../eggs/presentation/date_field.dart';
@@ -386,6 +387,10 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
   /// an empty list over carcasses already weighed.
   bool _restored = false;
 
+  /// The required fields a refused Next, Add or Submit flagged, so the page
+  /// can take the inspector to the first and mark each red.
+  final _missing = MissingFields();
+
   bool get _isWater => widget.inspection.isWaterChilled;
   bool get _inVisit => widget.inspection.visitUuid.trim().isNotEmpty;
 
@@ -498,6 +503,7 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -571,6 +577,7 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
       await _alert('Min. Sample reached', 'Minimum Sample number reached.');
       return;
     }
+    _missing.clear();
     setState(() => _current--);
   }
 
@@ -579,8 +586,16 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     if (_stage == QuidStage.chilling) {
       if (!_sample.hasInitial) {
         await _alert('Incomplete Input', 'No Initial Mass has been inputted.');
+        if (!mounted) return;
+        await _missing.flag(
+          context,
+          const ['initialMass'],
+          stillMissing: (_) =>
+              _stage == QuidStage.chilling && !_sample.hasInitial,
+        );
         return;
       }
+      _missing.clear();
       if (_current >= round.length - 1) {
         // The next carcass of the set.
         setState(() {
@@ -906,6 +921,12 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     if (_documentName.text.trim().isEmpty) {
       await _alert('Document particulars',
           'Give the name or number of the document being verified.');
+      if (!mounted) return;
+      await _missing.flag(
+        context,
+        const ['documentName'],
+        stillMissing: (_) => _documentName.text.trim().isEmpty,
+      );
       return;
     }
     // The original enables Add only once the document has been
@@ -913,8 +934,15 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     if (_documentPhotoPath == null) {
       await _alert('Document photograph',
           'Take a photograph of the document before adding it to the list.');
+      if (!mounted) return;
+      await _missing.flag(
+        context,
+        const ['documentPhoto'],
+        stillMissing: (_) => _documentPhotoPath == null,
+      );
       return;
     }
+    _missing.clear();
     final ok = await _confirm(
       'Add Document particulars',
       'Confirm this current Document Vertification particulars is correct.',
@@ -1123,6 +1151,39 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     );
   }
 
+  /// The completion switch of the stage [stage], as a [_missing] id.
+  static String _stageSwitchId(QuidStage stage) => switch (stage) {
+        QuidStage.chilling => 'chillingComplete',
+        QuidStage.injector => 'injectorComplete',
+        _ => 'determinationComplete',
+      };
+
+  /// Takes the red off the rejection photographs once enough are taken.
+  Future<void> _recheckRejectionPhotos() async {
+    if (!_missing.flagged.contains('rejectionPhotos')) return;
+    final taken = (await widget.captureRepository
+            .photosFor(widget.inspection.clientUuid, kind: 'quid'))
+        .length;
+    if (mounted && !quidRejectionPhotosOutstanding(taken)) _missing.clear();
+  }
+
+  /// Wraps a required field so a refused save can scroll to it and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+    String message = 'Required',
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        message: message,
+        child: child,
+      );
+
   Future<void> _temporarySave() async {
     if (!_restored) return;
     setState(() => _saving = true);
@@ -1142,6 +1203,13 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
             QuidStage.injector => 'injector sampling',
             _ => 'QUID determination',
           }} stage before submitting.');
+      if (!mounted) return;
+      await _missing.flag(
+        context,
+        [_stageSwitchId(_stage)],
+        stillMissing: (id) =>
+            _stage != QuidStage.finished && id == _stageSwitchId(_stage),
+      );
       return;
     }
     if (_directionRequired &&
@@ -1151,6 +1219,21 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
           'Rejection details missing',
           'Add the non-conformance remarks and the batch number and/or '
               'quantity removed before submitting.');
+      if (!mounted) return;
+      await _missing.flag(
+        context,
+        [
+          if (_directionRemarks.text.trim().isEmpty) 'directionRemarks',
+          if (_directionAction.text.trim().isEmpty) 'directionAction',
+        ],
+        stillMissing: (id) =>
+            _directionRequired &&
+            switch (id) {
+              'directionRemarks' => _directionRemarks.text.trim().isEmpty,
+              'directionAction' => _directionAction.text.trim().isEmpty,
+              _ => false,
+            },
+      );
       return;
     }
     // Photographs belong to the rejection, as in the original: two of them
@@ -1165,9 +1248,12 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
             'Rejection photographs',
             'Take $quidMinRejectionPhotos photographs for the rejection '
                 'before completing — $taken of $quidMinRejectionPhotos taken.');
+        if (!mounted) return;
+        await _missing.flag(context, const ['rejectionPhotos']);
         return;
       }
     }
+    _missing.clear();
     final ok = await _confirm(
       'Submit Confirmation',
       'Please confirm that you want to save the entire inspection with the '
@@ -1550,8 +1636,13 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
     final open = _stage == QuidStage.chilling;
     return [
       poultrySection('Create Sample Set'),
-      poultryField(s.initial, 'Initial Carcass Weight (g)',
-          keyboard: _grams, enabled: open, onChanged: (_) => setState(() {})),
+      _anchor(
+          'initialMass',
+          listenable: s.initial,
+          poultryField(s.initial, 'Initial Carcass Weight (g)',
+              keyboard: _grams,
+              enabled: open,
+              onChanged: (_) => setState(() {}))),
       if (_isWater) ...[
         poultrySection('Water Chilling Results'),
         poultryField(s.waterFinal, 'Final Mass (g)',
@@ -1559,12 +1650,16 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
         _error(s.waterFinalError),
         _readout('Sample Pick up %', s.pickup,
             passes: s.pickup.isEmpty ? null : quidWaterPickupPasses(s.pickup)),
-        poultrySwitch(
-          label: 'Water Chilling for Samples Complete',
-          value: _chillingComplete,
-          onChanged: (v) => unawaited(_closeChilling(v)),
-          helper: 'At least five carcasses. The average pick-up may not be '
-              'over ${quidMaxWaterPickupPercent.toStringAsFixed(0)}%.',
+        _anchor(
+          'chillingComplete',
+          framed: true,
+          poultrySwitch(
+            label: 'Water Chilling for Samples Complete',
+            value: _chillingComplete,
+            onChanged: (v) => unawaited(_closeChilling(v)),
+            helper: 'At least five carcasses. The average pick-up may not be '
+                'over ${quidMaxWaterPickupPercent.toStringAsFixed(0)}%.',
+          ),
         ),
         _readout('Water Chilling Average Pick up %', _averageWaterPickup,
             passes: _averageWaterPickup.isEmpty
@@ -1572,11 +1667,15 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
                 : quidWaterPickupPasses(_averageWaterPickup)),
       ] else ...[
         poultrySection('Air Chilling Control'),
-        poultrySwitch(
-          label: 'Air Chilling for Samples Complete',
-          value: _chillingComplete,
-          onChanged: (v) => unawaited(_closeChilling(v)),
-          helper: 'At least five carcasses weighed.',
+        _anchor(
+          'chillingComplete',
+          framed: true,
+          poultrySwitch(
+            label: 'Air Chilling for Samples Complete',
+            value: _chillingComplete,
+            onChanged: (v) => unawaited(_closeChilling(v)),
+            helper: 'At least five carcasses weighed.',
+          ),
         ),
       ],
       _chillingList(),
@@ -1619,11 +1718,15 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
       _error(s.injectorAfterError),
       _readout('Gain (g)', s.gain, unit: 'g'),
       _readout('Sample Injector Rate (%)', s.injectorRate),
-      poultrySwitch(
-        label: 'Injector(s) Sampling Complete',
-        value: _injectorComplete,
-        onChanged: (v) => unawaited(_closeInjector(v)),
-        helper: 'At least five carcasses on every injector.',
+      _anchor(
+        'injectorComplete',
+        framed: true,
+        poultrySwitch(
+          label: 'Injector(s) Sampling Complete',
+          value: _injectorComplete,
+          onChanged: (v) => unawaited(_closeInjector(v)),
+          helper: 'At least five carcasses on every injector.',
+        ),
       ),
       _readout('Average Pick up %', _averageInjectorRate),
       ..._injectorLists(),
@@ -1648,11 +1751,15 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
       _readout('Set Injector QUID (%)', setFor ?? ''),
       _injectorStatus(),
       ..._determinationLists(),
-      poultrySwitch(
-        label: 'QUID Determintion Complete',
-        value: _determinationComplete,
-        onChanged: (v) => unawaited(_closeDetermination(v)),
-        helper: 'At least five carcasses on every injector.',
+      _anchor(
+        'determinationComplete',
+        framed: true,
+        poultrySwitch(
+          label: 'QUID Determintion Complete',
+          value: _determinationComplete,
+          onChanged: (v) => unawaited(_closeDetermination(v)),
+          helper: 'At least five carcasses on every injector.',
+        ),
       ),
       if (!_directionRequired && _iteration < quidMaxIterations)
         poultrySwitch(
@@ -1746,8 +1853,11 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
                 onChanged: (d) => setState(() => _documentDate = d),
                 emptyHint: 'The date on the record being verified.',
               ),
-              poultryField(_documentName, 'Name/Document Number',
-                  onChanged: (_) => setState(() {})),
+              _anchor(
+                  'documentName',
+                  listenable: _documentName,
+                  poultryField(_documentName, 'Name/Document Number',
+                      onChanged: (_) => setState(() {}))),
               poultrySwitch(
                 label: 'Document Verified',
                 value: _documentVerified,
@@ -1762,13 +1872,18 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
                 poultryField(_deviationComment, 'Deviation Comment', lines: 2),
               // As the original's row: Take Photo opens once the document is
               // named, Add once it is photographed, Clear List always.
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  _documentPhotoPath == null
-                      ? 'Each document is photographed before it is added.'
-                      : 'Photograph taken for this document.',
-                  style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+              _anchor(
+                'documentPhoto',
+                framed: true,
+                message: 'Take a photograph of the document',
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    _documentPhotoPath == null
+                        ? 'Each document is photographed before it is added.'
+                        : 'Photograph taken for this document.',
+                    style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+                  ),
                 ),
               ),
               Row(children: [
@@ -1901,8 +2016,11 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
                   ),
                 ]),
                 const SizedBox(height: 8),
-                poultryField(_directionRemarks, 'List of Added Remarks',
-                    lines: 3),
+                _anchor(
+                    'directionRemarks',
+                    listenable: _directionRemarks,
+                    poultryField(_directionRemarks, 'List of Added Remarks',
+                        lines: 3)),
                 // FSA-SOP-APS-001 Annexure C seizes on a QUID deviation, so
                 // the date is the inspection's own and not the inspector's
                 // to move.
@@ -1923,21 +2041,29 @@ class _PoultryQuidWeighingFormState extends State<PoultryQuidWeighingForm> {
                   ),
                 ),
                 if (_seizureDecision != null) _seizureNotice(),
-                poultryField(
-                    _directionAction, 'Batch No. and/or Quantity Removed'),
+                _anchor(
+                    'directionAction',
+                    listenable: _directionAction,
+                    poultryField(
+                        _directionAction, 'Batch No. and/or Quantity Removed')),
                 // "Add Photo [0/2]": the rejection's own photographs.
-                PoultryEvidenceSection(
-                  repository: widget.captureRepository,
-                  recordUuid: widget.inspection.clientUuid,
-                  kind: 'quid',
-                  photosTitle: 'Rejection Photographs',
-                  captureLabel: 'Add Photo',
-                  guidance: 'Photograph the product and the scale reading '
-                      'together. A rejection needs $quidMinRejectionPhotos '
-                      'before the checklist can be submitted.',
-                  minPhotos: quidMinRejectionPhotos,
-                  maxPhotos: PoultryRules.maxPhotos,
-                  showSignatures: false,
+                _anchor(
+                  'rejectionPhotos',
+                  framed: true,
+                  PoultryEvidenceSection(
+                    repository: widget.captureRepository,
+                    recordUuid: widget.inspection.clientUuid,
+                    kind: 'quid',
+                    photosTitle: 'Rejection Photographs',
+                    captureLabel: 'Add Photo',
+                    guidance: 'Photograph the product and the scale reading '
+                        'together. A rejection needs $quidMinRejectionPhotos '
+                        'before the checklist can be submitted.',
+                    minPhotos: quidMinRejectionPhotos,
+                    maxPhotos: PoultryRules.maxPhotos,
+                    showSignatures: false,
+                    onChanged: () => unawaited(_recheckRejectionPhotos()),
+                  ),
                 ),
               ],
 

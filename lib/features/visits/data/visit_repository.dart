@@ -18,6 +18,7 @@ import '../../seizures/data/seizure_repository.dart';
 import '../../rawrmp/domain/raw_record_kind.dart';
 import '../domain/inspection_outcome.dart';
 import '../domain/visit_prefill.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// One inspection belonging to a visit, however it was captured.
 ///
@@ -539,7 +540,7 @@ class VisitRepository {
                 id: i.id,
                 section: i.section,
                 description: i.description,
-                regulation: i.regulationReference
+                regulation: cleanRegulation(i.regulationReference)
               ),
           ],
           sectionsPresent: {
@@ -569,7 +570,7 @@ class VisitRepository {
                 id: i.id,
                 section: i.section,
                 description: i.description,
-                regulation: i.regulationReference
+                regulation: cleanRegulation(i.regulationReference)
               ),
           ],
           sectionsPresent: {
@@ -653,7 +654,7 @@ class VisitRepository {
                 id: r.id,
                 section: r.kind,
                 description: r.description,
-                regulation: r.regulation
+                regulation: cleanRegulation(r.regulation)
               ),
           ],
           sectionsPresent: {
@@ -695,7 +696,7 @@ class VisitRepository {
                 id: i.id,
                 section: i.kind,
                 description: i.description,
-                regulation: i.regulationReference
+                regulation: cleanRegulation(i.regulationReference)
               ),
           ],
           sectionsPresent: {

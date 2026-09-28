@@ -14,6 +14,7 @@ import '../../../core/data/restricted_particulars_catalogue.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
 import '../../../core/widgets/date_field.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/search_picker.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../../poultry/data/poultry_capture_repository.dart';
@@ -103,6 +104,10 @@ class _Reference {
 class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   late Future<_Reference> _reference;
   final _formKey = GlobalKey<FormState>();
+
+  /// The required fields a refused save flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
 
   late final String _clientUuid = widget.existingUuid ?? const Uuid().v4();
 
@@ -423,6 +428,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -747,18 +753,66 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
 
   /// Why the sample sizes cannot be saved as they are, or null when they can
   /// (Ethan, 2026-09-25): both are required, in grams.
-  String? _sampleSizeIssue() {
-    if (double.tryParse(_primarySampleSize.text.trim().replaceAll(',', '.')) ==
-        null) {
-      return 'Primary Sample Size (g) is required — a number of grams.';
+  String? _primarySizeIssue() =>
+      double.tryParse(_primarySampleSize.text.trim().replaceAll(',', '.')) ==
+              null
+          ? 'Primary Sample Size (g) is required — a number of grams.'
+          : null;
+
+  /// The lab sample size's half of [_primarySizeIssue]: asked only while the
+  /// consignment is sampled.
+  String? _labSizeIssue() => _isSampled &&
+          double.tryParse(_testSampleSize.text.trim().replaceAll(',', '.')) ==
+              null
+      ? 'Lab Sample Size (g) is required — a number of grams.'
+      : null;
+
+  /// The required fields still unanswered, in page order, as ids for
+  /// [_missing] with the message each is refused with.
+  ///
+  /// Read from the controllers rather than left to `Form.validate()`: the
+  /// form is a lazy list, and a field scrolled off screen is not built, so
+  /// `validate()` never sees it.
+  List<({String id, String message})> _missingRequired() {
+    // Required on every commodity (Ethan, 2026-09-24) — on the labelling
+    // inspection, where the batch is read off the pack. Off it the batch and
+    // primary size are held only to their boxes' own rule: not left empty.
+    final String? batch;
+    final String? primary;
+    if (_labelling) {
+      batch = BatchNumber.missing(_batchNumber.text);
+      primary = _primarySizeIssue();
+    } else {
+      batch = _batchNumber.text.trim().isEmpty
+          ? 'Batch Number is required.'
+          : null;
+      primary = _primarySampleSize.text.trim().isEmpty
+          ? 'Primary Sample Size (g) is required.'
+          : null;
     }
-    if (_isSampled &&
-        double.tryParse(_testSampleSize.text.trim().replaceAll(',', '.')) ==
-            null) {
-      return 'Lab Sample Size (g) is required — a number of grams.';
-    }
-    return null;
+    // Shown only on the labelling inspection, while sampled.
+    final lab = _labelling ? _labSizeIssue() : null;
+    return [
+      if (batch != null) (id: 'batchNumber', message: batch),
+      if (primary != null) (id: 'primarySampleSize', message: primary),
+      if (lab != null) (id: 'testSampleSize', message: lab),
+    ];
   }
+
+  /// Wraps a required field so a refused save can scroll to it and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
 
   /// The remark chosen but not yet added, by name.
   String? _remarkName(_Reference reference) {
@@ -819,17 +873,22 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   }
 
   Future<void> _save(_Reference reference, {required bool completed}) async {
-    if (completed && !(_formKey.currentState?.validate() ?? false)) return;
-    // Required on every commodity (Ethan, 2026-09-24) — on the labelling
-    // inspection, where the batch is read off the pack.
-    final batch = BatchNumber.missing(_batchNumber.text);
-    final sizes = _sampleSizeIssue();
-    final stop = completed && _labelling ? (batch ?? sizes) : null;
-    if (stop != null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(stop)));
-      return;
+    if (completed) {
+      // Marks whatever is on screen red; the list below finds the rest.
+      final formValid = _formKey.currentState?.validate() ?? false;
+      final missing = _missingRequired();
+      if (missing.isNotEmpty) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(missing.first.message)));
+        await _missing.flag(
+          context,
+          [for (final m in missing) m.id],
+          stillMissing: (id) => _missingRequired().any((m) => m.id == id),
+        );
+        return;
+      }
+      if (!formValid) return;
     }
     // The front and back shots are the evidence the checklist is read
     // against, so a finished record cannot be without them. Refused here as
@@ -844,8 +903,14 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             '— $_photoCount of $_requiredProductPhotos taken.',
           ),
         ));
+      await _missing.flag(
+        context,
+        const ['photos'],
+        stillMissing: (_) => RawRmpRules.photographsOutstanding(_photoCount),
+      );
       return;
     }
+    if (completed) _missing.clear();
     setState(() => _saving = true);
     await _persist(completed: completed);
     if (!mounted) return;
@@ -1598,7 +1663,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               onAddNew: _addProducer,
             ),
           SearchPickerField<RawRmpRef>(
-            label: 'Certain Raw Processed Meat Product',
+            label: 'Certain Raw Processed Meat Product Name',
             controller: _productItem,
             options: reference.products,
             optionLabel: (p) => p.name,
@@ -1614,15 +1679,19 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           // scenes — one input, as on the other commodities. The separate
           // "New Raw Meat Product Item" / "New PMP Item Size" / "New PMP Item
           // Barcode" boxes (the original's copy-pasted PMP wording) are gone.
-          poultryField(
-            _batchNumber,
-            'Batch Number',
-            required: true,
-            focusNode: _batchFocus,
-            helper: _batchEntryValid(_batchNumber.text)
-                ? 'The number off the pack, or N/A if it has none.'
-                : 'A number, or N/A — nothing else counts as a batch.',
-            onChanged: (_) => setState(() {}),
+          _anchor(
+            'batchNumber',
+            listenable: _batchNumber,
+            poultryField(
+              _batchNumber,
+              'Batch Number',
+              required: true,
+              focusNode: _batchFocus,
+              helper: _batchEntryValid(_batchNumber.text)
+                  ? 'The number off the pack, or N/A if it has none.'
+                  : 'A number, or N/A — nothing else counts as a batch.',
+              onChanged: (_) => setState(() {}),
+            ),
           ),
           // The same calendar as every other date on the forms. Stored as
           // the dd/MM/yyyy text the record has always kept, so nothing
@@ -1636,10 +1705,15 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             onChanged: (d) => setState(
                 () => _manuPackedDate.text = d == null ? '' : DateField.dmy(d)),
           ),
-          poultryField(_primarySampleSize, 'Primary Sample Size (g)',
-              required: true,
-              keyboard: const TextInputType.numberWithOptions(decimal: true),
-              helper: 'Sample size / quantity looked at, in grams.'),
+          _anchor(
+            'primarySampleSize',
+            listenable: _primarySampleSize,
+            poultryField(_primarySampleSize, 'Primary Sample Size (g)',
+                required: true,
+                keyboard:
+                    const TextInputType.numberWithOptions(decimal: true),
+                helper: 'Sample size / quantity looked at, in grams.'),
+          ),
           poultryDropdown(
             label: 'Storage Method',
             value: _storageTypeId,
@@ -1653,7 +1727,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           // The original enables its "Take Product Photos" button from the
           // storage-method picker, and opens the checklist only once the
           // front and back shots exist.
-          PoultryEvidenceSection(
+          _anchor(
+            'photos',
+            framed: true,
+            PoultryEvidenceSection(
             repository: widget.captureRepository,
             recordUuid: _clientUuid,
             kind: 'rawrmp',
@@ -1687,6 +1764,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               unawaited(_persist(completed: false));
               unawaited(_refreshPhotoCount());
             },
+          ),
           ),
 
           if (_labelling) ...[
@@ -1805,10 +1883,14 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
                 readOnly: true,
                 helper: 'Generated for this sample — write it on the bag.',
               ),
-              poultryField(_testSampleSize, 'Lab Sample Size (g)',
-                  required: true,
-                  keyboard:
-                      const TextInputType.numberWithOptions(decimal: true)),
+              _anchor(
+                'testSampleSize',
+                listenable: _testSampleSize,
+                poultryField(_testSampleSize, 'Lab Sample Size (g)',
+                    required: true,
+                    keyboard:
+                        const TextInputType.numberWithOptions(decimal: true)),
+              ),
               // The original opens a "Select Test Category" list rather than
               // a dropdown, each line bullet-prefixed, with Cancel to leave it
               // unset. Same list, same way out.

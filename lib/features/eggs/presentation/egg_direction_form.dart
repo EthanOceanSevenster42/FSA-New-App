@@ -13,6 +13,7 @@ import '../data/eggs_repository.dart';
 import '../data/eggs_sync_service.dart';
 import '../domain/egg_rules.dart';
 import 'date_field.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/search_picker.dart';
 import '../../../core/widgets/required_label.dart';
 import 'saved_dialog.dart';
@@ -123,6 +124,10 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
   final _quantity = TextEditingController();
   final _additional = TextEditingController();
 
+  /// The required fields a refused save flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
+
   @override
   void initState() {
     super.initState();
@@ -142,6 +147,7 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -205,25 +211,50 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
     );
   }
 
-  String? _blockingIssue() {
-    if (_number.text.trim().isEmpty) return 'A rejection number is required.';
-    if (_clientName.text.trim().isEmpty) return 'A client is required.';
-    if (!_labelling && !_quality) {
-      return 'A rejection must cover labelling, quality, or both.';
-    }
-    // Each part carries its own deadline, so a part without one is a notice
-    // the client cannot comply with.
-    if (_labelling && _labelCorrectBy == null) {
-      return 'A correct-by date is required for the labelling part.';
-    }
-    if (_quality && _qualityCorrectBy == null) {
-      return 'A correct-by date is required for the quality part.';
-    }
-    if (_selectedRemarks.isEmpty && _additional.text.trim().isEmpty) {
-      return 'Select at least one remark, or write one.';
-    }
-    return null;
-  }
+  /// Every problem that stops the rejection being saved, in the order the
+  /// checks run — the first is the one the save names — each with the
+  /// [_missing] id of the field that answers it, or null where no field on
+  /// the page does.
+  List<({String? id, String message})> _blockingIssues() => [
+        if (_number.text.trim().isEmpty)
+          (id: 'number', message: 'A rejection number is required.'),
+        if (_clientName.text.trim().isEmpty)
+          (id: 'client', message: 'A client is required.'),
+        if (!_labelling && !_quality)
+          (
+            id: null,
+            message: 'A rejection must cover labelling, quality, or both.',
+          ),
+        // Each part carries its own deadline, so a part without one is a
+        // notice the client cannot comply with.
+        if (_labelling && _labelCorrectBy == null)
+          (
+            id: 'labelCorrectBy',
+            message: 'A correct-by date is required for the labelling part.',
+          ),
+        if (_quality && _qualityCorrectBy == null)
+          (
+            id: 'qualityCorrectBy',
+            message: 'A correct-by date is required for the quality part.',
+          ),
+        if (_selectedRemarks.isEmpty && _additional.text.trim().isEmpty)
+          (id: 'remarks', message: 'Select at least one remark, or write one.'),
+      ];
+
+  /// Wraps a required field so a refused save can scroll to it and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
 
   /// Writes what has been entered so far, as a draft.
   ///
@@ -309,11 +340,22 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
   }
 
   Future<void> _save() async {
-    final issue = _blockingIssue();
-    if (issue != null) {
-      _toast(issue);
+    final issues = _blockingIssues();
+    if (issues.isNotEmpty) {
+      _toast(issues.first.message);
+      // Taken to the first problem, the one the message names; every other
+      // field still owed is marked red with it.
+      await _missing.flag(
+        context,
+        [
+          for (final i in issues)
+            if (i.id != null) i.id!,
+        ],
+        stillMissing: (id) => _blockingIssues().any((i) => i.id == id),
+      );
       return;
     }
+    _missing.clear();
     setState(() => _saving = true);
     try {
       await widget.repository.saveDirection(_companion(status: 'completed'));
@@ -399,7 +441,8 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
           if (_clientLocked)
             _field('Client', _clientName, isRequired: true, readOnly: true)
           else
-            SearchPickerField<EggClient>(
+            _anchor('client', listenable: _clientName,
+                SearchPickerField<EggClient>(
               label: 'Client',
               controller: _clientName,
               options: _clients,
@@ -415,13 +458,15 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
               },
               emptyHint:
                   'No clients on this device yet. Sync to download them.',
-            ),
+            )),
           _field('Producer / supplier', _producer, readOnly: _producerLocked),
-          _field('Rejection number', _number, isRequired: true, readOnly: true),
+          _anchor('number', framed: true, listenable: _number,
+              _field('Rejection number', _number,
+                  isRequired: true, readOnly: true)),
           // A deadline per part: correcting a label and re-grading a
           // consignment are not the same job and are not given the same time.
           if (_quality)
-            IgnorePointer(
+            _anchor('qualityCorrectBy', IgnorePointer(
               // Fixed by the annexure when the inspection supplied it.
               ignoring: widget.qualityCorrectBy != null,
               child: DateField(
@@ -441,9 +486,9 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
                     : 'The date by which the grade and size findings must '
                         'be corrected.',
               ),
-            ),
+            )),
           if (_labelling)
-            IgnorePointer(
+            _anchor('labelCorrectBy', IgnorePointer(
               ignoring: widget.labelCorrectBy != null,
               child: DateField(
                 label: 'Labelling - correct by',
@@ -459,13 +504,19 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
                     : 'The date by which the marking and packing findings '
                         'must be corrected.',
               ),
-            ),
+            )),
           _field(
             'Quantity of product removed',
             _quantity,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),
           const SizedBox(height: 8),
+          // One anchor over the remarks and the free text: either answers
+          // "at least one remark".
+          _anchor('remarks', framed: true, listenable: _additional, Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
           for (final part in [
             if (_quality) ('quality', 'QUALITY REMARKS'),
             if (_labelling) ('labelling', 'LABELLING REMARKS'),
@@ -495,6 +546,8 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
           ],
           const SizedBox(height: 6),
           _field('Additional remarks', _additional, maxLines: 3),
+            ],
+          )),
           const SizedBox(height: 6),
           Text(
             _position == null

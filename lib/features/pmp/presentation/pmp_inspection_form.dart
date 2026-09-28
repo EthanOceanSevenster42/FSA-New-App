@@ -12,6 +12,7 @@ import '../../../core/data/restricted_particulars_catalogue.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
 import '../../../core/widgets/date_field.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../../../core/data/sample_number.dart';
 import '../../../core/widgets/restricted_particulars_picker.dart';
@@ -97,6 +98,10 @@ class _Reference {
 class _PmpInspectionFormState extends State<PmpInspectionForm> {
   late Future<_Reference> _reference;
   final _formKey = GlobalKey<FormState>();
+
+  /// The required fields a refused save flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
 
   late final String _clientUuid = widget.existingUuid ?? const Uuid().v4();
 
@@ -380,6 +385,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -470,16 +476,54 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
     );
   }
 
+  /// The required fields still empty, in page order, as ids for [_missing]
+  /// with the message each is refused with.
+  ///
+  /// Read from the controllers rather than left to `Form.validate()`: the
+  /// form is a lazy list, and a field scrolled off screen is not built, so
+  /// `validate()` never sees it.
+  List<({String id, String message})> _missingRequired() => [
+        // Required on every commodity (Ethan, 2026-09-24).
+        if (BatchNumber.missing(_batchNumber.text) case final batch?)
+          (id: 'batchNumber', message: batch),
+        if (_primarySizeIssue() case final size?)
+          (id: 'primarySampleSize', message: size),
+        if (_labSizeIssue() case final size?)
+          (id: 'testSampleSize', message: size),
+      ];
+
+  /// Wraps a required field so a refused save can scroll to it and mark it.
+  Widget _anchor(
+    String id,
+    Widget child, {
+    bool framed = false,
+    Listenable? listenable,
+  }) =>
+      MissingFieldAnchor(
+        fields: _missing,
+        id: id,
+        framed: framed,
+        listenable: listenable,
+        child: child,
+      );
+
   Future<void> _save(_Reference reference, {required bool completed}) async {
-    if (completed && !(_formKey.currentState?.validate() ?? false)) return;
-    // Required on every commodity (Ethan, 2026-09-24).
-    final batch = BatchNumber.missing(_batchNumber.text);
-    final stop = completed ? (batch ?? _sampleSizeIssue()) : null;
-    if (stop != null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(stop)));
-      return;
+    if (completed) {
+      // Marks whatever is on screen red; the list below finds the rest.
+      final formValid = _formKey.currentState?.validate() ?? false;
+      final missing = _missingRequired();
+      if (missing.isNotEmpty) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(missing.first.message)));
+        await _missing.flag(
+          context,
+          [for (final m in missing) m.id],
+          stillMissing: (id) => _missingRequired().any((m) => m.id == id),
+        );
+        return;
+      }
+      if (!formValid) return;
     }
     if (completed &&
         (await widget.captureRepository.photosFor(_clientUuid)).isEmpty) {
@@ -490,8 +534,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
           content:
               Text('Capture at least one inspection photo before completing.'),
         ));
+      await _missing.flag(context, const ['photos']);
       return;
     }
+    if (completed) _missing.clear();
     setState(() => _saving = true);
     await _persist(completed: completed);
     if (!mounted) return;
@@ -1008,18 +1054,19 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
 
   /// Why the sample sizes cannot be saved as they are, or null when they can
   /// (Ethan, 2026-09-25): both are required, in grams.
-  String? _sampleSizeIssue() {
-    if (double.tryParse(_primarySampleSize.text.trim().replaceAll(',', '.')) ==
-        null) {
-      return 'Primary Sample Size (g) is required — a number of grams.';
-    }
-    if (_isSampled &&
-        double.tryParse(_testSampleSize.text.trim().replaceAll(',', '.')) ==
-            null) {
-      return 'Lab Sample Size (g) is required — a number of grams.';
-    }
-    return null;
-  }
+  String? _primarySizeIssue() =>
+      double.tryParse(_primarySampleSize.text.trim().replaceAll(',', '.')) ==
+              null
+          ? 'Primary Sample Size (g) is required — a number of grams.'
+          : null;
+
+  /// The lab sample size's half of [_primarySizeIssue]: asked only while the
+  /// consignment is sampled.
+  String? _labSizeIssue() => _isSampled &&
+          double.tryParse(_testSampleSize.text.trim().replaceAll(',', '.')) ==
+              null
+      ? 'Lab Sample Size (g) is required — a number of grams.'
+      : null;
 
   Future<void> _addProducer(String name) async {
     // No sheet: it held one box, already filled with the name just typed,
@@ -1188,12 +1235,16 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             addNewLabel: 'Add new product',
             onAddNew: _addProduct,
           ),
-          poultryField(
-            _batchNumber,
-            'Batch Number',
-            required: true,
-            focusNode: _batchFocus,
-            helper: 'The number off the pack, or N/A if it has none.',
+          _anchor(
+            'batchNumber',
+            listenable: _batchNumber,
+            poultryField(
+              _batchNumber,
+              'Batch Number',
+              required: true,
+              focusNode: _batchFocus,
+              helper: 'The number off the pack, or N/A if it has none.',
+            ),
           ),
           // Was a typed box, the only date on any form without a calendar.
           // The same control as everywhere else now, stored as the
@@ -1215,9 +1266,14 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
           ),
           // "Follow Up Rejection Particulars" is no longer asked
           // (Ethan, 2026-09-24); a draft that held one keeps it.
-          poultryField(_primarySampleSize, 'Primary Sample Size (g)',
-              required: true,
-              keyboard: const TextInputType.numberWithOptions(decimal: true)),
+          _anchor(
+            'primarySampleSize',
+            listenable: _primarySampleSize,
+            poultryField(_primarySampleSize, 'Primary Sample Size (g)',
+                required: true,
+                keyboard:
+                    const TextInputType.numberWithOptions(decimal: true)),
+          ),
 
           poultrySection('Mark/Label Checklist'),
           _gatedChecklist(
@@ -1424,9 +1480,14 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
               readOnly: true,
               helper: 'Generated for this sample — write it on the bag.',
             ),
-            poultryField(_testSampleSize, 'Lab Sample Size (g)',
-                required: true,
-                keyboard: const TextInputType.numberWithOptions(decimal: true)),
+            _anchor(
+              'testSampleSize',
+              listenable: _testSampleSize,
+              poultryField(_testSampleSize, 'Lab Sample Size (g)',
+                  required: true,
+                  keyboard:
+                      const TextInputType.numberWithOptions(decimal: true)),
+            ),
             poultrySwitch(
               // The original's field is named IsCouriered but captioned
               // "Hand Delivered". The caption is what the inspector reads,
@@ -1442,7 +1503,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             ),
           ],
 
-          PoultryEvidenceSection(
+          _anchor(
+            'photos',
+            framed: true,
+            PoultryEvidenceSection(
             repository: widget.captureRepository,
             recordUuid: _clientUuid,
             kind: 'pmp',
@@ -1455,6 +1519,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             // at the end, and those signatures fan out to every member.
             showSignatures: widget.visit == null,
             onChanged: () => unawaited(_persist(completed: false)),
+          ),
           ),
 
           if (_directionPresent(reference)) ...[

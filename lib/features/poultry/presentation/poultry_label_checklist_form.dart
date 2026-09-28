@@ -16,6 +16,7 @@ import '../../visits/domain/visit_prefill.dart';
 import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
 import '../domain/poultry_rules.dart';
+import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/restricted_particulars_picker.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../../../core/widgets/search_picker.dart';
@@ -152,6 +153,10 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
   /// Set once and restored on resume, so touching a draft does not move it
   /// between days and out from under the date filter that found it.
   late DateTime _inspectedAt = DateTime.now();
+
+  /// The required fields a refused save flagged, so the page can take the
+  /// inspector to the first and mark each red.
+  final _missing = MissingFields();
 
   @override
   void initState() {
@@ -310,6 +315,7 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
     ]) {
       c.dispose();
     }
+    _missing.dispose();
     super.dispose();
   }
 
@@ -409,8 +415,10 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
               'completing — $taken of ${PoultryRules.requiredPhotos} taken.',
             ),
           ));
+        await _missing.flag(context, const ['photos']);
         return;
       }
+      _missing.clear();
     }
     setState(() => _saving = true);
 
@@ -470,6 +478,16 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
     // one is closed, so a visit sees both records when it looks again.
     if (completed && _gradingToFollow) await _openGrading();
     if (mounted) Navigator.of(context).pop(true);
+  }
+
+  /// Takes the red off the photographs once enough of them are on the record.
+  Future<void> _recheckPhotos() async {
+    if (!_missing.flagged.contains('photos')) return;
+    final taken =
+        (await widget.captureRepository.photosFor(_clientUuid)).length;
+    if (mounted && !PoultryRules.photographsOutstanding(taken)) {
+      _missing.clear();
+    }
   }
 
   Future<void> _announceSaved({
@@ -912,7 +930,10 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
                 'can be typed in.',
           ),
 
-          PoultryEvidenceSection(
+          MissingFieldAnchor(
+            fields: _missing,
+            id: 'photos',
+            child: PoultryEvidenceSection(
             repository: widget.captureRepository,
             recordUuid: _clientUuid,
             kind: 'label',
@@ -931,7 +952,11 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
             showSignatures: widget.visit == null,
             // A draft is persisted the moment evidence lands, so a photograph
             // never points at a record that was never saved.
-            onChanged: () => unawaited(_persist(completed: false)),
+            onChanged: () {
+              unawaited(_persist(completed: false));
+              unawaited(_recheckPhotos());
+            },
+          ),
           ),
 
           poultrySection('Rejection Form'),

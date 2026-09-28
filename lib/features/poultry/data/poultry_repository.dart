@@ -15,6 +15,7 @@ import '../../../core/documents/quid_checklist_pdf.dart';
 import '../domain/poultry_rules.dart';
 import '../domain/quid_determination.dart';
 import '../domain/quid_flow.dart';
+import '../../../core/data/regulation_reference.dart';
 
 /// Poultry reference data and captured grading inspections.
 ///
@@ -405,7 +406,7 @@ class PoultryRepository {
           },
           originalId: r.originalId,
           description: r.description,
-          regulationReference: r.regulationReference,
+          regulationReference: cleanRegulation(r.regulationReference),
           minLetteringHeight: r.minLetteringHeight,
         ),
     ];
@@ -1205,7 +1206,7 @@ class PoultryRepository {
           for (final r in rows)
             FsaChecklistRow(
               requirement: r.description,
-              regulation: r.regulationReference,
+              regulation: cleanRegulation(r.regulationReference),
               deviation:
                   ticked.contains(r.id) ? FsaDeviation.no : FsaDeviation.yes,
             ),
