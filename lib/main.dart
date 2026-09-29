@@ -34,7 +34,9 @@ import 'features/pmp/presentation/pmp_pages.dart';
 import 'features/rawrmp/data/rawrmp_repository.dart';
 import 'features/rawrmp/presentation/rawrmp_pages.dart';
 import 'features/sync/server_sync.dart';
+import 'features/invoicing/data/tariff_sync.dart';
 import 'features/invoicing/data/invoice_repository.dart';
+import 'features/updates/data/version_report.dart';
 import 'features/visits/data/visit_repository.dart';
 import 'features/sync/auto_sync.dart';
 import 'features/visits/presentation/inspection_management_pages.dart';
@@ -90,6 +92,12 @@ Future<void> _bootstrap() async {
   // stored there, so it must exist before DeviceService can resolve one.
   final database = LocalDatabase();
   final device = await DeviceService.init(database);
+  // The build as it was numbered, not as Android stores it:
+  // --split-per-abi adds the ABI's offset to the version code, so an
+  // arm64 handset on build 2119 reported "1.0.1.4119" to the inspector
+  // and to anyone they read it out to.
+  final appVersion = '${packageInfo.version}.'
+      '${const int.fromEnvironment('BUILD_NUMBER') > 0 ? const int.fromEnvironment('BUILD_NUMBER') : packageInfo.buildNumber}';
   final syncRepository = UserSyncRepository(
     baseUrl: config.apiBaseUrl,
     database: database,
@@ -122,6 +130,10 @@ Future<void> _bootstrap() async {
   // Put the inspection rules on the device before anything can ask for them.
   // They ship inside the app, so a handset that has never had signal can still
   // capture an inspection. A no-op on every launch after the first.
+  // The RFI tariff last brought down from the server, so a tablet with no
+  // signal bills with the office's latest figures rather than the app's.
+  await TariffSync(database: database, baseUrl: config.apiBaseUrl).load();
+
   try {
     await eggs.seedRulesFromBundle();
   } on Object catch (error, stack) {
@@ -156,12 +168,7 @@ Future<void> _bootstrap() async {
       themeController: themeController,
       sessionStore: sessionStore,
       resumeAs: resumeAs,
-      // The build as it was numbered, not as Android stores it:
-      // --split-per-abi adds the ABI's offset to the version code, so an
-      // arm64 handset on build 2119 reported "1.0.1.4119" to the inspector
-      // and to anyone they read it out to.
-      appVersion: '${packageInfo.version}.'
-          '${const int.fromEnvironment('BUILD_NUMBER') > 0 ? const int.fromEnvironment('BUILD_NUMBER') : packageInfo.buildNumber}',
+      appVersion: appVersion,
       loadHomeSummary: () => HomeSummary.load(database),
       fruitVeg: fruitVeg,
       eggs: eggs,
@@ -180,6 +187,7 @@ Future<void> _bootstrap() async {
           // The raw identifier goes to the server; only the display is masked.
           deviceId: device.deviceId,
           deviceModel: device.model,
+          appVersion: appVersion,
         ),
         database: database,
         syncRepository: syncRepository,
@@ -349,6 +357,12 @@ class FsaApp extends StatelessWidget {
       rawRmp: rawRmp,
       visits: visits,
       invoices: InvoiceRepository(database, visits),
+      versionReport: VersionReport(
+        baseUrl: config.apiBaseUrl,
+        appVersion: appVersion,
+        deviceId: DeviceService.instance.deviceId,
+        deviceModel: DeviceService.instance.model,
+      ),
     );
     // Signed in and online means synced — nobody should have to remember a
     // button. Uploads fire on sign-in, when connectivity returns, and when

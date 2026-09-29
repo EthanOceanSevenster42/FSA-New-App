@@ -195,11 +195,17 @@ void main() {
       }),
     );
 
+    // A seizure does not stop it being an inspection: the Request for
+    // Invoice goes up with it all the same (Ethan, 2026-09-29).
+    final rfi = File('${Directory.systemTemp.createTempSync().path}/rfi.pdf')
+      ..writeAsBytesSync([37, 80, 68, 70]);
     await repository.upload((await repository.pendingUploads()).single,
-        token: 'jwt');
+        token: 'jwt', invoicePdf: rfi);
 
     expect(body, contains('"document_type":"seizure"'));
     expect(body, contains('FSA-Kroon-Foods-Seizure-quid-1.pdf'));
+    expect(body, contains('name="rfi"'));
+    expect(body, contains('request-for-invoice.pdf'));
   });
 
   group('a QUID member reports what it found', () {

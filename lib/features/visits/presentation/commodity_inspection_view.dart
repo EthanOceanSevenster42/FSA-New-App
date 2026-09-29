@@ -10,6 +10,8 @@ import '../../../core/theme/app_theme.dart';
 import '../../eggs/presentation/summary_widgets.dart';
 import '../../poultry/domain/quid_determination.dart';
 import '../../poultry/domain/quid_flow.dart';
+import '../../seizures/data/seizure_repository.dart';
+import '../../seizures/presentation/record_seizure.dart';
 import 'record_documents_section.dart';
 
 /// A captured poultry, Processed Meat or Raw Processed Meat inspection,
@@ -61,6 +63,9 @@ class _CommodityInspectionViewPageState
   List<String> _directionRemarks = const [];
   List<String> _directionFindings = const [];
   bool _hasDirection = false;
+
+  /// The seizure served off this inspection, when there was one.
+  Seizure? _seizure;
 
   List<PoultryPhoto> _photos = const [];
   List<PoultrySignature> _signatures = const [];
@@ -342,14 +347,36 @@ class _CommodityInspectionViewPageState
           ..where((t) => t.recordUuid.equals(widget.uuid)))
         .get();
 
+    final seizure =
+        await SeizureRepository(database: database).currentForRecord(widget.uuid);
     if (!mounted) return;
     setState(() {
+      _seizure = seizure;
       _rows = rows;
       _photos = photos;
       _signatures = signatures;
       _missing = rows.isEmpty;
       _loading = false;
     });
+  }
+
+  /// Corrects the seizure's particulars, then reads the record back so the
+  /// page — and the sheet built from it — say the new thing.
+  Future<void> _editSeizure() async {
+    final seizure = await SeizureRepository(database: widget.database)
+        .forRecord(widget.uuid);
+    if (seizure == null || !mounted) return;
+    final saved = await editSeizureParticulars(context,
+        database: widget.database, seizure: seizure);
+    if (!saved || !mounted) return;
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(
+        content: Text('Seizure updated. The corrected sheet goes to the '
+            'office on the next sync.'),
+      ));
   }
 
   /// The direction raised from this inspection, read back the way it was
@@ -631,6 +658,30 @@ class _CommodityInspectionViewPageState
                 ...fields(_directionRows),
                 ...bullets('Remarks served', _directionRemarks),
                 ...bullets('Deviations', _directionFindings, numbered: true),
+              ],
+            ),
+          // The seizure, beside the rejection it stands with.
+          if (_seizure != null)
+            SummarySection(
+              title: 'Seizure served',
+              accent: AppColors.brandRed,
+              children: [
+                ...fields(SeizureRepository.rowsFor(_seizure!)),
+                // Only where the record itself can be corrected — never on
+                // a copy brought down from the server.
+                if (widget.onEdit != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: OutlinedButton.icon(
+                        onPressed: _editSeizure,
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        label: const Text('EDIT SEIZURE PARTICULARS'),
+                      ),
+                    ),
+                  ),
               ],
             ),
           if (widget.onEdit != null) ...[

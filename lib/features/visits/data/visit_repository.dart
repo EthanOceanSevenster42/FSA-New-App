@@ -68,6 +68,9 @@ class _Evidence {
 /// changes and cannot tell a visit-signed record from a form-signed one.
 class VisitRepository {
   static const _uploadedAtPrefix = 'visits.uploadedAt.';
+
+  /// Marks a visit brought down from the server rather than captured here.
+  static const _fromServerPrefix = 'visits.fromServer.';
   static const localRetention = Duration(days: 3);
 
   VisitRepository(this.database, {this.baseUrl = '', http.Client? client})
@@ -118,6 +121,230 @@ class VisitRepository {
         ..where(
             (t) => t.approvalSent.equals(false) & t.isUploaded.equals(true)))
       .get();
+
+  /// Whether [visitUuid] was brought down from the server rather than
+  /// captured on this tablet. Such a visit is shown, not edited: the full
+  /// checklists live on the server, and a correction sent from the thin
+  /// copy held here would overwrite them.
+  Future<bool> isFromServer(String visitUuid) async =>
+      await database.readSyncState('$_fromServerPrefix$visitUuid') == '1';
+
+  /// Brings the inspector's recent visits down from the server, seizures
+  /// included, so Inspection Management shows what the office holds and
+  /// not only what this tablet captured (Ethan, 2026-09-29).
+  ///
+  /// Only the days this tablet keeps its own copies ([localRetention]), so a
+  /// visit the tidy-up has already cleared is not brought back. A visit
+  /// captured on this tablet is never replaced: the tablet's copy is the
+  /// full record. Returns how many visits were new here.
+  Future<int> pullFromServer({required String token}) async {
+    if (baseUrl.isEmpty) return 0;
+    final response = await _client.get(
+      Uri.parse('$baseUrl/api/visits/mine/?detail=1'
+          '&days=${localRetention.inDays}'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      },
+    ).timeout(const Duration(seconds: 30));
+    if (response.statusCode != 200) return 0;
+    final body = jsonDecode(response.body);
+    final rows = body is Map ? body['visits'] : null;
+    if (rows is! List) return 0;
+    var added = 0;
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final v = row.cast<String, Object?>();
+      final uuid = '${v['visit_uuid'] ?? ''}';
+      if (uuid.isEmpty) continue;
+      final local = await (database.select(database.storeVisits)
+            ..where((t) => t.uuid.equals(uuid)))
+          .getSingleOrNull();
+      if (local != null && !await isFromServer(uuid)) continue;
+      await _storeFromServer(v, local);
+      if (local == null) added++;
+    }
+    return added;
+  }
+
+  Future<void> _storeFromServer(
+      Map<String, Object?> v, StoreVisit? local) async {
+    String text(String key) => '${v[key] ?? ''}';
+    DateTime? when(Object? value) =>
+        value == null ? null : DateTime.tryParse('$value')?.toLocal();
+    final uuid = text('visit_uuid');
+    final started = when(v['started_at']) ?? DateTime.now();
+    final completed = when(v['completed_at']) ?? started;
+    final received = when(v['created_at']) ?? completed;
+    // An approval given here and not yet sent is the inspector's latest
+    // word; the server's older answer must not undo it.
+    final keepLocalApproval = local != null && !local.approvalSent;
+    final members = [
+      for (final m in (v['members'] as List? ?? const []))
+        if (m is Map) m.cast<String, Object?>(),
+    ];
+    final seizures = [
+      for (final s in (v['seizures'] as List? ?? const []))
+        if (s is Map) s.cast<String, Object?>(),
+    ];
+
+    await database.transaction(() async {
+      await database.into(database.storeVisits).insertOnConflictUpdate(
+            StoreVisitsCompanion.insert(
+              uuid: uuid,
+              startedAt: started,
+              completedAt: Value(completed),
+              facilityName: Value(text('facility_name')),
+              facilityAddress: Value(text('facility_address')),
+              facilityPhone: Value(text('facility_phone')),
+              contactPerson: Value(text('contact_person')),
+              contactEmail: Value(text('contact_email')),
+              producerName: Value(text('producer_name')),
+              managerName: Value(text('manager_name')),
+              managerEmail: Value(text('manager_email')),
+              facilityType: Value(text('facility_type')),
+              isOccurrenceReport: Value(v['is_occurrence_report'] == true),
+              isUploaded: const Value(true),
+              approvedAt: keepLocalApproval
+                  ? Value(local.approvedAt)
+                  : Value(v['approved'] == true
+                      ? (when(v['approved_at']) ?? completed)
+                      : null),
+              approvalSent: Value(!keepLocalApproval),
+            ),
+          );
+
+      for (final m in members) {
+        final id = '${m['client_uuid'] ?? ''}';
+        if (id.isEmpty) continue;
+        final product = '${m['product_name'] ?? ''}';
+        const done = Value('completed');
+        const up = Value(true);
+        switch ('${m['kind'] ?? ''}') {
+          case 'egg':
+            await database.into(database.eggInspections).insertOnConflictUpdate(
+                EggInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                ));
+          case 'rawrmp':
+            await database.into(database.rawRmpInspections).insertOnConflictUpdate(
+                RawRmpInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                  productItem: Value(product),
+                ));
+          case 'pmp':
+            await database.into(database.pmpInspections).insertOnConflictUpdate(
+                PmpInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                  productItem: Value(product),
+                ));
+          case 'poultry':
+            await database.into(database.poultryInspections).insertOnConflictUpdate(
+                PoultryInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                  productDetails: Value(product),
+                ));
+          case 'poultry_label':
+            await database
+                .into(database.poultryLabelInspections)
+                .insertOnConflictUpdate(PoultryLabelInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                  productDetails: Value(product),
+                ));
+          case 'quid':
+            await database
+                .into(database.poultryQuidInspections)
+                .insertOnConflictUpdate(PoultryQuidInspectionsCompanion.insert(
+                  clientUuid: id,
+                  inspectedAt: completed,
+                  updatedAt: received,
+                  visitUuid: Value(uuid),
+                  status: done,
+                  isUploaded: up,
+                  facilityName: Value(text('facility_name')),
+                  productDetails: Value(product),
+                ));
+        }
+      }
+
+      // The server's seizures replace whatever this copy held.
+      final recordIds = [
+        for (final m in members) '${m['client_uuid'] ?? ''}',
+      ];
+      await (database.delete(database.seizures)
+            ..where((t) => t.recordUuid.isIn(recordIds)))
+          .go();
+      for (final s in seizures) {
+        String f(String key) => '${s[key] ?? ''}';
+        if (f('record_uuid').isEmpty) continue;
+        await database.into(database.seizures).insertOnConflictUpdate(
+              SeizuresCompanion.insert(
+                clientUuid: f('client_uuid').isEmpty
+                    ? '${uuid}_${f('record_uuid')}'
+                    : f('client_uuid'),
+                recordUuid: f('record_uuid'),
+                recordKind: f('record_kind'),
+                visitUuid: Value(uuid),
+                issuedAt: when(s['issued_at']) ?? completed,
+                updatedAt: received,
+                clientName: Value(f('client_name')),
+                clientAddress: Value(f('client_address')),
+                clientTelephone: Value(f('client_telephone')),
+                clientFax: Value(f('client_fax')),
+                clientEmail: Value(f('client_email')),
+                inspectionPoint: Value(f('inspection_point')),
+                productName: Value(f('product_name')),
+                productClass: Value(f('product_class')),
+                quantity: Value(f('quantity')),
+                regulation: Value(f('regulation')),
+                natureOfDeviation: Value(f('nature_of_deviation')),
+                correctiveAction: Value(f('corrective_action').isEmpty
+                    ? 'Immediate'
+                    : f('corrective_action')),
+                remarks: Value(f('remarks')),
+                receiverName: Value(f('receiver_name')),
+                receiverIdNumber: Value(f('receiver_id_number')),
+                receiverDesignation: Value(f('receiver_designation')),
+                isUploaded: const Value(true),
+              ),
+            );
+      }
+    });
+    await database.writeSyncState('$_fromServerPrefix$uuid', '1');
+    // The tidy-up clears it on the same clock as a visit sent from here.
+    await database.writeSyncState(
+        '$_uploadedAtPrefix$uuid', received.toUtc().toIso8601String());
+  }
 
   /// Tells the server the visit's current answer. True once it has it.
   Future<bool> sendApproval(StoreVisit visit, {required String token}) async {
@@ -305,6 +532,20 @@ class VisitRepository {
     if (documents.isNotEmpty) {
       // Same order as the files themselves, which is how they are paired up.
       request.fields['document_meta'] = jsonEncode(documents);
+    }
+    // The seizures served on this visit, as records the office can list —
+    // FSA-SOP-APS-001 Annexure E. The printed sheet travels above as a
+    // document; this is what it was printed from.
+    final seizureRepository = SeizureRepository(database: database);
+    final seizures = await seizureRepository
+        .forRecords(members.map((m) => m.uuid));
+    if (seizures.isNotEmpty) {
+      // As they read now: a corrected visit sends its corrected particulars.
+      final current = <Map<String, Object?>>[];
+      for (final s in seizures) {
+        current.add(SeizureRepository.toJson(await seizureRepository.current(s)));
+      }
+      request.fields['seizures'] = jsonEncode(current);
     }
     if (visit.isOccurrenceReport) {
       // The written report and its photographs go up as one PDF — the
@@ -1574,6 +1815,10 @@ class VisitRepository {
 
   Future<void> _deleteMember(VisitMember member) async {
     final uuid = member.uuid;
+    // The seizure goes with the record it was raised off.
+    await (database.delete(database.seizures)
+          ..where((t) => t.recordUuid.equals(uuid)))
+        .go();
     if (member.kind == 'egg') {
       await (database.delete(database.eggSamples)
             ..where((t) => t.inspectionUuid.equals(uuid)))

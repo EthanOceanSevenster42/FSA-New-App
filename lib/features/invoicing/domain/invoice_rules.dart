@@ -1,38 +1,166 @@
-/// The Agency's published tariff and the arithmetic the Request for Invoice
-/// form (SOP-APS-002 V8) does with it.
+/// The Agency's tariff: every rate and fee the Request for Invoice bills.
 ///
-/// Rates live here rather than on the record so there is one place to change
-/// them when the tariff moves; the amounts they produce are stored on the
-/// record, so a form always re-prints with the figures it was signed with.
-abstract final class InvoiceRates {
+/// Edited on the web (the server admin's "RFI tariff") and brought down on
+/// every sync (Ethan, 2026-09-29); the figures below are the published
+/// tariff the app falls back on until it has synced once.
+class InvoiceTariff {
+  const InvoiceTariff({
+    required this.normalHour,
+    required this.overtimeHour,
+    required this.sundayHour,
+    required this.perKilometre,
+    required this.minimumChargeableHours,
+    required this.pmpFat,
+    required this.pmpProtein,
+    required this.pmpCalcium,
+    required this.pmpPhysical,
+    required this.rawFat,
+    required this.rawProtein,
+    required this.rawSoya,
+    required this.rawStarch,
+    required this.rawDna,
+    required this.rawCalcium,
+    required this.vatRate,
+  });
+
   /// Inspection of Poultry Meat, Processed Meat Products and Certain Raw
   /// Processed Meat Products.
-  static const normalHour = 540.60;
-  static const overtimeHour = 601.02;
-  static const sundayHour = 720.80;
-  static const perKilometre = 6.50;
+  final double normalHour;
+  final double overtimeHour;
+  final double sundayHour;
+  final double perKilometre;
 
-  /// "Where hourly rates are applicable, a minimum of one hour (R540.60)
-  /// will be charged. Thereafter time will be charged in half hour segments
-  /// of R270.30 per half hour or part thereof."
-  static const minimumChargeableHours = 1.0;
+  /// "Where hourly rates are applicable, a minimum of one hour will be
+  /// charged. Thereafter time will be charged in half hour segments."
+  final double minimumChargeableHours;
 
   /// Laboratory — Processed Meat Products.
-  static const pmpFat = 875.56;
-  static const pmpProtein = 533.18;
-  static const pmpCalcium = 401.74;
-  static const pmpPhysical = 212.00;
+  final double pmpFat;
+  final double pmpProtein;
+  final double pmpCalcium;
+  final double pmpPhysical;
 
   /// Laboratory — Certain Raw Processed Meat Products.
-  static const rawFat = 875.56;
-  static const rawProtein = 533.18;
-  static const rawSoya = 1764.90;
-  static const rawStarch = 1560.32;
-  static const rawDna = 2761.30;
-  static const rawCalcium = 401.74;
+  final double rawFat;
+  final double rawProtein;
+  final double rawSoya;
+  final double rawStarch;
+  final double rawDna;
+  final double rawCalcium;
 
   /// Shown on the form as an exclusion, never added to the total.
-  static const vatRate = 0.15;
+  final double vatRate;
+
+  /// Reads the server's tariff. A figure missing, unreadable or not
+  /// positive keeps [fallback]'s, so a half-filled record cannot bill
+  /// nothing for an hour's work.
+  factory InvoiceTariff.fromJson(Map<String, Object?> json,
+      {InvoiceTariff fallback = InvoiceRates.defaults}) {
+    double read(String key, double otherwise) {
+      final value = json[key];
+      final number = value is num ? value.toDouble() : double.tryParse('$value');
+      return number == null || number.isNaN || number < 0 ? otherwise : number;
+    }
+
+    return InvoiceTariff(
+      normalHour: read('normal_hour', fallback.normalHour),
+      overtimeHour: read('overtime_hour', fallback.overtimeHour),
+      sundayHour: read('sunday_hour', fallback.sundayHour),
+      perKilometre: read('per_kilometre', fallback.perKilometre),
+      minimumChargeableHours:
+          read('minimum_chargeable_hours', fallback.minimumChargeableHours),
+      pmpFat: read('pmp_fat', fallback.pmpFat),
+      pmpProtein: read('pmp_protein', fallback.pmpProtein),
+      pmpCalcium: read('pmp_calcium', fallback.pmpCalcium),
+      pmpPhysical: read('pmp_physical', fallback.pmpPhysical),
+      rawFat: read('raw_fat', fallback.rawFat),
+      rawProtein: read('raw_protein', fallback.rawProtein),
+      rawSoya: read('raw_soya', fallback.rawSoya),
+      rawStarch: read('raw_starch', fallback.rawStarch),
+      rawDna: read('raw_dna', fallback.rawDna),
+      rawCalcium: read('raw_calcium', fallback.rawCalcium),
+      vatRate: read('vat_rate', fallback.vatRate),
+    );
+  }
+
+  Map<String, double> toJson() => {
+        'normal_hour': normalHour,
+        'overtime_hour': overtimeHour,
+        'sunday_hour': sundayHour,
+        'per_kilometre': perKilometre,
+        'minimum_chargeable_hours': minimumChargeableHours,
+        'pmp_fat': pmpFat,
+        'pmp_protein': pmpProtein,
+        'pmp_calcium': pmpCalcium,
+        'pmp_physical': pmpPhysical,
+        'raw_fat': rawFat,
+        'raw_protein': rawProtein,
+        'raw_soya': rawSoya,
+        'raw_starch': rawStarch,
+        'raw_dna': rawDna,
+        'raw_calcium': rawCalcium,
+        'vat_rate': vatRate,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      other is InvoiceTariff && '${other.toJson()}' == '${toJson()}';
+
+  @override
+  int get hashCode => '${toJson()}'.hashCode;
+}
+
+/// The tariff this tablet bills with right now, and the arithmetic the
+/// Request for Invoice form (SOP-APS-002 V8) does with it.
+///
+/// The amounts a form produces are stored on the record, so a form always
+/// re-prints with the figures it was signed with.
+abstract final class InvoiceRates {
+  /// The published tariff, until the server's has been brought down.
+  static const defaults = InvoiceTariff(
+    normalHour: 540.60,
+    overtimeHour: 601.02,
+    sundayHour: 720.80,
+    perKilometre: 6.50,
+    minimumChargeableHours: 1.0,
+    pmpFat: 875.56,
+    pmpProtein: 533.18,
+    pmpCalcium: 401.74,
+    pmpPhysical: 212.00,
+    rawFat: 875.56,
+    rawProtein: 533.18,
+    rawSoya: 1764.90,
+    rawStarch: 1560.32,
+    rawDna: 2761.30,
+    rawCalcium: 401.74,
+    vatRate: 0.15,
+  );
+
+  static InvoiceTariff _current = defaults;
+
+  /// The tariff in force on this tablet.
+  static InvoiceTariff get current => _current;
+
+  /// Puts [tariff] in force — from the server on sync, or from the copy
+  /// kept on the device when the app starts.
+  static void use(InvoiceTariff tariff) => _current = tariff;
+
+  static double get normalHour => _current.normalHour;
+  static double get overtimeHour => _current.overtimeHour;
+  static double get sundayHour => _current.sundayHour;
+  static double get perKilometre => _current.perKilometre;
+  static double get minimumChargeableHours => _current.minimumChargeableHours;
+  static double get pmpFat => _current.pmpFat;
+  static double get pmpProtein => _current.pmpProtein;
+  static double get pmpCalcium => _current.pmpCalcium;
+  static double get pmpPhysical => _current.pmpPhysical;
+  static double get rawFat => _current.rawFat;
+  static double get rawProtein => _current.rawProtein;
+  static double get rawSoya => _current.rawSoya;
+  static double get rawStarch => _current.rawStarch;
+  static double get rawDna => _current.rawDna;
+  static double get rawCalcium => _current.rawCalcium;
+  static double get vatRate => _current.vatRate;
 }
 
 /// What the form totals to, given what the inspector entered.

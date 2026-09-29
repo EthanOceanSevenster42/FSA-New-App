@@ -107,17 +107,22 @@ class SeizureParticulars {
 Future<SeizureParticulars?> askSeizureParticulars(
   BuildContext context, {
   required SeizureParticulars initial,
+  bool editing = false,
 }) =>
     showDialog<SeizureParticulars>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => _SeizureParticularsDialog(initial: initial),
+      builder: (dialogContext) =>
+          _SeizureParticularsDialog(initial: initial, editing: editing),
     );
 
 class _SeizureParticularsDialog extends StatefulWidget {
-  const _SeizureParticularsDialog({required this.initial});
+  const _SeizureParticularsDialog({required this.initial, this.editing = false});
 
   final SeizureParticulars initial;
+
+  /// Correcting a seizure already recorded: it can be left as it was.
+  final bool editing;
 
   @override
   State<_SeizureParticularsDialog> createState() =>
@@ -197,7 +202,8 @@ class _SeizureParticularsDialogState extends State<_SeizureParticularsDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Seizure particulars'),
+        title: Text(
+            widget.editing ? 'Edit seizure particulars' : 'Seizure particulars'),
         content: SizedBox(
           width: 520,
           child: SingleChildScrollView(
@@ -234,10 +240,15 @@ class _SeizureParticularsDialogState extends State<_SeizureParticularsDialog> {
           ),
         ),
         actions: [
+          if (widget.editing)
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
             onPressed: _record,
-            child: const Text('Record seizure'),
+            child: Text(widget.editing ? 'Save' : 'Record seizure'),
           ),
         ],
       );

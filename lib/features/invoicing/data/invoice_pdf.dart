@@ -227,9 +227,12 @@ abstract final class InvoicePdf {
             ),
             pw.SizedBox(height: 6),
             pw.Text(
-              '-  Where hourly rates are applicable, a minimum of one hour '
-              '(R540.60) will be charged. Thereafter time will be charged in '
-              'half hour segments of R270.30 per half hour or part thereof. '
+              '-  Where hourly rates are applicable, a minimum of '
+              '${_hoursWords(InvoiceRates.minimumChargeableHours)} '
+              '(${_rate(InvoiceRates.normalHour * InvoiceRates.minimumChargeableHours)}) '
+              'will be charged. Thereafter time will be charged in half hour '
+              'segments of ${_rate(InvoiceRates.normalHour / 2)} per half '
+              'hour or part thereof. '
               'The same principle will be applied to overtime and Sunday '
               'time.\n'
               '-  In all instances where it is found that the hourly and '
@@ -249,13 +252,13 @@ abstract final class InvoicePdf {
                 'Invoice',
               ],
               rows: [
-                _labRow('Fat Content', 'R875.56', form.pmpFatTests,
+                _labRow('Fat Content', form.pmpFatTests,
                     InvoiceRates.pmpFat),
-                _labRow('Protein Content', 'R533.18', form.pmpProteinTests,
+                _labRow('Protein Content', form.pmpProteinTests,
                     InvoiceRates.pmpProtein),
-                _labRow('Calcium Determination (MRM only)', 'R401.74',
+                _labRow('Calcium Determination (MRM only)',
                     form.pmpCalciumTests, InvoiceRates.pmpCalcium),
-                _labRow('Physical Test (coated products)', 'R212.00',
+                _labRow('Physical Test (coated products)',
                     form.pmpPhysicalTests, InvoiceRates.pmpPhysical),
                 ['Total', '', '', InvoiceRules.rand(totals.pmpLab)],
               ],
@@ -273,17 +276,17 @@ abstract final class InvoicePdf {
                 'Invoice',
               ],
               rows: [
-                _labRow('Fat Content', 'R875.56', form.rawFatTests,
+                _labRow('Fat Content', form.rawFatTests,
                     InvoiceRates.rawFat),
-                _labRow('Protein Content (Meat Content)', 'R533.18',
+                _labRow('Protein Content (Meat Content)',
                     form.rawProteinTests, InvoiceRates.rawProtein),
-                _labRow('Soya Content', 'R1 764.90', form.rawSoyaTests,
+                _labRow('Soya Content', form.rawSoyaTests,
                     InvoiceRates.rawSoya),
-                _labRow('Starch Content', 'R1 560.32', form.rawStarchTests,
+                _labRow('Starch Content', form.rawStarchTests,
                     InvoiceRates.rawStarch),
-                _labRow('Meat Specie Identification (DNA)', 'R2 761.30',
+                _labRow('Meat Specie Identification (DNA)',
                     form.rawDnaTests, InvoiceRates.rawDna),
-                _labRow('Calcium Determination (MRM only)', 'R401.74',
+                _labRow('Calcium Determination (MRM only)',
                     form.rawCalciumTests, InvoiceRates.rawCalcium),
                 ['Total', '', '', InvoiceRules.rand(totals.rawLab)],
               ],
@@ -291,7 +294,7 @@ abstract final class InvoicePdf {
             pw.SizedBox(height: 9),
             pw.Text(
               'Total Invoice Amount: ${InvoiceRules.rand(totals.grand)}  '
-              '(excluding 15% VAT)',
+              '(excluding ${_percent(InvoiceRates.vatRate)} VAT)',
               style: pw.TextStyle(fontSize: 10.5, font: bold),
             ),
             // Whatever room is left goes above the signatures, so they sit at
@@ -343,14 +346,26 @@ abstract final class InvoicePdf {
   static String _number(double value) =>
       value == value.roundToDouble() ? value.round().toString() : '$value';
 
-  static List<String> _labRow(
-          String analysis, String fee, int count, double rate) =>
-      [
-        analysis,
-        '$fee per sample/test',
-        '${count == 0 ? '____' : count} x $fee',
-        InvoiceRules.rand(count * rate),
-      ];
+  /// A laboratory row, its fee printed from the tariff in force.
+  static List<String> _labRow(String analysis, int count, double rate) {
+    final fee = InvoiceRules.rand(rate);
+    return [
+      analysis,
+      '$fee per sample/test',
+      '${count == 0 ? '____' : count} x $fee',
+      InvoiceRules.rand(count * rate),
+    ];
+  }
+
+  /// "one hour", "two hours", "1.5 hours".
+  static String _hoursWords(double hours) => switch (hours) {
+        1 => 'one hour',
+        2 => 'two hours',
+        _ => '${_number(hours)} hours',
+      };
+
+  /// 0.15 as "15%".
+  static String _percent(double rate) => '${_number(rate * 100)}%';
 
   static pw.Widget _particular(String label, String value) => pw.Padding(
         padding: const pw.EdgeInsets.only(bottom: 4),

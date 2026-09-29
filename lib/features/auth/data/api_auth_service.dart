@@ -17,6 +17,7 @@ class ApiAuthService implements AuthService {
     required this.baseUrl,
     required this.deviceId,
     required this.deviceModel,
+    this.appVersion = '',
     http.Client? client,
     this.timeout = const Duration(seconds: 20),
   }) : _client = client ?? http.Client();
@@ -24,6 +25,10 @@ class ApiAuthService implements AuthService {
   final String baseUrl;
   final String deviceId;
   final String deviceModel;
+
+  /// The build this handset runs, so the office can see who is on which
+  /// version. Empty sends nothing.
+  final String appVersion;
   final Duration timeout;
   final http.Client _client;
 
@@ -54,6 +59,7 @@ class ApiAuthService implements AuthService {
             'password': password,
             'device_id': deviceId,
             'device_model': deviceModel,
+            if (appVersion.isNotEmpty) 'app_version': appVersion,
           }),
         )
         .timeout(timeout);

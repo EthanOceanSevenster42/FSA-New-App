@@ -11,6 +11,8 @@ import '../poultry/data/poultry_capture_repository.dart';
 import '../poultry/data/poultry_repository.dart';
 import '../rawrmp/data/rawrmp_repository.dart';
 import '../invoicing/data/invoice_repository.dart';
+import '../invoicing/data/tariff_sync.dart';
+import '../updates/data/version_report.dart';
 import '../visits/data/visit_repository.dart';
 
 /// Server Sync — the whole handshake behind one tap.
@@ -43,6 +45,7 @@ class ServerSyncRunner {
     required this.rawRmp,
     this.visits,
     this.invoices,
+    this.versionReport,
   });
 
   final AuthService authService;
@@ -60,6 +63,9 @@ class ServerSyncRunner {
   /// Builds the Request for Invoice for a grouped inspection, so it can
   /// travel with it.
   final InvoiceRepository? invoices;
+
+  /// Tells the office which build this handset runs.
+  final VersionReport? versionReport;
 
   List<SyncStep> freshSteps() => [
         SyncStep('Users'),
@@ -109,7 +115,26 @@ class ServerSyncRunner {
     await _step(steps[0], onChanged, () async {
       await authService.syncUsers();
       final total = await authService.localUserCount();
-      return '${_plural(total, 'user')} can sign in offline';
+      // The RFI tariff, as the office last set it on the web. Fetched first
+      // so the Requests for Invoice sent further down bill with it.
+      var tariff = '';
+      if (token != null) {
+        try {
+          final changed = await TariffSync(
+            database: eggs.database,
+            baseUrl: eggs.baseUrl,
+          ).pull(token: token);
+          if (changed) tariff = ', RFI fees updated';
+        } on Object {
+          // The last tariff kept on the device stays in force.
+        }
+        try {
+          await versionReport?.send(token: token);
+        } on Object {
+          // Only a report; it goes again with the next sync.
+        }
+      }
+      return '${_plural(total, 'user')} can sign in offline$tariff';
     });
 
     await _step(steps[1], onChanged, () async {
@@ -272,11 +297,24 @@ class ServerSyncRunner {
       // Approvals given in Inspection Management that have not reached the
       // server yet.
       final approvals = await repository.sendPendingApprovals(token: token);
+      // What the server holds for this inspector lately, seizures included,
+      // brought down so Inspection Management shows it. A failure here
+      // costs nothing but the pull; the uploads below still run.
+      var pulled = 0;
+      try {
+        pulled = await repository.pullFromServer(token: token);
+      } on Object {
+        pulled = 0;
+      }
+      final broughtDown = pulled == 0
+          ? ''
+          : ', ${_plural(pulled, 'visit')} brought down from the server';
       final pending = await repository.pendingUploads();
       if (pending.isEmpty) {
         return approvals == 0
-            ? 'Nothing waiting'
-            : '${_plural(approvals, 'approval')} sent to the office';
+            ? 'Nothing waiting$broughtDown'
+            : '${_plural(approvals, 'approval')} sent to the office'
+                '$broughtDown';
       }
       var sent = 0;
       final failed = <String>[];
@@ -329,7 +367,8 @@ class ServerSyncRunner {
       final approvedToo =
           approvals + await repository.sendPendingApprovals(token: token);
       return '${_plural(sent, 'grouped inspection')} sent to the office'
-          '${approvedToo == 0 ? '' : ', ${_plural(approvedToo, 'approval')}'}';
+          '${approvedToo == 0 ? '' : ', ${_plural(approvedToo, 'approval')}'}'
+          '$broughtDown';
     });
   }
 }

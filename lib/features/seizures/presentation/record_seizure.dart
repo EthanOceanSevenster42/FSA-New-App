@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/data/local_database.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
+import '../../visits/data/visit_repository.dart';
 import '../data/seizure_repository.dart';
 
 /// What a form already knows about the consignment when the inspector
@@ -41,6 +42,44 @@ class SeizureDraft {
   final String productName;
   final String productClass;
   final String receiverName;
+}
+
+/// Reopens the particulars of a seizure already recorded, saves any change,
+/// and marks its visit for sending again so the office receives the
+/// corrected sheet. Returns true when something was saved.
+Future<bool> editSeizureParticulars(
+  BuildContext context, {
+  required LocalDatabase database,
+  required Seizure seizure,
+}) async {
+  final answer = await askSeizureParticulars(
+    context,
+    editing: true,
+    initial: SeizureParticulars(
+      productName: seizure.productName,
+      productClass: seizure.productClass,
+      quantity: seizure.quantity,
+      remarks: seizure.remarks,
+      receiverName: seizure.receiverName,
+      receiverIdNumber: seizure.receiverIdNumber,
+      receiverDesignation: seizure.receiverDesignation,
+    ),
+  );
+  if (answer == null) return false;
+  await SeizureRepository(database: database).updateParticulars(
+    seizure,
+    productName: answer.productName,
+    productClass: answer.productClass,
+    quantity: answer.quantity,
+    remarks: answer.remarks,
+    receiverName: answer.receiverName,
+    receiverIdNumber: answer.receiverIdNumber,
+    receiverDesignation: answer.receiverDesignation,
+  );
+  if (seizure.visitUuid.isNotEmpty) {
+    await VisitRepository(database).markChanged(seizure.visitUuid);
+  }
+  return true;
 }
 
 /// Puts the seizure particulars to the inspector and writes the seizure.

@@ -24,6 +24,8 @@ import '../../poultry/presentation/poultry_inspection_form.dart';
 import '../../poultry/presentation/poultry_quid_continue_page.dart';
 import '../../rawrmp/data/rawrmp_repository.dart';
 import '../../rawrmp/presentation/rawrmp_inspection_form.dart';
+import '../../seizures/data/seizure_repository.dart';
+import '../../seizures/presentation/record_seizure.dart';
 import '../data/record_documents.dart';
 import 'commodity_inspection_view.dart';
 import 'store_visit_pages.dart';
@@ -58,6 +60,14 @@ class InspectionManagementPage extends StatefulWidget {
 class _InspectionManagementPageState extends State<InspectionManagementPage> {
   List<StoreVisit> _visits = const [];
   Map<String, List<VisitMember>> _membersByVisit = const {};
+
+  /// How many of each visit's inspections ended in a seizure — FSA-SOP-
+  /// APS-001 Annexure E, marked on the card so a seizure is seen from the
+  /// list and not only from inside the visit.
+  Map<String, int> _seizuresByVisit = const {};
+
+  /// Visits brought down from the server rather than captured here.
+  Set<String> _fromServer = const {};
   bool _loading = true;
 
   @override
@@ -88,13 +98,24 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
         .where((v) => v.completedAt != null)
         .toList();
     final membersByVisit = <String, List<VisitMember>>{};
+    final seizuresByVisit = <String, int>{};
+    final fromServer = <String>{};
+    final seizures = SeizureRepository(database: widget.database);
     for (final visit in visits) {
-      membersByVisit[visit.uuid] = await widget.visits.members(visit.uuid);
+      final members = await widget.visits.members(visit.uuid);
+      membersByVisit[visit.uuid] = members;
+      seizuresByVisit[visit.uuid] =
+          (await seizures.seizedAmong(members.map((m) => m.uuid))).length;
+      if (await widget.visits.isFromServer(visit.uuid)) {
+        fromServer.add(visit.uuid);
+      }
     }
     if (!mounted) return;
     setState(() {
       _visits = visits;
       _membersByVisit = membersByVisit;
+      _seizuresByVisit = seizuresByVisit;
+      _fromServer = fromServer;
       _loading = false;
     });
   }
@@ -318,6 +339,45 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
                 ],
               ),
             ],
+            // Held on the server, not captured on this tablet.
+            if (_fromServer.contains(visit.uuid)) ...[
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  Icon(Icons.cloud_download_outlined,
+                      size: 14, color: AppColors.muted),
+                  const SizedBox(width: 6),
+                  Text(
+                    'From the server',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            // A consignment seized on this visit, in the rejection red.
+            if ((_seizuresByVisit[visit.uuid] ?? 0) > 0) ...[
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  const Icon(Icons.gavel, size: 14, color: AppColors.brandRed),
+                  const SizedBox(width: 6),
+                  Text(
+                    _seizuresByVisit[visit.uuid] == 1
+                        ? 'Seizure served'
+                        : '${_seizuresByVisit[visit.uuid]} seizures served',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.brandRed,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
         trailing: const Icon(Icons.chevron_right),
@@ -330,6 +390,7 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
                 eggs: widget.eggs,
                 invoices: widget.invoices,
                 database: widget.database,
+                fromServer: _fromServer.contains(visit.uuid),
               ),
             ),
           );
@@ -354,6 +415,7 @@ class GroupedInspectionViewPage extends StatelessWidget {
     required this.eggs,
     required this.invoices,
     required this.database,
+    this.fromServer = false,
   });
 
   final StoreVisit visit;
@@ -361,6 +423,10 @@ class GroupedInspectionViewPage extends StatelessWidget {
   final EggsRepository eggs;
   final InvoiceRepository invoices;
   final LocalDatabase database;
+
+  /// Brought down from the server: shown as the office holds it, never
+  /// edited here, since this tablet holds only the outline of the record.
+  final bool fromServer;
 
   static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
@@ -468,6 +534,41 @@ class GroupedInspectionViewPage extends StatelessWidget {
                 info(Icons.location_on_outlined, visit.facilityAddress),
                 info(Icons.call_outlined, visit.facilityPhone),
                 info(Icons.person_outline, visit.contactPerson),
+                // Said at the top of the visit, before the member cards.
+                FutureBuilder<Set<String>>(
+                  future: SeizureRepository(database: database)
+                      .seizedAmong(members.map((m) => m.uuid)),
+                  builder: (context, snap) {
+                    final seized = snap.data?.length ?? 0;
+                    if (seized == 0) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.gavel,
+                              size: 16, color: AppColors.brandRed),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              seized == 1
+                                  ? 'A consignment was seized on this visit '
+                                      '(FSA-SOP-APS-001 Annexure E).'
+                                  : '$seized consignments were seized on '
+                                      'this visit (FSA-SOP-APS-001 '
+                                      'Annexure E).',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                height: 1.3,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.brandRed,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
                 info(
                     Icons.badge_outlined,
                     visit.managerName.isEmpty
@@ -593,7 +694,48 @@ class GroupedInspectionViewPage extends StatelessWidget {
           ],
           // An occurrence report is not billed; the RFI belongs to the
           // inspections, so it is only offered when there are some.
-          if (!visit.isOccurrenceReport || members.isNotEmpty) ...[
+          if (fromServer) ...[
+            const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.cloud_download_outlined,
+                    size: 18, color: AppColors.muted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Brought down from the server. The full checklists and '
+                    'the Request for Invoice are held there; this tablet '
+                    'shows what was inspected and served, and cannot edit '
+                    'it.',
+                    style: TextStyle(
+                        fontSize: 12.5, color: AppColors.muted, height: 1.35),
+                  ),
+                ),
+              ],
+            ),
+            _VisitDocumentDownloads(
+              database: database,
+              visit: visit,
+              members: members,
+            ),
+            if (signedOff) ...[
+              const SizedBox(height: 14),
+              _VisitApproval(visit: visit, database: database, eggs: eggs),
+            ],
+            const SizedBox(height: 18),
+            Text(
+              'INSPECTIONS IN THIS GROUP',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ..._numberedMemberCards(context),
+          ] else if (!visit.isOccurrenceReport || members.isNotEmpty) ...[
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -1011,7 +1153,8 @@ class GroupedInspectionViewPage extends StatelessWidget {
                 ? EggInspectionViewPage(
                     eggs: eggs,
                     uuid: member.uuid,
-                    onEdit: () => _editMember(context, member),
+                    onEdit:
+                        fromServer ? null : () => _editMember(context, member),
                   )
                 : CommodityInspectionViewPage(
                     database: database,
@@ -1020,7 +1163,8 @@ class GroupedInspectionViewPage extends StatelessWidget {
                     title: '${member.label} $number',
                     uploaded: member.isUploaded,
                     status: member.status,
-                    onEdit: () => _editMember(context, member),
+                    onEdit:
+                        fromServer ? null : () => _editMember(context, member),
                   ),
           ),
         ),
@@ -1086,6 +1230,18 @@ class GroupedInspectionViewPage extends StatelessWidget {
                               padding: const EdgeInsets.only(top: 6),
                               child:
                                   _pill('REJECTION SERVED', AppColors.brandRed),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                    // And a seizure, when the consignment was seized.
+                    FutureBuilder<Seizure?>(
+                      future: SeizureRepository(database: database)
+                          .forRecord(member.uuid),
+                      builder: (context, snap) => snap.data != null
+                          ? Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child:
+                                  _pill('SEIZURE SERVED', AppColors.brandRed),
                             )
                           : const SizedBox.shrink(),
                     ),
@@ -1163,6 +1319,9 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
   /// remarks that were served with it.
   EggDirection? _direction;
   List<String> _directionRemarks = const [];
+
+  /// The seizure served off this inspection, when there was one.
+  Seizure? _seizure;
   bool _loading = true;
 
   @override
@@ -1210,8 +1369,12 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
     final directionRemarks = direction == null
         ? const <String>[]
         : await eggs.directionRemarkNames(direction.remarkIds);
+    final seizure =
+        await SeizureRepository(database: eggs.database)
+            .currentForRecord(widget.uuid);
     if (!mounted) return;
     setState(() {
+      _seizure = seizure;
       _inspection = inspection;
       _samples = samples;
       _photos = photos;
@@ -1375,6 +1538,7 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
           _row('${entry.value} egg(s)',
               _deviationNames[entry.key] ?? 'Deviation ${entry.key}'),
         ..._directionSection(),
+        ..._seizureSection(),
         _section('PHOTOS'),
         if (_photos.isEmpty)
           Text(
@@ -1434,6 +1598,50 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
         ],
       ),
     );
+  }
+
+  /// The seizure served off this inspection, as the Annexure E sheet
+  /// carries it.
+  List<Widget> _seizureSection() {
+    final s = _seizure;
+    if (s == null) return const [];
+    return [
+      _section('SEIZURE SERVED'),
+      for (final (label, value) in SeizureRepository.rowsFor(s))
+        if (value.trim().isNotEmpty) _row(label, value),
+      if (widget.onEdit != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 6, bottom: 4),
+          child: SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: OutlinedButton.icon(
+              onPressed: _editSeizure,
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              label: const Text('EDIT SEIZURE PARTICULARS'),
+            ),
+          ),
+        ),
+    ];
+  }
+
+  /// Corrects the seizure's particulars and reads the record back.
+  Future<void> _editSeizure() async {
+    final database = widget.eggs.database;
+    final seizure =
+        await SeizureRepository(database: database).forRecord(widget.uuid);
+    if (seizure == null || !mounted) return;
+    final saved = await editSeizureParticulars(context,
+        database: database, seizure: seizure);
+    if (!saved || !mounted) return;
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(
+        content: Text('Seizure updated. The corrected sheet goes to the '
+            'office on the next sync.'),
+      ));
   }
 
   /// What was served on the client off the back of this inspection.
