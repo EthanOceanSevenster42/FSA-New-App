@@ -24,6 +24,7 @@ import '../../../core/widgets/seizure_decision_dialog.dart';
 import 'poultry_evidence_section.dart';
 import 'poultry_form_widgets.dart';
 import '../domain/poultry_rules.dart';
+import '../../../core/widgets/correct_by_date_field.dart';
 
 /// New Grading and Classification Checklist.
 ///
@@ -164,6 +165,11 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   /// deviations, not typed.
   final _correctByDate = TextEditingController();
   DateTime? _correctBy;
+
+  /// The annexure's own date for [_correctBy], and whether the inspector has
+  /// moved the rejection to a later one of their choosing.
+  DateTime? _sopCorrectBy;
+  bool _correctByPicked = false;
 
   /// Whether the seizure question has been put on this visit to the form,
   /// and what the inspector answered.
@@ -492,8 +498,14 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
       gradeOmitted: false,
     );
     setState(() {
-      _correctBy =
+      _sopCorrectBy =
           PoultryRules.correctByDate(inspectedAt: _inspectedAt, days: days);
+      // The inspector's own date stands while the annexure still gives a
+      // period to move; none, or an immediate one, puts the annexure's back.
+      if (!_correctByPicked || !CorrectByDateField.isFuture(_sopCorrectBy)) {
+        _correctBy = _sopCorrectBy;
+        _correctByPicked = false;
+      }
       _correctByDate.text = _correctBy == null ? '' : _dmy(_correctBy!);
     });
     if (ask) await _askAboutSeizureIfNeeded(reference);
@@ -552,6 +564,15 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     ];
     return 'Seizure under FSA-SOP-APS-001 Annexure C: ${reasons.join('; ')}.';
   }
+
+  /// The inspector moved the Correct by/on Date, or cleared it back to the
+  /// annexure's.
+  void _correctByChanged(DateTime? date) => setState(() {
+        _correctBy = date;
+        _correctByPicked =
+            date != null && !DateUtils.isSameDay(date, _sopCorrectBy);
+        _correctByDate.text = date == null ? '' : _dmy(date);
+      });
 
   /// What the correct-by field says under its date.
   String _periodHelper(_Reference reference) {
@@ -992,16 +1013,9 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
               : 'Generated from poultry grading findings.'),
           nonConformanceIds:
               Value(findings.map((f) => f.item.id).toSet().join(',')),
-          // FSA-SOP-APS-001 Annexure C: the period the deviations carry,
-          // counted from the inspection date.
-          correctByDate: Value(PoultryRules.correctByDate(
-            inspectedAt: _inspectedAt,
-            days: PoultryRules.rectificationDays(
-              deviations: findings.map((f) => f.item),
-              classOmitted: false,
-              gradeOmitted: false,
-            ),
-          )),
+          // FSA-SOP-APS-001 Annexure C's date from the deviations, or the
+          // later one the inspector chose.
+          correctByDate: Value(_correctBy),
           latitude: Value(_position?.latitude),
           longitude: Value(_position?.longitude),
         ),
@@ -1186,7 +1200,8 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           // capture it, so it is needed either way — and asking it in both
           // places put the same question on the screen twice, bound to the
           // one controller.
-          poultryField(_companyReg, 'Company Registration Number'),
+          poultryField(
+              _companyReg, 'Company Registration Number (optional)'),
 
           poultrySection('Classifcation and Grading Checklist'),
           _anchor('meatType', poultryDropdown(
@@ -1231,7 +1246,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
             items: reference.altDesignations,
             onChanged: (v) => setState(() => _altDesignationId = v),
           ),
-          poultryField(_productDetails, 'Product Details'),
+          poultryField(_productDetails, 'Product Name'),
 
           if (_gradingApplies(reference)) ...[
             poultrySection('Quality Std for Carcasses'),
@@ -1493,13 +1508,17 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
             items: reference.remarks,
             onChanged: (v) => setState(() => _remarkTypeId = v),
           ),
-          poultryField(_directionRemarks, 'List of Added Remarks', lines: 2),
+          poultryField(_directionRemarks, 'Added Remarks', lines: 2),
           poultryField(_directionComments, 'Comments/Remarks on Rejection',
               lines: 3),
-          // Not typed: FSA-SOP-APS-001 Annexure C fixes the period from
-          // the deviations, and the date follows from the inspection date.
-          poultryField(_correctByDate, 'Correct by/on Date',
-              readOnly: true, helper: _periodHelper(reference)),
+          // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
+          // later, never into the past (see CorrectByDateField).
+          CorrectByDateField(
+            value: _correctBy,
+            sopDate: _sopCorrectBy,
+            helperText: _periodHelper(reference),
+            onChanged: _correctByChanged,
+          ),
           if (_seizureDecision != null) _seizureNotice(),
 
           if (widget.visit == null) ...[

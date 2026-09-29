@@ -238,7 +238,8 @@ void main() {
       final due = DateTime.now().add(const Duration(days: 3));
       final dmy = '${due.day.toString().padLeft(2, '0')}/'
           '${due.month.toString().padLeft(2, '0')}/${due.year}';
-      expect(find.text(dmy), findsOneWidget);
+      // Shown by the date field, with its weekday in front.
+      expect(find.textContaining(dmy), findsOneWidget);
       expect(find.textContaining('3-day rectification notice'),
           findsOneWidget);
     });

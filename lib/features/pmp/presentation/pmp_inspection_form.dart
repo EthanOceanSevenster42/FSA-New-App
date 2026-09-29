@@ -28,6 +28,7 @@ import '../../eggs/presentation/new_directory_entry_sheet.dart';
 import '../data/pmp_repository.dart';
 import '../../seizures/presentation/record_seizure.dart';
 import '../domain/pmp_rules.dart';
+import '../../../core/widgets/correct_by_date_field.dart';
 
 /// New PMP Inspection.
 ///
@@ -189,6 +190,15 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   String _waybill = '';
   DateTime? _correctBy;
 
+  /// The annexure's own date for [_correctBy], and whether the inspector has
+  /// moved the rejection to a later one of their choosing.
+  DateTime? _sopCorrectBy;
+  bool _correctByPicked = false;
+
+  /// The date a reopened record was saved with, until the annexure's date is
+  /// known to tell whether the inspector had chosen it.
+  DateTime? _savedCorrectBy;
+
   /// The inspector's answer when the product-name row is unticked.
   bool _productNameAbsent = false;
 
@@ -270,6 +280,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       _testSampleSize.text = saved.testSampleSize;
       _directionRemarks.text = saved.directionRemarks;
       _correctBy = saved.correctByDate;
+      _savedCorrectBy = saved.correctByDate;
       _correctByDate.text =
           saved.correctByDate == null ? '' : _dmy(saved.correctByDate!);
       _productNameAbsent = saved.productNameAbsent;
@@ -644,8 +655,21 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       productNameAbsent: _productNameAbsent,
     );
     setState(() {
-      _correctBy =
+      _sopCorrectBy =
           PmpRules.correctByDate(inspectedAt: _inspectedAt, days: days);
+      final saved = _savedCorrectBy;
+      if (saved != null) {
+        _savedCorrectBy = null;
+        _correctByPicked = CorrectByDateField.isFuture(saved) &&
+            !DateUtils.isSameDay(saved, _sopCorrectBy);
+        if (_correctByPicked) _correctBy = saved;
+      }
+      // The inspector's own date stands while the annexure still gives a
+      // period to move; none, or an immediate one, puts the annexure's back.
+      if (!_correctByPicked || !CorrectByDateField.isFuture(_sopCorrectBy)) {
+        _correctBy = _sopCorrectBy;
+        _correctByPicked = false;
+      }
       _correctByDate.text = _correctBy == null ? '' : _dmy(_correctBy!);
     });
     await _askAboutSeizureIfNeeded(reference);
@@ -712,6 +736,15 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
     ];
     return 'Seizure under FSA-SOP-APS-001 Annexure B: ${reasons.join('; ')}.';
   }
+
+  /// The inspector moved the Correct by/on Date, or cleared it back to the
+  /// annexure's.
+  void _correctByChanged(DateTime? date) => setState(() {
+        _correctBy = date;
+        _correctByPicked =
+            date != null && !DateUtils.isSameDay(date, _sopCorrectBy);
+        _correctByDate.text = date == null ? '' : _dmy(date);
+      });
 
   /// What the correct-by field says under its date.
   String _periodHelper(_Reference reference) {
@@ -1225,7 +1258,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
               onAddNew: _addProducer,
             ),
           SearchPickerField<PmpRef>(
-            label: 'Processed Meat Product',
+            label: 'Processed Meat Product Name',
             controller: _productItem,
             options: reference.products,
             optionLabel: (p) => p.name,
@@ -1531,10 +1564,14 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
               onChanged: (v) => setState(() => _remarkTypeId = v),
             ),
             poultryField(_directionRemarks, 'List of Added Remarks', lines: 2),
-            // The period is the annexure's, never a free date
-            // (FSA-SOP-APS-001 §8.1).
-            poultryField(_correctByDate, 'Correct by/on Date',
-                readOnly: true, helper: _periodHelper(reference)),
+            // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
+            // later, never into the past (see CorrectByDateField).
+            CorrectByDateField(
+              value: _correctBy,
+              sopDate: _sopCorrectBy,
+              helperText: _periodHelper(reference),
+              onChanged: _correctByChanged,
+            ),
             if (_seizureDecision != null) _seizureNotice(),
             poultryField(
               _nonConformanceComments,

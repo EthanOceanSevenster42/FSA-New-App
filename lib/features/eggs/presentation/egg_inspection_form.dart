@@ -2861,20 +2861,6 @@ class _EggInspectionFormState extends State<EggInspectionForm> {
                 'That restricted particular is already on the list.'),
           ),
         ],
-        Divider(height: 26, color: AppColors.border),
-        Text(
-          'Selected Rejection for Follow up',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.2,
-            color: AppColors.muted,
-          ),
-        ),
-        const Padding(
-          padding: EdgeInsets.only(top: 4, bottom: 8),
-          child: Text('Not applicable', style: TextStyle(fontSize: 13.5)),
-        ),
       ];
 
   /// Whether the marking/labelling block is open at all — the original

@@ -253,6 +253,15 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
     return '${_photos.length} of $max taken — $max at most, fewer is fine.';
   }
 
+  /// The count line's colour: red while the required photographs are still
+  /// short, green once they are all taken, so an inspector can see at a
+  /// glance whether the block is done. Muted where none are required.
+  Color get _countColour {
+    final min = widget.minPhotos;
+    if (min == null || min < 1) return AppColors.muted;
+    return _photos.length >= min ? const Color(0xFF2E7D32) : AppColors.brandRed;
+  }
+
   /// Whether this block has all the photographs it takes.
   bool get _full =>
       widget.maxPhotos != null && _photos.length >= widget.maxPhotos!;
@@ -293,7 +302,11 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 _countLine,
-                style: TextStyle(color: AppColors.muted, fontSize: 13),
+                style: TextStyle(
+                  color: _countColour,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           if (_photos.isNotEmpty)

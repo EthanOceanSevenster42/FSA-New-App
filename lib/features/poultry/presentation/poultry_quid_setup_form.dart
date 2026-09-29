@@ -570,8 +570,9 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                           color: AppColors.inkSoft),
                     ),
                   ),
-                poultryField(_companyReg, 'Company Registration Number'),
-                poultryField(_productDetails, 'Product Details'),
+                poultryField(
+                    _companyReg, 'Company Registration Number (optional)'),
+                poultryField(_productDetails, 'Product Name'),
 
                 // The original's own heading for the block below.
                 poultrySection('Inspection Setup Control'),

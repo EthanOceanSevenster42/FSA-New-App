@@ -205,10 +205,14 @@ void main() {
 
     /// Slides the row named [description] to a deviation.
     Future<void> untick(WidgetTester tester, String description) async {
+      // The exact row where there is one: "Product Name" is also inside the
+      // "Processed Meat Product Name" field caption, higher up the page.
+      final exact = find.text(description);
+      final label = exact.evaluate().isNotEmpty
+          ? exact.first
+          : find.textContaining(description).first;
       final slider = find.descendant(
-        of: find.ancestor(
-            of: find.textContaining(description).first,
-            matching: find.byType(Row)),
+        of: find.ancestor(of: label, matching: find.byType(Row)),
         matching: find.byType(ComplianceSlider),
       );
       await tester.ensureVisible(slider.first);
@@ -239,7 +243,8 @@ void main() {
       final due = DateTime.now().add(const Duration(days: 3));
       final dmy = '${due.day.toString().padLeft(2, '0')}/'
           '${due.month.toString().padLeft(2, '0')}/${due.year}';
-      expect(find.text(dmy), findsOneWidget);
+      // Shown by the date field, with its weekday in front.
+      expect(find.textContaining(dmy), findsOneWidget);
       expect(find.textContaining('3-day rectification notice'),
           findsOneWidget);
     });

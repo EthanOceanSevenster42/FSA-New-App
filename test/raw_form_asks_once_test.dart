@@ -82,9 +82,12 @@ void main() {
   testWidgets('a standalone raw inspection still asks for both',
       (tester) async {
     await open(tester, inVisit: false);
-    // Nothing was settled at a door, so the form has to ask.
-    expect(find.text('Facility Address'), findsOneWidget);
+    // Nothing was settled at a door, so the form has to ask. Below the
+    // product photographs, which open the page.
+    await scrollTo(tester, find.text('Trading Name'));
     expect(find.text('Trading Name'), findsOneWidget);
+    await scrollTo(tester, find.text('Facility Address'));
+    expect(find.text('Facility Address'), findsOneWidget);
 
     await scrollTo(tester, find.text('Distance Travelled (km)'));
     expect(find.text('Distance Travelled (km)'), findsOneWidget);

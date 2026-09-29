@@ -68,7 +68,6 @@ void main() {
       'entryFacilityName',
       'entryProducerNewFacility',
       'editorNewFacilityAddress',
-      'entryCompanyRegNumber',
       'entryNewContactPerson',
       'entryNewContactPersonEmail',
       'PickerPoultryType',
@@ -76,10 +75,8 @@ void main() {
       'PickerClassDesignation',
       'PickerAlternativeClassDesignation',
       'PickerGrade',
-      'entryProductDetails',
       'entrySampleNumber',
       'pickerDirectionRemark',
-      'editorDirectionRemarks',
       'entryManagerName',
       'entryManagerEmail',
       'entryClientEmail1',
@@ -94,6 +91,11 @@ void main() {
     const reworded = {
       // "Direction" in the original; the FSA calls this a rejection.
       'editorDirectionComments': 'Comments/Remarks on Rejection',
+      // Worded as the labelling checklist words them, so the two forms read
+      // alike (Henry, 2026-09-29).
+      'entryCompanyRegNumber': 'Company Registration Number (optional)',
+      'entryProductDetails': 'Product Name',
+      'editorDirectionRemarks': 'Added Remarks',
       // A cellphone is as good as a landline for reaching the facility
       // (Ethan, 2026-09-24).
       'entryNewFacilityTelephone':

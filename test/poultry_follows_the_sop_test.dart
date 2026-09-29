@@ -34,7 +34,7 @@ void main() {
   final gradeRow = row(25, inner, 'Grade Designation');
   final packer = row(26, inner, 'Indication of Packer (Physical Address)');
   final origin =
-      row(27, inner, 'Country of Origin (Imported/Packed Mixed Product)');
+      row(27, inner, 'Country of Origin (Imported)');
   final lot = row(28, inner, 'Number and Code to Identify Production Lot');
   final fresh = row(29, inner, 'The Expression (Freshness)');
   final giblets = row(30, inner, 'The Expression (Giblets)');
@@ -203,7 +203,8 @@ void main() {
       await tester.tap(find.text('Proceed with seizure'));
       await tester.pumpAndSettle();
       expect(find.textContaining('Seizure under section 8'), findsOneWidget);
-      expect(find.text(dmy(DateTime.now())), findsOneWidget);
+      // Shown by the date field, with its weekday in front.
+      expect(find.textContaining(dmy(DateTime.now())), findsOneWidget);
     });
 
     testWidgets('a packer deviation sets a 30-day correct-by date',
@@ -211,7 +212,9 @@ void main() {
       await open(tester);
       await untick(tester, 'Indication of Packer');
       expect(find.text('This consignment must be seized'), findsNothing);
-      expect(find.text(dmy(DateTime.now().add(const Duration(days: 30)))),
+      expect(
+          find.textContaining(
+              dmy(DateTime.now().add(const Duration(days: 30)))),
           findsOneWidget);
       expect(find.textContaining('30-day rectification notice'),
           findsOneWidget);

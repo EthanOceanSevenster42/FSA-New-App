@@ -23,6 +23,7 @@ import '../../../core/widgets/search_picker.dart';
 import 'poultry_evidence_section.dart';
 import 'poultry_form_widgets.dart';
 import 'poultry_inspection_form.dart';
+import '../../../core/widgets/correct_by_date_field.dart';
 
 /// New Label/Container Checklist.
 ///
@@ -140,6 +141,11 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
   /// "Correct by/on" — set by the annexure from the deviations, not typed.
   final _correctByDate = TextEditingController();
   DateTime? _correctBy;
+
+  /// The annexure's own date for [_correctBy], and whether the inspector has
+  /// moved the rejection to a later one of their choosing.
+  DateTime? _sopCorrectBy;
+  bool _correctByPicked = false;
 
   /// Whether the seizure question has been put on this visit to the form,
   /// and what the inspector answered.
@@ -436,11 +442,6 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
     // the office with no notice behind them, and the correct-by date
     // FSA-SOP-APS-001 Annexure C sets had nowhere to go.
     if (completed && findings.isNotEmpty) {
-      final days = PoultryRules.rectificationDays(
-        deviations: findings.map((f) => f.item),
-        classOmitted: _classOmitted,
-        gradeOmitted: _gradeOmitted,
-      );
       await widget.captureRepository.saveDirection(
         PoultryDirectionsCompanion.insert(
           clientUuid: _clientUuid,
@@ -460,8 +461,8 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
               : 'Generated from poultry labelling findings.'),
           nonConformanceIds:
               Value(findings.map((f) => f.item.id).toSet().join(',')),
-          correctByDate: Value(PoultryRules.correctByDate(
-              inspectedAt: _inspectedAt, days: days)),
+          // Annexure C's date, or the later one the inspector chose.
+          correctByDate: Value(_correctBy),
         ),
       );
       if (!mounted) return;
@@ -602,8 +603,14 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
       gradeOmitted: _gradeOmitted,
     );
     setState(() {
-      _correctBy =
+      _sopCorrectBy =
           PoultryRules.correctByDate(inspectedAt: _inspectedAt, days: days);
+      // The inspector's own date stands while the annexure still gives a
+      // period to move; none, or an immediate one, puts the annexure's back.
+      if (!_correctByPicked || !CorrectByDateField.isFuture(_sopCorrectBy)) {
+        _correctBy = _sopCorrectBy;
+        _correctByPicked = false;
+      }
       _correctByDate.text = _correctBy == null ? '' : _dmy(_correctBy!);
     });
     if (ask) await _askAboutSeizureIfNeeded(reference);
@@ -667,6 +674,15 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
     ];
     return 'Seizure under FSA-SOP-APS-001 Annexure C: ${reasons.join('; ')}.';
   }
+
+  /// The inspector moved the Correct by/on Date, or cleared it back to the
+  /// annexure's.
+  void _correctByChanged(DateTime? date) => setState(() {
+        _correctBy = date;
+        _correctByPicked =
+            date != null && !DateUtils.isSameDay(date, _sopCorrectBy);
+        _correctByDate.text = date == null ? '' : _dmy(date);
+      });
 
   /// What the correct-by field says under its date.
   String _periodHelper(_LabelReference reference) {
@@ -838,8 +854,8 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
           // capture it, so it is needed either way — and asking it in both
           // places put the same question on the screen twice, bound to the
           // one controller.
-          poultryField(_registrationNumber, 'Registration Number'),
-          poultryField(_productDetails, 'Product Details'),
+          poultryField(_registrationNumber, 'Registration Number (optional)'),
+          poultryField(_productDetails, 'Product Name'),
           // Poultry is labelling, with grading to follow when the inspector
           // says so — asked here, at the product, not at the door.
           poultrySwitch(
@@ -850,7 +866,6 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
                 'this product once the labelling is complete. NO records '
                 'the labelling only.',
           ),
-          poultryField(_followUp, 'Selected Rejection for Follow up'),
 
           poultryChecklist(
             title: 'Product Label',
@@ -960,22 +975,23 @@ class _PoultryLabelChecklistFormState extends State<PoultryLabelChecklistForm> {
           ),
 
           poultrySection('Rejection Form'),
+          // A labelling checklist: its rejection is for labelling findings,
+          // so the grading remarks picker the grading form carries is not
+          // asked here.
           poultryField(
             _nonConformanceComments,
-            'Non-Conformance Comments',
+            'Labelling Non-Conformance Comments',
             lines: 3,
           ),
-          poultryDropdown(
-            label: 'Grading Non-Conformance Remarks',
-            value: _remarkTypeId,
-            items: reference.remarks,
-            onChanged: (v) => setState(() => _remarkTypeId = v),
+          poultryField(_directionRemarks, 'Added Remarks', lines: 2),
+          // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
+          // later, never into the past (see CorrectByDateField).
+          CorrectByDateField(
+            value: _correctBy,
+            sopDate: _sopCorrectBy,
+            helperText: _periodHelper(reference),
+            onChanged: _correctByChanged,
           ),
-          poultryField(_directionRemarks, 'List of Added Remarks', lines: 2),
-          // Not typed: FSA-SOP-APS-001 Annexure C fixes the period from
-          // the deviations, and the date follows from the inspection date.
-          poultryField(_correctByDate, 'Correct by/on Date',
-              readOnly: true, helper: _periodHelper(reference)),
           if (_seizureDecision != null) _seizureNotice(),
 
           if (widget.visit == null) ...[

@@ -31,6 +31,7 @@ import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
 import '../../eggs/presentation/new_directory_entry_sheet.dart';
 import '../domain/rawrmp_rules.dart';
+import '../../../core/widgets/correct_by_date_field.dart';
 
 /// New Raw Red Meat Product Inspection.
 ///
@@ -214,6 +215,15 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   String _waybill = '';
   DateTime? _correctBy;
 
+  /// The annexure's own date for [_correctBy], and whether the inspector has
+  /// moved the rejection to a later one of their choosing.
+  DateTime? _sopCorrectBy;
+  bool _correctByPicked = false;
+
+  /// The date a reopened record was saved with, until the annexure's date is
+  /// known to tell whether the inspector had chosen it.
+  DateTime? _savedCorrectBy;
+
   @override
   void initState() {
     super.initState();
@@ -299,6 +309,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             .map((line) => line.trim())
             .where((line) => line.isNotEmpty));
       _correctBy = saved.correctByDate;
+      _savedCorrectBy = saved.correctByDate;
       _correctByDate.text =
           saved.correctByDate == null ? '' : _dmy(saved.correctByDate!);
       _nonConformanceComments.text = saved.nonConformanceComments;
@@ -968,7 +979,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   /// The original requires a front and a back product photograph.
   static const _requiredProductPhotos = RawRmpRules.requiredProductPhotos;
 
-  bool get _photosAllowed => _storageTypeId != null;
   bool get _checklistUnlocked =>
       !RawRmpRules.photographsOutstanding(_photoCount);
 
@@ -1044,8 +1054,21 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       compositionFailed: _compositionFailed,
     );
     setState(() {
-      _correctBy =
+      _sopCorrectBy =
           RawRmpRules.correctByDate(inspectedAt: _inspectedAt, days: days);
+      final saved = _savedCorrectBy;
+      if (saved != null) {
+        _savedCorrectBy = null;
+        _correctByPicked = CorrectByDateField.isFuture(saved) &&
+            !DateUtils.isSameDay(saved, _sopCorrectBy);
+        if (_correctByPicked) _correctBy = saved;
+      }
+      // The inspector's own date stands while the annexure still gives a
+      // period to move; none, or an immediate one, puts the annexure's back.
+      if (!_correctByPicked || !CorrectByDateField.isFuture(_sopCorrectBy)) {
+        _correctBy = _sopCorrectBy;
+        _correctByPicked = false;
+      }
       _correctByDate.text = _correctBy == null ? '' : _dmy(_correctBy!);
     });
     await _askAboutSeizureIfNeeded();
@@ -1056,6 +1079,15 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   bool get _compositionFailed =>
       _kind.showsComposition &&
       RawRmpRules.compositionFails(_compositionSnapshot());
+
+  /// The inspector moved the Correct by/on Date, or cleared it back to the
+  /// annexure's.
+  void _correctByChanged(DateTime? date) => setState(() {
+        _correctBy = date;
+        _correctByPicked =
+            date != null && !DateUtils.isSameDay(date, _sopCorrectBy);
+        _correctByDate.text = date == null ? '' : _dmy(date);
+      });
 
   /// What the correct-by field says under its date.
   String _periodHelper(_Reference reference) {
@@ -1579,6 +1611,47 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         ),
         children: [
           poultrySection('Inspection Details'),
+          // Photographed first: at a raw processed meat inspection the pack
+          // is photographed before it is sampled, so the photographs open
+          // the page rather than wait on the storage method as the original
+          // made them (Henry, 2026-09-29). The checklist still opens only
+          // once the front and back shots exist.
+          _anchor(
+            'photos',
+            framed: true,
+            PoultryEvidenceSection(
+            repository: widget.captureRepository,
+            recordUuid: _clientUuid,
+            kind: 'rawrmp',
+            photosTitle: 'Product Photos',
+            captureLabel: 'Take Product Photos',
+            guidance: 'Two views of the product: the front of the pack with '
+                'the product name legible, and the back with the '
+                'ingredients, the manufacturer and the batch code. A third '
+                'is optional.',
+            showSignatures: false,
+            // The original stops before each of the first two shots and
+            // says which view it wants; a third is allowed and optional.
+            maxPhotos: 3,
+            minPhotos: _requiredProductPhotos,
+            captureNotes: const [
+              (
+                title: 'Front Photo Note',
+                message: 'Please take a FRONT view photo of the product.'
+                    '\nOnly 1 photo is required.',
+              ),
+              (
+                title: 'Rear Photo Note',
+                message: 'Please take a REAR view photo of the product.'
+                    '\nOnly 1 photo is required.',
+              ),
+            ],
+            onChanged: () {
+              unawaited(_persist(completed: false));
+              unawaited(_refreshPhotoCount());
+            },
+          ),
+          ),
           // Inside a grouped inspection the door has already asked both, so
           // they are not asked again here (Ethan, 2026-09-24).
           if (widget.visit == null && !_reasonFromVisit)
@@ -1724,62 +1797,29 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           // "Follow Up Rejection Particulars" is no longer asked
           // (Ethan, 2026-09-24); a draft that held one keeps it.
 
-          // The original enables its "Take Product Photos" button from the
-          // storage-method picker, and opens the checklist only once the
-          // front and back shots exist.
-          _anchor(
-            'photos',
-            framed: true,
-            PoultryEvidenceSection(
-            repository: widget.captureRepository,
-            recordUuid: _clientUuid,
-            kind: 'rawrmp',
-            photosTitle: 'Product Photos',
-            captureLabel: 'Take Product Photos',
-            guidance: 'Two views of the product: the front of the pack with '
-                'the product name legible, and the back with the '
-                'ingredients, the manufacturer and the batch code. A third '
-                'is optional.',
-            showSignatures: false,
-            // The original stops before each of the first two shots and
-            // says which view it wants; a third is allowed and optional.
-            maxPhotos: 3,
-            minPhotos: _requiredProductPhotos,
-            captureNotes: const [
-              (
-                title: 'Front Photo Note',
-                message: 'Please take a FRONT view photo of the product.'
-                    '\nOnly 1 photo is required.',
-              ),
-              (
-                title: 'Rear Photo Note',
-                message: 'Please take a REAR view photo of the product.'
-                    '\nOnly 1 photo is required.',
-              ),
-            ],
-            enabled: _photosAllowed,
-            disabledHint: 'Choose the Storage Method above before taking the '
-                'product photographs.',
-            onChanged: () {
-              unawaited(_persist(completed: false));
-              unawaited(_refreshPhotoCount());
-            },
-          ),
-          ),
 
           if (_labelling) ...[
             poultrySection('Mark/Label Checklist'),
-            if (!_checklistUnlocked)
-              Padding(
+            // Red while the front and back photographs are still owed, green
+            // once both are in — kept on screen then, so the inspector sees
+            // the checklist opened because the count was met.
+            Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Text(
-                  _photosAllowed
-                      ? 'Take the front and back product photographs above to '
-                          'open the checklist — $_photoCount of '
-                          '$_requiredProductPhotos taken.'
-                      : 'Choose the Storage Method, then take the front and back '
-                          'product photographs, to open the checklist.',
-                  style: TextStyle(color: AppColors.muted, height: 1.35),
+                  _checklistUnlocked
+                      ? 'Front and back product photographs taken — '
+                          '$_photoCount of $_requiredProductPhotos. The '
+                          'checklist is open.'
+                      : 'Take the front and back product photographs above '
+                          'to open the checklist — $_photoCount of '
+                          '$_requiredProductPhotos taken.',
+                  style: TextStyle(
+                    color: _checklistUnlocked
+                        ? const Color(0xFF2E7D32)
+                        : AppColors.brandRed,
+                    fontWeight: FontWeight.w600,
+                    height: 1.35,
+                  ),
                 ),
               ),
             IgnorePointer(
@@ -2079,10 +2119,14 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               ],
             ),
             const SizedBox(height: 14),
-            // The period is the annexure's, never a free date
-            // (FSA-SOP-APS-001 §8.1).
-            poultryField(_correctByDate, 'Correct by/on Date',
-                readOnly: true, helper: _periodHelper(reference)),
+            // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
+            // later, never into the past (see CorrectByDateField).
+            CorrectByDateField(
+              value: _correctBy,
+              sopDate: _sopCorrectBy,
+              helperText: _periodHelper(reference),
+              onChanged: _correctByChanged,
+            ),
             if (_seizureDecision != null) _seizureNotice(),
             poultryField(
               _nonConformanceComments,
