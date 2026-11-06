@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Hand backups of files mid-edit
+*.haughbak
+*.haugh70-bak
+*.timeedit-bak
+*.bak-*
+
+# Snapshots of live server data (client and facility details) used by local tests only
+test/live_eggs.json
+test/live_poultry.json
