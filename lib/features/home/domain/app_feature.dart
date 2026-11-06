@@ -18,6 +18,7 @@ class AppFeature {
     required this.group,
     this.requiresAdmin = false,
     this.available = true,
+    this.onHome = false,
   });
 
   /// Stable numeric ids so records and routes can be
@@ -33,6 +34,13 @@ class AppFeature {
   /// visibly disabled, rather than silently missing — an inspector should be
   /// able to see that a feature exists and is not yet available.
   final bool available;
+
+  /// Shown on the home screen as well as in the drawer.
+  ///
+  /// For the handful of tools used every day rather than occasionally. An
+  /// inspector opens the drawer to find a setting; they should not have to
+  /// open it to sync, or to see where they are going (Ethan, 2026-10-30).
+  final bool onHome;
 }
 
 /// The full catalogue, in the order the drawer presents it.
@@ -71,6 +79,18 @@ const kAppFeatures = <AppFeature>[
     icon: Icons.sync,
     group: FeatureGroup.tools,
     available: true,
+    onHome: true,
+  ),
+  // Follow-up Calendar. Held behind --dart-define=SHOW_CALENDAR=true while it
+  // was worked on, and released to every inspector on 2026-10-29 (Ethan).
+  AppFeature(
+    id: 13,
+    title: 'Follow-up Calendar',
+    subtitle: 'Plan your week, and the follow-ups that are due',
+    icon: Icons.event_available_outlined,
+    group: FeatureGroup.tools,
+    available: true,
+    onHome: true,
   ),
   // Information (id 9) is likewise removed until a screen exists behind it.
   AppFeature(

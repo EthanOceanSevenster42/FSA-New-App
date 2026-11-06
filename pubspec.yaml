@@ -1,7 +1,7 @@
 name: fsa_app
 description: Food Safety Agency inspector application.
 publish_to: "none"
-version: 1.0.1+2176
+version: 1.0.1+2276
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -14,6 +14,9 @@ dependencies:
   device_info_plus: ^10.1.2
   drift: ^2.20.0
   drift_flutter: ^0.2.0
+  # Named directly for the connection pragmas in sqlite_connection.dart —
+  # drift pulls it in anyway, this only makes the import legitimate.
+  sqlite3: ^2.4.0
   http: ^1.2.2
   package_info_plus: ^8.0.2
   path_provider: ^2.1.6
@@ -26,6 +29,7 @@ dependencies:
   share_plus: ^12.0.2
   file_saver: ^0.4.0
   image: ^4.10.1
+  flutter_image_compress: ^2.5.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

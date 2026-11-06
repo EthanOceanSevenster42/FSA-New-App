@@ -11,6 +11,7 @@ import '../../../core/data/local_database.dart';
 import '../../../core/documents/direction_pdf.dart';
 import '../../../core/documents/fsa_checklist_pdf.dart';
 import '../../../core/documents/fsa_documents.dart';
+import '../../../core/documents/fsa_form_pdf.dart';
 import '../../../core/documents/quid_checklist_pdf.dart';
 import '../domain/poultry_rules.dart';
 import '../domain/quid_determination.dart';
@@ -487,6 +488,23 @@ class PoultryRepository {
   /// Scoped rather than global: a shared handset must not show one inspector
   /// another's work. Rows with no owner predate ownership and are shown to
   /// whoever is signed in, because there is no better answer available.
+  /// Every grading inspection on this handset, for the upload pass alone.
+  ///
+  /// Who may see a record is a question about a screen; whether finished
+  /// work reaches the server is not. A record captured under a name the
+  /// handset is no longer signed in as was never offered to the server and
+  /// never counted as a failure, so it sat there while the app reported all
+  /// clear (Ethan, 2026-10-28).
+  Future<List<PoultryInspection>> inspectionsForUpload() =>
+      (database.select(database.poultryInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<List<PoultryInspection>> savedInspections(String username) async {
     final rows = await (database.select(database.poultryInspections)
           ..orderBy([
@@ -690,6 +708,8 @@ class PoultryRepository {
           'Poultry-Rejection',
           uuid,
           into),
+      // The evidence the notice rests on (Ethan, 2026-10-08).
+      photoPaths: ctx.photoPaths,
       control: FsaDocuments.poultryDirection,
       natureOfInspection: 'Poultry Meat Classification and Grading',
       facilityName: grading?.facilityName ?? label?.facilityName ?? '',
@@ -748,7 +768,8 @@ class PoultryRepository {
       inspectorSignaturePath: ctx.inspectorSignaturePath,
       authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
       pleaseNote: 'Failure to rectify by the date above may result in '
-          'further action under the Act.',
+          'further action under the Agricultural Product Standards Act, '
+          'No. 119 of 1990.',
     );
   }
 
@@ -821,9 +842,15 @@ class PoultryRepository {
     // a deviation. Listing a kind the Label/Container checklist never
     // captures put six deviations nobody had been asked about on the sheet
     // the office reads, on every record.
+    // One lettering table, not two (Neo Noe, 2026-10-20): "the Poultry
+    // Regulation does not have Inner Containers and Outer Containers".
+    // R.946 speaks of the container, so the sheet does too. The handset
+    // still captures the two lists — they are the original's and a record
+    // already holds ticks against both — so they are merged here: a
+    // requirement reads as a deviation if either list failed it, which is
+    // the honest reading of one container checked twice.
     const titles = {
-      PoultryChecklistKind.labelInner: 'MARKING — INNER LABEL',
-      PoultryChecklistKind.labelOuter: 'MARKING — OUTER PACKAGING',
+      PoultryChecklistKind.labelInner: 'LETTERING: CONTAINER',
       PoultryChecklistKind.container: 'CONTAINERS & OUTER CONTAINERS',
     };
     return FsaChecklistPdf.write(
@@ -928,6 +955,8 @@ class PoultryRepository {
     return DirectionPdf.write(
       out: _poultryDocumentFile(
           i.facilityName, 'Poultry-QUID-Rejection', uuid, into),
+      // The evidence the notice rests on (Ethan, 2026-10-08).
+      photoPaths: ctx.photoPaths,
       control: FsaDocuments.poultryDirection,
       natureOfInspection: 'Poultry QUID Verification',
       facilityName: i.facilityName,
@@ -968,7 +997,7 @@ class PoultryRepository {
         if (remarkType.isNotEmpty) remarkType,
         if (i.directionRemarks.trim().isNotEmpty) i.directionRemarks.trim(),
         if (i.directionAction.trim().isNotEmpty)
-          'Batch No. and/or quantity removed: ${i.directionAction.trim()}',
+          'Batch No. and/or quantity rejected: ${i.directionAction.trim()}',
       ].join('\n'),
       inspectorName: ctx.inspectorName,
       authorisedPersonName: ctx.authorisedPersonName,
@@ -977,7 +1006,10 @@ class PoultryRepository {
     );
   }
 
-  Future<File?> buildQuidChecklist(String uuid, {Directory? into}) async {
+  Future<File?> buildQuidChecklist(String uuid,
+      {Directory? into,
+      int? injectorPosition,
+      bool onlyThisInjector = false}) async {
     final i = await (database.select(database.poultryQuidInspections)
           ..where((t) => t.clientUuid.equals(uuid)))
         .getSingleOrNull();
@@ -1032,46 +1064,19 @@ class PoultryRepository {
     // own rather than a portion-type row.
     final portionType = i.isWholeCarcass ? 'Whole Carcass' : 'Cuts/Portions';
 
-    return QuidChecklistPdf.write(
-      out: _poultryDocumentFile(
-          i.facilityName, 'Poultry-QUID-Checklist', uuid, into),
-      control: FsaDocuments.poultryQuid,
-      facilityName: i.facilityName,
-      dateOfInspection: _poultryYmd(i.inspectedAt),
-      reasonForInspection: reason,
-      registrationNumber: i.companyRegNumber,
-      portionType: portionType,
-      allowableQuidPercent: i.dispensationQuidPercent,
-      isWaterChilled: i.isWaterChilled,
-      chilling: [
-        for (final s in chilling)
-          QuidCarcass(
-            number: s.carcassNumber,
-            initialMassG: s.initialMassG,
-            finalMassG: s.finalMassG,
-            percent: s.pickupPercent,
-          ),
-      ],
-      averagePickupPercent: i.isWaterChilled
-          ? i.averageWaterChillPickup
-          : i.averageInjectorPickup,
-      iterationNumber: i.iterationNumber,
-      // One block per injector on the set-up list, as the paper sheet is
-      // ruled: the carcasses it injected beside the carcasses its QUID was
-      // determined on, each with its own average, and the finding made
-      // against that injector's own setting.
-      injectors: [
-        for (final v in verdicts)
-          QuidInjectorBlock(
+    // Each injector's block, tagged with its position, so a report can be
+    // drawn for one injector alone (Ethan, 2026-10-05).
+    final blocksTagged = <({int? position, QuidInjectorBlock block})>[
+      for (final v in verdicts)
+        (
+          position: v.position,
+          block: QuidInjectorBlock(
             name: v.name.isEmpty ? 'Injector ${v.position}' : v.name,
             setPercent: v.setPercent,
             injection: [
               for (final s in injected
                   .where((s) => s.assignedInjector == '${v.position}'))
                 QuidInjectorCarcass(
-                  // The injector has its own rate column: `pickupPercent`
-                  // is the chilling reading, and printing it here would put
-                  // the chiller's figure under the injector's heading.
                   number: s.carcassNumber,
                   beforeMassG: s.beforeMassG,
                   afterMassG: s.injectorAfterMassG,
@@ -1110,13 +1115,13 @@ class PoultryRepository {
                 ),
             ],
           ),
-        // Carcasses injected but tied to no injector on the set-up list — a
-        // record from before injectors were listed, which named one
-        // injector for the whole run. Printed under that name rather than
-        // dropped.
-        if (injected.any((s) =>
-            !injectors.any((inj) => '${inj.position}' == s.assignedInjector)))
-          QuidInjectorBlock(
+        ),
+      // Carcasses injected but tied to no injector on the set-up list.
+      if (injected.any((s) =>
+          !injectors.any((inj) => '${inj.position}' == s.assignedInjector)))
+        (
+          position: null,
+          block: QuidInjectorBlock(
             name: i.injectorName.trim().isEmpty ? 'Injector' : i.injectorName,
             setPercent: i.setInjectorQuidPercent,
             injection: [
@@ -1132,12 +1137,94 @@ class PoultryRepository {
             ],
             averageRatePercent: i.averageInjectorPickup,
           ),
+        ),
+    ];
+
+    // One injector's report, or all of them together.
+    final blocksHere = onlyThisInjector
+        ? [
+            for (final b in blocksTagged)
+              if (b.position == injectorPosition) b.block
+          ]
+        : [for (final b in blocksTagged) b.block];
+    if (onlyThisInjector && blocksHere.isEmpty) return null;
+
+    bool chillHere(PoultryQuidSample s) {
+      if (!onlyThisInjector) return true;
+      if (injectorPosition != null) {
+        return s.assignedInjector == '$injectorPosition';
+      }
+      return !injectors.any((inj) => '${inj.position}' == s.assignedInjector);
+    }
+
+    final chillingHere = chilling.where(chillHere).toList();
+    final avgPickupHere = onlyThisInjector
+        ? quidMean([for (final s in chillingHere) s.pickupPercent])
+        : (i.isWaterChilled
+            ? i.averageWaterChillPickup
+            : i.averageInjectorPickup);
+    final avgQuidHere =
+        onlyThisInjector ? blocksHere.first.averageQuidPercent : determined;
+    final withinHere = onlyThisInjector
+        ? switch (blocksHere.first.passes) {
+            true => 'YES',
+            false => 'NO',
+            null => '',
+          }
+        : switch (verdicts.map((v) => v.passes).toList()) {
+            final judged when judged.every((p) => p == null) => '',
+            final judged when judged.contains(false) => 'NO',
+            _ => 'YES',
+          };
+    final fileKind = onlyThisInjector
+        ? 'Poultry-QUID-Checklist-${_slugInjector(blocksHere.first.name)}'
+        : 'Poultry-QUID-Checklist';
+
+    return QuidChecklistPdf.write(
+      out: _poultryDocumentFile(i.facilityName, fileKind, uuid, into),
+      control: FsaDocuments.poultryQuid,
+      facilityName: i.facilityName,
+      dateOfInspection: _poultryYmd(i.inspectedAt),
+      reasonForInspection: reason,
+      registrationNumber: i.companyRegNumber,
+      portionType: portionType,
+      productName: i.productDetails,
+      // The plant's dispensation, or the regulated figure when it has
+      // none — the box was blank for a regulated injector (Ethan,
+      // 2026-10-01).
+      allowableQuidPercent: i.dispensationQuidPercent.trim().isNotEmpty
+          ? i.dispensationQuidPercent
+          : quidRegulatedPercent(isWholeCarcass: i.isWholeCarcass)
+              .toStringAsFixed(0),
+      isWaterChilled: i.isWaterChilled,
+      chilling: [
+        for (final s in chillingHere)
+          QuidCarcass(
+            number: s.carcassNumber,
+            initialMassG: s.initialMassG,
+            finalMassG: s.finalMassG,
+            percent: s.pickupPercent,
+          ),
       ],
-      averageQuidPercent: determined,
+      averagePickupPercent: avgPickupHere,
+      // Water chilling is judged against Reg. 4(2)'s 7% absorbed
+      // moisture, which is nothing to do with the allowable QUID above
+      // (Neo Noe, 2026-10-19).
+      waterChillWithinLimit:
+          i.isWaterChilled ? quidWaterChillWithinLimit(avgPickupHere) : null,
+      waterChillLimitPercent:
+          quidWaterChillMaximumPickup.toStringAsFixed(0),
+      iterationNumber: i.iterationNumber,
+      // One block per injector on the set-up list, as the paper sheet is
+      // ruled: the carcasses it injected beside the carcasses its QUID was
+      // determined on, each with its own average, and the finding made
+      // against that injector's own setting.
+      injectors: blocksHere,
+      averageQuidPercent: avgQuidHere,
       // The consignment totals behind that average.
-      quidInitialMassG: i.quidInitialMassG,
-      quidAfterMassG: i.quidAfterMassG,
-      quidGainMassG: i.quidGainMassG,
+      quidInitialMassG: onlyThisInjector ? '' : i.quidInitialMassG,
+      quidAfterMassG: onlyThisInjector ? '' : i.quidAfterMassG,
+      quidGainMassG: onlyThisInjector ? '' : i.quidGainMassG,
       verificationDate:
           i.documentDate == null ? '' : _poultryYmd(i.documentDate!),
       documentName: i.documentName,
@@ -1174,11 +1261,7 @@ class PoultryRepository {
       rejectionAction: i.directionRequired ? i.directionAction : '',
       // The verdict, not just the figures: one injector over its limit is a
       // non-conformance on the consignment, however well the others ran.
-      withinPermissibleLimit: switch (verdicts.map((v) => v.passes).toList()) {
-        final judged when judged.every((p) => p == null) => '',
-        final judged when judged.contains(false) => 'NO',
-        _ => 'YES',
-      },
+      withinPermissibleLimit: withinHere,
       comments: '',
       remarks: '',
       inspectorName: ctx.inspectorName,
@@ -1186,6 +1269,59 @@ class PoultryRepository {
       inspectorSignaturePath: ctx.inspectorSignaturePath,
       authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
     );
+  }
+
+  /// The injectors a QUID record has a report for (Ethan, 2026-10-05): each
+  /// weighed injector gets its own report, the un-listed legacy one included.
+  Future<List<({int? position, String name})>> quidReportInjectors(
+      String uuid) async {
+    final i = await (database.select(database.poultryQuidInspections)
+          ..where((t) => t.clientUuid.equals(uuid)))
+        .getSingleOrNull();
+    if (i == null) return const [];
+    final samples = await (database.select(database.poultryQuidSamples)
+          ..where((t) => t.inspectionUuid.equals(uuid)))
+        .get();
+    bool has(String v) => v.trim().isNotEmpty;
+    final injectors = await (database.select(database.poultryQuidInjectors)
+          ..where((t) => t.inspectionUuid.equals(uuid))
+          ..orderBy([(t) => OrderingTerm(expression: t.position)]))
+        .get();
+    bool weighed(int? position) => samples.any((s) {
+          final mine = position == null
+              ? !injectors
+                  .any((inj) => '${inj.position}' == s.assignedInjector)
+              : s.assignedInjector == '$position';
+          return mine &&
+              (has(s.initialMassG) ||
+                  has(s.beforeMassG) ||
+                  has(s.injectorAfterMassG) ||
+                  has(s.quidFinalMassG));
+        });
+    final out = <({int? position, String name})>[
+      for (final inj in injectors)
+        if (weighed(inj.position))
+          (
+            position: inj.position,
+            name: inj.name.trim().isEmpty ? 'Injector ${inj.position}' : inj.name
+          ),
+    ];
+    if (weighed(null)) {
+      out.add((
+        position: null,
+        name: i.injectorName.trim().isEmpty ? 'Injector' : i.injectorName
+      ));
+    }
+    return out;
+  }
+
+  /// A filename-safe slug of an injector name.
+  static String _slugInjector(String name) {
+    final slug = name
+        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    return slug.isEmpty ? 'injector' : slug;
   }
 
   /// Every block the checklist has, in the order the sheet prints them. A
@@ -1196,6 +1332,22 @@ class PoultryRepository {
     Map<PoultryChecklistKind, String> titles,
     Set<int> ticked,
   ) {
+    // The outer-packaging list is the same nine requirements as the inner
+    // one, against the same container. Where the caller asks for the inner
+    // list and not the outer, the outer's answers are folded into it by
+    // description, so a deviation marked there is not lost off the sheet
+    // (Neo Noe, 2026-10-20).
+    final foldOuter = titles.containsKey(PoultryChecklistKind.labelInner) &&
+        !titles.containsKey(PoultryChecklistKind.labelOuter);
+    final outerFailedDescriptions = !foldOuter
+        ? const <String>{}
+        : {
+            for (final r in items)
+              if (r.kind == PoultryChecklistKind.labelOuter &&
+                  !ticked.contains(r.id))
+                r.description,
+          };
+
     final sections = <FsaChecklistSection>[];
     for (final entry in titles.entries) {
       final rows = items.where((r) => r.kind == entry.key).toList();
@@ -1207,8 +1359,15 @@ class PoultryRepository {
             FsaChecklistRow(
               requirement: r.description,
               regulation: cleanRegulation(r.regulationReference),
-              deviation:
-                  ticked.contains(r.id) ? FsaDeviation.no : FsaDeviation.yes,
+              // The lettering rows carry a height and the sheet never
+              // printed it — every STD cell read "-" (Ethan, 2026-10-20,
+              // found while answering Neo's note on the egg sheet).
+              standard:
+                  r.minLetteringHeight.isEmpty ? '-' : r.minLetteringHeight,
+              deviation: (ticked.contains(r.id) &&
+                      !outerFailedDescriptions.contains(r.description))
+                  ? FsaDeviation.no
+                  : FsaDeviation.yes,
             ),
         ],
       ));
@@ -1259,9 +1418,7 @@ class PoultryRepository {
     return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
   }
 
-  static String _poultryYmd(DateTime d) => '${d.year}/'
-      '${d.month.toString().padLeft(2, '0')}/'
-      '${d.day.toString().padLeft(2, '0')}';
+  static String _poultryYmd(DateTime d) => fsaDateLong(d);
 
   void dispose() => _client.close();
 }

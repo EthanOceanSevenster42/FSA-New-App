@@ -78,7 +78,7 @@ class RestrictedParticularsPicker<T> extends StatelessWidget {
     if (typed == null) return const [];
     final kept = <String>[];
     for (final name in shared) {
-      if (name.trim().isEmpty) continue;
+      if (name.trim().isEmpty || _isOther(name)) continue;
       if (options.any((o) => _same(optionLabel(o), name))) continue;
       if (kept.any((k) => _same(k, name))) continue;
       kept.add(name.trim());
@@ -129,6 +129,11 @@ class RestrictedParticularsPicker<T> extends StatelessWidget {
   static bool _same(String a, String b) =>
       a.trim().toLowerCase() == b.trim().toLowerCase();
 
+  /// "Other" is not offered (Ethan, 2026-10-03): a particular no list has
+  /// is typed in from the last entry instead. An office list that still
+  /// carries one is shown without it.
+  static bool _isOther(String label) => _same(label, 'Other');
+
   @override
   Widget build(BuildContext context) {
     final typed = this.typed ?? const <String>{};
@@ -157,7 +162,8 @@ class RestrictedParticularsPicker<T> extends StatelessWidget {
           hint: hint,
           options: [
             for (final option in options)
-              (value: optionId(option), text: optionLabel(option)),
+              if (!_isOther(optionLabel(option)))
+                (value: optionId(option), text: optionLabel(option)),
             for (var n = 0; n < extras.length; n++)
               (value: _sharedBase - n, text: extras[n]),
             if (this.typed != null) (value: typeItIn, text: typeItInLabel),

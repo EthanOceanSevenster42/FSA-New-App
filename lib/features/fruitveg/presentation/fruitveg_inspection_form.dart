@@ -630,7 +630,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           hint: _group == null ? 'Select a commodity group first' : null,
         )),
         _DropdownField<FvCultivar>(
-          label: 'Cultivar / variety',
+          label: 'Cultivar/variety',
           value: _cultivar,
           items: _cultivars,
           itemLabel: (c) => c.name,
@@ -799,7 +799,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           style: TextStyle(color: AppColors.muted, height: 1.35),
         ),
         const SizedBox(height: 14),
-        _requirementSection('Marking / labelling', _marking),
+        _requirementSection('Marking/labelling', _marking),
         const SizedBox(height: 18),
         _requirementSection('Packing', _packing),
       ]);
@@ -852,7 +852,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             for (final entry in const [
-              ('grn', 'GRN / delivery note'),
+              ('grn', 'GRN/delivery note'),
               ('label', 'Business end (packaging) label'),
               ('defect', 'Defect photo'),
             ])
@@ -1025,7 +1025,7 @@ class _FruitVegInspectionFormState extends State<FruitVegInspectionForm> {
         ),
       ],
       _TextField(
-          label: 'Conditions / remarks', controller: _remarks, maxLines: 3),
+          label: 'Conditions/remarks', controller: _remarks, maxLines: 3),
       const SizedBox(height: 8),
       Text(
         'Inspector: ${widget.inspectorName}',

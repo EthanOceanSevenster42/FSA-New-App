@@ -25,5 +25,28 @@ void installFsaFormAssets() {
               .buffer
               .asUint8List(),
         ),
+        // The 2026 letterhead (Ethan, 2026-10-04).
+        letterheadLogo: pw.MemoryImage(
+          (await rootBundle.load('assets/images/letterhead_logo.png'))
+              .buffer
+              .asUint8List(),
+        ),
+        letterheadIcons: pw.MemoryImage(
+          (await rootBundle.load('assets/images/letterhead_icons.png'))
+              .buffer
+              .asUint8List(),
+        ),
+        letterheadFooter: pw.MemoryImage(
+          (await rootBundle.load('assets/images/letterhead_footer.png'))
+              .buffer
+              .asUint8List(),
+        ),
+        // The Department's arms, for the head of the seizure form
+        // (Ethan, 2026-10-12).
+        departmentLogo: pw.MemoryImage(
+          (await rootBundle.load('assets/images/dept_agriculture_logo.jpg'))
+              .buffer
+              .asUint8List(),
+        ),
       );
 }

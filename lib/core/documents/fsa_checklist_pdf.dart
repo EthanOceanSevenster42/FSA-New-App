@@ -65,8 +65,10 @@ typedef FsaField = ({String label, String value});
 /// the inspection's particulars in two columns, then the requirement blocks
 /// in two columns of tables — each block its own table headed
 /// `REGULATIONS | STD | DEVIATION`, every requirement answered `N/A`, `NO`
-/// or `YES`. The comments, remarks, product photographs and the two
-/// signatures follow on a second page.
+/// or `YES`. The comments, remarks and the two signatures follow, and the
+/// product photographs come after the signatures (Ethan, 2026-10-04) —
+/// the sheet signs off under its remarks, as the office's copies do, and
+/// the pictures sit below it.
 ///
 /// Six of the Agency's forms are this sheet with different requirements in
 /// it, so they share this one builder and supply their own control block,
@@ -90,8 +92,8 @@ abstract final class FsaChecklistPdf {
     DateTime? generatedAt,
   }) async {
     final a = await FsaForm.assets();
-    final inspectorSignature = await FsaForm.image(inspectorSignaturePath);
-    final clientSignature = await FsaForm.image(authorisedPersonSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
+    final clientSignature = await FsaForm.signature(authorisedPersonSignaturePath);
     final photos = <pw.MemoryImage>[];
     for (final path in photoPaths) {
       final image = await FsaForm.image(path);
@@ -105,14 +107,27 @@ abstract final class FsaChecklistPdf {
     // than one. The blocks are measured, split where a single block is
     // taller than a column, and dealt into two columns a page at a time, so
     // nothing is silently dropped off the bottom. The closing block
-    // (comments, remarks, photographs, signatures) takes the last page, its
+    // (comments, remarks, signatures, photographs) takes the last page, its
     // own if what is left will not hold it.
+    // On the letterhead (Ethan, 2026-10-04) the page keeps room for the
+    // logo and address above and the band below, so the body is what is
+    // left inside those margins, not the bare page's.
+    const margin = pw.EdgeInsets.fromLTRB(30, 22, 30, 20);
+    final pageTheme =
+        FsaForm.letterhead(a, PdfPageFormat.a4.landscape, margin: margin);
+    final grown = FsaForm.letterheadMargin(a, PdfPageFormat.a4.landscape,
+        margin: margin);
+    final bodyHeight = _bodyHeightFor(grown);
     final batches = _packPages(
       sections,
+      bodyHeight: bodyHeight,
+      // + 32 reserves the "INSPECTION & FACILITY DETAILS" section bar above
+      // the particulars (Ethan, 2026-10-08).
       particularsHeight: (leftFields.length > rightFields.length
-              ? leftFields.length
-              : rightFields.length) *
-          _fieldHeight,
+                  ? leftFields.length
+                  : rightFields.length) *
+              _fieldHeight +
+          42,
       closingHeight: _closingHeight(photos.isNotEmpty),
     );
     final pages = batches.length;
@@ -152,34 +167,64 @@ abstract final class FsaChecklistPdf {
         );
 
     // ---------------------------------------------------------- the table
-    pw.Widget sectionTable(FsaChecklistSection section) => pw.Padding(
-          padding: const pw.EdgeInsets.only(bottom: 10),
-          child: pw.Table(
-            border: FsaForm.border(),
-            columnWidths: const {
-              0: pw.FlexColumnWidth(3.6),
-              1: pw.FlexColumnWidth(1.7),
-              2: pw.FlexColumnWidth(0.8),
-              3: pw.FlexColumnWidth(1.0),
-            },
-            children: [
-              pw.TableRow(children: [
-                FsaForm.cell(section.title, a, isBold: true, size: 7.5),
-                FsaForm.cell('REGULATIONS', a, isBold: true, size: 7.5),
-                FsaForm.cell('STD', a, isBold: true, size: 7.5),
-                FsaForm.cell('DEVIATION', a, isBold: true, size: 7.5),
-              ]),
-              for (final r in section.rows)
+    // Each section carries its own heading bar above its table so it reads on
+    // its own (Ethan, 2026-10-08), with the section name in the bar and a
+    // generic "REQUIREMENT" column header.
+    pw.Widget sectionTable(FsaChecklistSection section) {
+      // A section whose rows all carry a value — sample details and the like —
+      // has no regulation or standard to show, so those two empty columns are
+      // dropped (Ethan, 2026-10-08).
+      final valueOnly =
+          section.rows.isNotEmpty && section.rows.every((r) => r.value != null);
+      return pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+        children: [
+          FsaForm.heading(section.title, a),
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(bottom: 14),
+            child: pw.Table(
+              border: FsaForm.border(),
+              columnWidths: valueOnly
+                  ? const {
+                      0: pw.FlexColumnWidth(3.6),
+                      1: pw.FlexColumnWidth(3.5),
+                    }
+                  : const {
+                      0: pw.FlexColumnWidth(3.6),
+                      1: pw.FlexColumnWidth(1.7),
+                      2: pw.FlexColumnWidth(0.8),
+                      3: pw.FlexColumnWidth(1.0),
+                    },
+              children: [
                 pw.TableRow(children: [
-                  FsaForm.cell(r.requirement, a, size: 7.5),
-                  FsaForm.cell(r.value == null ? r.regulation : '', a,
-                      size: 7.5),
-                  FsaForm.cell(r.value == null ? r.standard : '', a, size: 7.5),
-                  FsaForm.cell(r.value ?? r.deviation.label, a, size: 7.5),
+                  FsaForm.cell('REQUIREMENT', a, isBold: true, size: 7.5),
+                  if (!valueOnly) ...[
+                    FsaForm.cell('REGULATIONS', a, isBold: true, size: 7.5),
+                    FsaForm.cell('STD', a, isBold: true, size: 7.5),
+                  ],
+                  // A value column is what was recorded, not a finding:
+                  // "Testing for … DEVIATION: Fat, Protein" read as though
+                  // the tests were the fault (Ethan, 2026-10-08).
+                  FsaForm.cell(valueOnly ? 'DETAIL' : 'DEVIATION', a,
+                      isBold: true, size: 7.5),
                 ]),
-            ],
+                for (final r in section.rows)
+                  pw.TableRow(children: [
+                    FsaForm.cell(r.requirement, a, size: 7.5),
+                    if (!valueOnly) ...[
+                      FsaForm.cell(r.value == null ? r.regulation : '', a,
+                          size: 7.5),
+                      FsaForm.cell(
+                          r.value == null ? r.standard : '', a, size: 7.5),
+                    ],
+                    FsaForm.cell(r.value ?? r.deviation.label, a, size: 7.5),
+                  ]),
+              ],
+            ),
           ),
-        );
+        ],
+      );
+    }
 
     // The sheet runs the blocks down two columns, as the Agency's own does.
     pw.Widget checklist(_Batch batch) => pw.Row(
@@ -208,6 +253,9 @@ abstract final class FsaChecklistPdf {
           child: pw.Row(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
+              // The caption keeps its fixed height: it is one short line, and
+              // stretching it needs a bounded height the column cannot give,
+              // which collapsed the whole block.
               pw.Container(
                 width: 140,
                 height: height,
@@ -220,7 +268,11 @@ abstract final class FsaChecklistPdf {
               ),
               pw.Expanded(
                 child: pw.Container(
-                  height: height,
+                  // Min-height, not fixed. Three numbered comments need more
+                  // than 26pt, and the box did not grow: the third line
+                  // printed across the border and was cut off (Kabelo,
+                  // 2026-10-23). Same fix as FsaForm.ruledLines.
+                  constraints: pw.BoxConstraints(minHeight: height),
                   padding:
                       const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3),
                   decoration:
@@ -232,24 +284,40 @@ abstract final class FsaChecklistPdf {
           ),
         );
 
+    // Grading samples five carcasses, one photograph each, so a grading
+    // sheet carries up to five. It used to show only three. The sheet is
+    // landscape and holds five across when they are sized down past three;
+    // they stay one row, so the closing block's reserved height is unchanged
+    // (Ethan, 2026-10-05).
+    final strip = photos.take(5).toList();
+    final roomy = strip.length <= 3;
+    // Sized so the closing block still clears the page with the new section
+    // bar and captions above and below it. The sheet uses pw.Page, which
+    // DROPS a block that does not fit rather than clipping it, so this is
+    // deliberately conservative (Ethan, 2026-10-08).
+    final cellWidth = roomy ? 96.0 : 88.0;
+    final cellHeight = roomy ? 74.0 : 72.0;
+    // The photographs are their own section, under a grey bar like every
+    // other part of the sheet, and each one is numbered so a finding can be
+    // referred to by picture (Ethan, 2026-10-08). The cells were sized down
+    // to pay for the bar and the captions.
     pw.Widget photoStrip() => photos.isEmpty
         ? pw.SizedBox()
-        : pw.Padding(
-            padding: const pw.EdgeInsets.only(top: 6, bottom: 6),
-            child: pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                for (final photo in photos.take(3))
-                  pw.Padding(
-                    padding: const pw.EdgeInsets.only(right: 14),
-                    child: pw.SizedBox(
-                      height: 170,
-                      width: 130,
-                      child: pw.Image(photo, fit: pw.BoxFit.contain),
-                    ),
-                  ),
-              ],
-            ),
+        : pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              FsaForm.heading('PHOTOGRAPHS', a),
+              // Sized to the room left on the closing page: these share
+              // it with the comments and the signatures, so the ceiling
+              // is lower than a sheet of their own (Ethan, 2026-10-08).
+              // One row, however many there are: the pictures share this
+              // page with the comments and the signatures, and a second
+              // row costs more height than it gives back — five across
+              // is both larger and shorter than three-plus-two
+              // (Ethan, 2026-10-08).
+              FsaForm.photoGrid(strip, a,
+                  maxHeight: 96, perRow: strip.length),
+            ],
           );
 
     pw.Widget nameBox(String value) => pw.Container(
@@ -274,34 +342,18 @@ abstract final class FsaChecklistPdf {
           child: pw.Text(text, style: a.text(isBold: true, size: 8)),
         );
 
+    // Generic signature block, the same across every report
+    // (Ethan, 2026-10-08).
     pw.Widget signatures() => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.SizedBox(
-                    width: 90,
-                    child: pw.Text('SIGNATURES',
-                        style: a.text(isBold: true, size: 8))),
-                caption('INSPECTOR NAME:'),
-                nameBox(inspectorName),
-                pw.SizedBox(width: 18),
-                caption('OWNER /\nAUTHORISED\nMANAGER:'),
-                nameBox(authorisedPersonName),
-              ],
-            ),
-            pw.SizedBox(height: 8),
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.SizedBox(width: 90),
-                caption('INSPECTOR\nSIGNATURE:'),
-                signatureCell(inspectorSignature),
-                pw.SizedBox(width: 18),
-                caption('OWNER /\nAUTHORISED\nMANAGER\nSIGNATURE:'),
-                signatureCell(clientSignature),
-              ],
+            FsaForm.heading('SIGNATURE CONTROLS', a),
+            FsaForm.signedBlock(
+              a,
+              inspectorName: inspectorName,
+              authorisedPersonName: authorisedPersonName,
+              inspectorSignature: inspectorSignature,
+              authorisedPersonSignature: clientSignature,
             ),
           ],
         );
@@ -311,16 +363,16 @@ abstract final class FsaChecklistPdf {
       author: inspectorName,
     );
 
+    // No Spacer between the body and the foot: it made the page drop any
+    // block that did not fit, which silently lost the signatures and the
+    // photographs (Ethan, 2026-10-08).
     pw.Page page(int number, pw.Widget body) => pw.Page(
-          pageFormat: PdfPageFormat.a4.landscape,
-          margin: const pw.EdgeInsets.fromLTRB(30, 22, 30, 20),
-          theme: a.theme,
+          pageTheme: pageTheme,
           build: (context) => pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.stretch,
             children: [
               FsaForm.header(a, control.onPage(number, pages)),
               body,
-              pw.Spacer(),
               FsaForm.pageFooter(a, number, pages, at: generatedAt),
             ],
           ),
@@ -336,17 +388,19 @@ abstract final class FsaChecklistPdf {
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
             if (first) ...[
+              FsaForm.heading('INSPECTION & FACILITY DETAILS', a),
               particulars(),
-              pw.SizedBox(height: 8),
+              pw.SizedBox(height: 12),
             ],
             if (!batch.isEmpty) checklist(batch),
             if (last) ...[
-              pw.SizedBox(height: 8),
+              pw.SizedBox(height: 10),
+              FsaForm.heading('COMMENTS AND REMARKS', a),
               labelledBox('Comments (if found)', comments),
               labelledBox('Remarks', remarks),
-              photoStrip(),
-              pw.SizedBox(height: 6),
+              pw.SizedBox(height: 10),
               signatures(),
+              photoStrip(),
             ],
           ],
         ),
@@ -362,14 +416,16 @@ abstract final class FsaChecklistPdf {
   //
   // The pdf package lays a page out but will not tell you it did not fit,
   // so the sheet works out for itself how much it is asking for. The
-  // figures are the landscape page's own: 595pt tall, 22 and 20 of margin,
-  // a header of about 100 and a footer of 14.
+  // figures are the landscape page's own: 595pt tall, the letterhead's
+  // margins, a header of about 100 and a footer of 14.
 
-  /// What is left for the body once the header and footer have had theirs.
-  static const _bodyHeight = 595.28 - 22 - 20 - 100 - 14;
+  /// What is left for the body once the margins, header and footer have had
+  /// theirs — the margins being the letterhead's (Ethan, 2026-10-04).
+  static double _bodyHeightFor(pw.EdgeInsets margin) =>
+      PdfPageFormat.a4.landscape.height - margin.top - margin.bottom - 100 - 14;
 
   /// A particulars row: a 13pt box and 5pt under it.
-  static const _fieldHeight = 18.0;
+  static const _fieldHeight = 20.0;
 
   /// A line of table text, and the padding above and below a row.
   static const _lineHeight = 9.5;
@@ -389,33 +445,42 @@ abstract final class FsaChecklistPdf {
     return lines * _lineHeight + _rowPadding;
   }
 
-  /// A block: its heading row, its requirements, and the gap under it.
+  /// A block: its section heading bar (~32), its table header row, its
+  /// requirements, and the gap under it.
   static double _sectionHeight(FsaChecklistSection section) =>
+      42 +
       _lineHeight +
       _rowPadding +
       section.rows.fold<double>(0, (h, r) => h + _rowHeight(r)) +
-      10;
+      14;
 
-  /// Comments, remarks, the photographs and the two signatures.
+  /// Comments, remarks, the two signatures and the photographs. The two
+  /// extra ~32pt allowances are the "COMMENTS & REMARKS" and "SIGNATURES"
+  /// section bars (Ethan, 2026-10-08).
+  // The photographs now sit under their own grey bar with a numbered caption
+  // under each picture, so they reserve more than the bare strip did
+  // (Ethan, 2026-10-08). Under-reserving here does not clip — it silently
+  // drops the whole closing block — so the figure is deliberately generous.
   static double _closingHeight(bool hasPhotos) =>
-      8 + 32 + 32 + (hasPhotos ? 182 : 0) + 6 + 110;
+      12 + 42 + 34 + 34 + 12 + 42 + 115 + (hasPhotos ? 230 : 0);
 
   /// Splits a block that is taller than a column into blocks that are not,
   /// keeping the heading on each so a reader can see what they are looking
   /// at when a block runs over a column break.
   static List<FsaChecklistSection> _fit(
       FsaChecklistSection section, double budget) {
-    const heading = _lineHeight + _rowPadding;
+    // Each split keeps the section heading bar (~32) plus the table header row.
+    const heading = 42 + _lineHeight + _rowPadding;
     if (_sectionHeight(section) <= budget) return [section];
     final out = <FsaChecklistSection>[];
     var rows = <FsaChecklistRow>[];
-    var height = heading + 10;
+    var height = heading + 14;
     for (final row in section.rows) {
       final rowHeight = _rowHeight(row);
       if (rows.isNotEmpty && height + rowHeight > budget) {
         out.add(FsaChecklistSection(title: section.title, rows: rows));
         rows = <FsaChecklistRow>[];
-        height = heading + 10;
+        height = heading + 14;
       }
       rows.add(row);
       height += rowHeight;
@@ -432,12 +497,13 @@ abstract final class FsaChecklistPdf {
   /// sits in one column or the other and cannot be poured across both.
   static List<_Batch> _packPages(
     List<FsaChecklistSection> sections, {
+    required double bodyHeight,
     required double particularsHeight,
     required double closingHeight,
   }) {
     final pages = <_Batch>[];
     var firstPage = true;
-    double budget() => _bodyHeight - (firstPage ? particularsHeight + 8 : 0);
+    double budget() => bodyHeight - (firstPage ? particularsHeight + 8 : 0);
 
     var left = <FsaChecklistSection>[];
     var right = <FsaChecklistSection>[];
@@ -492,7 +558,7 @@ abstract final class FsaChecklistPdf {
       last.right.fold<double>(0, (h, s) => h + _sectionHeight(s)),
     ].reduce((a, b) => a > b ? a : b);
     final used = tallest + (pages.length == 1 ? particularsHeight + 8 : 0);
-    if (used + closingHeight > _bodyHeight) pages.add(const _Batch([], []));
+    if (used + closingHeight > bodyHeight) pages.add(const _Batch([], []));
     return pages;
   }
 }

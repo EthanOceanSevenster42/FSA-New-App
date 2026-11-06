@@ -5,6 +5,10 @@
 <paths>
     <external-path name="downloads" path="Download/" />
     <!-- Where a downloaded app update is kept until the installer has
-         read it. Private to the app and cleared by Android. -->
-    <cache-path name="updates" path="updates/" />
+         read it. The files directory, not the cache: Android reclaims the
+         cache when a handset runs short of space, and it was taking the
+         APK with it mid-update (Ethan, 2026-10-26). The cache entry stays
+         so an update already downloaded by an older build still installs. -->
+    <files-path name="updates" path="updates/" />
+    <cache-path name="updates-legacy" path="updates/" />
 </paths>

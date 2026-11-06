@@ -144,10 +144,21 @@ abstract final class QuidChecklistPdf {
     required String reasonForInspection,
     required String registrationNumber,
     required String portionType,
+    String productName = '',
     required String allowableQuidPercent,
     required bool isWaterChilled,
     required List<QuidCarcass> chilling,
     required String averagePickupPercent,
+
+    /// Whether the average pick-up is inside Reg. 4(2)'s absorbed-moisture
+    /// limit on a water-chilled line. Null where nothing was weighed, or
+    /// where the line is air chilled and the limit does not apply.
+    bool? waterChillWithinLimit,
+
+    /// That limit as the column heading prints it — "7". Supplied by the
+    /// caller so the rule lives with the rest of the QUID arithmetic and
+    /// not in the layout.
+    String waterChillLimitPercent = '7',
     required String iterationNumber,
 
     /// One block per injector on the set-up list: its injection-rate table
@@ -191,9 +202,9 @@ abstract final class QuidChecklistPdf {
     DateTime? generatedAt,
   }) async {
     final a = await FsaForm.assets();
-    final inspectorSignature = await FsaForm.image(inspectorSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
     final authorisedSignature =
-        await FsaForm.image(authorisedPersonSignaturePath);
+        await FsaForm.signature(authorisedPersonSignaturePath);
     final doc = pw.Document();
 
     pw.Widget head(String v) => FsaForm.cell(v, a, isBold: true, size: 7);
@@ -268,16 +279,18 @@ abstract final class QuidChecklistPdf {
                   else
                     table(
                       const [
-                        'CARCASS NO',
+                        'SAMPLE NO',
                         'BEFORE (g)',
                         'AFTER (g)',
                         'GAIN (g)',
                         'INJECTION RATE (%)',
                       ],
                       [
-                        for (final c in block.injection)
+                        // Samples 1 to 5 within the injector (Ethan,
+                        // 2026-10-04), not the carcass's number in the set.
+                        for (final (i, c) in block.injection.indexed)
                           [
-                            c.number,
+                            '${i + 1}',
                             c.beforeMassG,
                             c.afterMassG,
                             c.gainG,
@@ -311,9 +324,9 @@ abstract final class QuidChecklistPdf {
                         quidHeading,
                       ],
                       [
-                        for (final c in block.determination)
+                        for (final (i, c) in block.determination.indexed)
                           [
-                            c.sampleNumber,
+                            '${i + 1}',
                             c.initialMassG,
                             c.finalMassG,
                             c.calculatedPercent,
@@ -349,7 +362,17 @@ abstract final class QuidChecklistPdf {
             'FINAL MASS (g)',
             // The threshold the method is read against is part of the
             // column heading on the Agency's sheet, on both methods.
-            '> $allowableQuidPercent% PICK UP',
+            //
+            // Water chilling is read against absorbed moisture, not
+            // against QUID (Neo Noe, 2026-10-19): Reg. 4(2) allows less
+            // than 7% pick-up whatever the product's allowable QUID is.
+            // The sheet used to print the QUID figure over this column,
+            // which on a portion line read as though 15% were allowed.
+            if (isWaterChilled)
+              '> $waterChillLimitPercent% ABSORBED MOISTURE '
+                  '(PICK UP) [Reg. 4(2)]'
+            else
+              '> $allowableQuidPercent% PICK UP',
           ],
           [
             for (final c in chilling)
@@ -357,12 +380,24 @@ abstract final class QuidChecklistPdf {
           ],
         ),
         average('AVERAGE PICK UP:', averagePickupPercent),
+        // Stated on the sheet rather than left to the office to compare
+        // two numbers, as the QUID determination below already is.
+        if (isWaterChilled && waterChillWithinLimit != null)
+          average('ABSORBED MOISTURE WITHIN THE PERMISSIBLE LIMIT '
+              '(< $waterChillLimitPercent%):',
+              waterChillWithinLimit ? 'YES' : 'NO'),
       ],
       if (iterationNumber.trim().isNotEmpty)
         average('ITERATION NUMBER:', iterationNumber),
       if (injectors.isNotEmpty) ...[
-        FsaForm.heading('Injectors and Determination of QUID', a),
-        for (final block in injectors) injectorBlock(block),
+        // Each injector on a page of its own (Ethan, 2026-10-04): its
+        // injection rates and its QUID, sample by sample.
+        for (final (idx, block) in injectors.indexed) ...[
+          if (idx > 0) pw.NewPage(),
+          FsaForm.heading(
+              'Injectors and Determination of QUID \u2014 ${block.name}', a),
+          injectorBlock(block),
+        ],
         if (injectors.any((b) => b.determination.isNotEmpty)) ...[
           pw.SizedBox(height: 4),
           average('AVERAGE DETERMINATION OF QUID (%):', averageQuidPercent),
@@ -427,7 +462,7 @@ abstract final class QuidChecklistPdf {
               labelWidth: 150, boxWidth: 380),
       ],
       // The rejection, on the sheet the office files: what failed, the
-      // remarks served, the date to correct by and what was removed.
+      // remarks served, the date to correct by and what was rejected.
       if ([
         rejectionReason,
         rejectionRemarks,
@@ -443,15 +478,15 @@ abstract final class QuidChecklistPdf {
               labelWidth: 150, boxWidth: 380),
         FsaForm.field('Correct by/on Date', rejectionCorrectBy, a,
             labelWidth: 150, boxWidth: 150),
-        FsaForm.field('Batch No. and/or Quantity Removed', rejectionAction, a,
+        FsaForm.field('Batch No. and/or Quantity Rejected', rejectionAction, a,
             labelWidth: 150, boxWidth: 380),
       ],
     ];
 
     doc.addPage(
       pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14),
+        pageTheme: FsaForm.letterhead(a, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14)),
         header: (context) => context.pageNumber == 1
             ? FsaForm.header(a, control)
             : pw.SizedBox(),
@@ -472,6 +507,8 @@ abstract final class QuidChecklistPdf {
                     FsaForm.field('Abattoir/Repacker/Importer/Retailer',
                         facilityName, a,
                         labelWidth: 118, boxWidth: 140),
+                    FsaForm.field('Product', productName, a,
+                        labelWidth: 118, boxWidth: 140),
                     FsaForm.field(
                         'Water chilling', isWaterChilled ? 'YES' : 'NO', a,
                         labelWidth: 118, boxWidth: 60),
@@ -484,7 +521,7 @@ abstract final class QuidChecklistPdf {
                   children: [
                     FsaForm.field('Registration Number', registrationNumber, a,
                         labelWidth: 108, boxWidth: 140),
-                    FsaForm.field('Portion Type', portionType, a,
+                    FsaForm.field('Product Type', portionType, a,
                         labelWidth: 108, boxWidth: 140),
                     FsaForm.field(
                         'Allowable QUID (%)', allowableQuidPercent, a,
@@ -499,56 +536,22 @@ abstract final class QuidChecklistPdf {
           ),
           pw.SizedBox(height: 4),
           ...blocks,
-          FsaForm.heading('Comments (if found)', a),
+          // Same closing flow as every other report (Ethan, 2026-10-08):
+          // COMMENTS AND REMARKS, then SIGNATURE CONTROLS.
+          FsaForm.heading('COMMENTS AND REMARKS', a),
+          pw.Text('Comments (if found)', style: a.text(isBold: true, size: 7)),
           FsaForm.ruledLines(comments.isEmpty ? const [] : [comments], a),
-          FsaForm.heading('Remarks', a),
+          pw.SizedBox(height: 5),
+          pw.Text('Remarks', style: a.text(isBold: true, size: 7)),
           FsaForm.ruledLines(remarks.isEmpty ? const [] : [remarks], a),
           pw.SizedBox(height: 10),
-          // Portrait: the shared block is laid out for the landscape
-          // checklists, and its two sides run off an A4 page this way up.
-          pw.Row(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              for (final side in [
-                (
-                  caption: 'INSPECTOR NAME:',
-                  signatureCaption: 'INSPECTOR SIGNATURE:',
-                  name: inspectorName,
-                  signature: inspectorSignature
-                ),
-                (
-                  caption: 'OWNER / AUTHORISED MANAGER:',
-                  signatureCaption: 'OWNER / AUTHORISED MANAGER SIGNATURE:',
-                  name: authorisedPersonName,
-                  signature: authorisedSignature
-                ),
-              ])
-                pw.Expanded(
-                  child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(side.caption,
-                          style: a.text(isBold: true, size: 7)),
-                      // A fixed slot: one side often has no name on it yet,
-                      // and without this the two rules sit at different
-                      // heights on the page.
-                      pw.SizedBox(
-                        width: 200,
-                        height: 11,
-                        child: pw.Text(side.name, style: a.text(size: 7.5)),
-                      ),
-                      pw.SizedBox(height: 14),
-                      // The rule, then what it is for underneath it — the
-                      // Request for Invoice signs off the same way.
-                      FsaForm.signatureLine(a,
-                          signature: side.signature, width: 200),
-                      pw.SizedBox(height: 2),
-                      pw.Text(side.signatureCaption,
-                          style: a.text(isBold: true, size: 6.5)),
-                    ],
-                  ),
-                ),
-            ],
+          FsaForm.heading('SIGNATURE CONTROLS', a),
+          FsaForm.signedBlock(
+            a,
+            inspectorName: inspectorName,
+            authorisedPersonName: authorisedPersonName,
+            inspectorSignature: inspectorSignature,
+            authorisedPersonSignature: authorisedSignature,
           ),
         ],
         footer: (context) => FsaForm.pageFooter(

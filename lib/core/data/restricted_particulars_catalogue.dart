@@ -17,7 +17,8 @@ import 'local_database.dart';
 abstract final class RestrictedParticularsCatalogue {
   /// The names, once each, in the order the office lists them: eggs first,
   /// then poultry, raw and processed meat, each adding only what the lists
-  /// before it did not have. "Other" goes last, being the catch-all.
+  /// before it did not have. "Other" is left out (Ethan, 2026-10-03): a
+  /// particular no list has is typed in, not filed as "Other".
   static Future<List<String>> names(LocalDatabase db) async {
     final eggs = await (db.select(db.eggRestrictedParticulars)
           ..where((t) => t.isActive.equals(true))
@@ -47,23 +48,18 @@ abstract final class RestrictedParticularsCatalogue {
   }
 
   /// [names] once each, the first spelling kept, blanks dropped, and
-  /// "Other" moved to the end whatever list it came from.
+  /// "Other" left out whatever list it came from (Ethan, 2026-10-03).
   static List<String> merge(Iterable<String> names) {
     final seen = <String>{};
     final kept = <String>[];
-    var other = '';
     for (final raw in names) {
       final name = raw.trim();
       if (name.isEmpty) continue;
       final key = name.toLowerCase();
       if (!seen.add(key)) continue;
-      if (key == 'other') {
-        other = name;
-        continue;
-      }
+      if (key == 'other') continue;
       kept.add(name);
     }
-    if (other.isNotEmpty) kept.add(other);
     return kept;
   }
 }

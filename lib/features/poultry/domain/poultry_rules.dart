@@ -153,6 +153,15 @@ abstract final class PoultryRules {
             link.designationId == designationId)
           link.gradeId,
     };
+    // As with the designations, a device that has no link data at all still
+    // offers every grade rather than a picker that will not open.
+    //
+    // Only when the device holds none, though: this used to fall back
+    // whenever THIS pairing had no link, which quietly offered every grade
+    // on a pairing the regulation does not allow — so a young turkey could
+    // be graded as a chicken and filed that way. An unknown pairing shows
+    // nothing, which the inspector can see (Ethan, 2026-10-08).
+    if (links.isEmpty) return grades;
     return [
       for (final grade in grades)
         if (allowed.contains(grade.id)) grade,
@@ -173,6 +182,9 @@ abstract final class PoultryRules {
       for (final link in links)
         if (link.meatTypeId == meatTypeId) link.designationId,
     };
+    // A type with no links on this device still offers the designations,
+    // rather than a picker that will not open (Ethan, 2026-09-30).
+    if (allowed.isEmpty) return designations;
     return [
       for (final designation in designations)
         if (allowed.contains(designation.id)) designation,

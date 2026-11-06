@@ -38,6 +38,23 @@ class StoreVisits extends Table {
   /// invoice kept whichever it read first.
   RealColumn get distanceTravelledKm => real().nullable()();
 
+  /// When the inspector set off and when the travelling ended, as HH:mm
+  /// (Ethan, 2026-10-02). Compulsory, as APS asks for them: the office's
+  /// analytics run on travel time as well as kilometres.
+  TextColumn get travelStart => text().withDefault(const Constant(''))();
+  TextColumn get travelEnd => text().withDefault(const Constant(''))();
+
+  /// When the inspection itself started and finished, "HH:mm", as the
+  /// inspector confirmed them at sign-off.
+  ///
+  /// The handset works these out from the record, but a record opened in
+  /// the car or signed off hours later makes them wrong, and nobody ever
+  /// saw the figure before it became an invoice. The sign-off now shows
+  /// what it has and asks; these hold the answer (Ethan, 2026-10-12).
+  /// Empty on a visit signed off before that question existed.
+  TextColumn get inspectionStart => text().withDefault(const Constant(''))();
+  TextColumn get inspectionEnd => text().withDefault(const Constant(''))();
+
   TextColumn get inspectorUsername => text().withDefault(const Constant(''))();
 
   /// How many of each commodity the inspector planned for this visit —

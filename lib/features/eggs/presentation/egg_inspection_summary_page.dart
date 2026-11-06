@@ -197,7 +197,7 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
             SummaryField(label: 'Type', value: d.facilityTypeName),
             SummaryField(label: 'Address', value: orDash(i.facilityAddress)),
             SummaryField(
-                label: 'Telephone / cellphone', value: orDash(i.facilityPhone)),
+                label: 'Telephone/cellphone', value: orDash(i.facilityPhone)),
             SummaryField(label: 'Reason', value: d.reasonName),
           ],
         ),
@@ -209,7 +209,7 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
             SummaryField(
                 label: 'Contact', value: orDash(i.clientContactPerson)),
             SummaryField(
-                label: 'Telephone / cellphone',
+                label: 'Telephone/cellphone',
                 value: orDash(i.clientContactNumber)),
             SummaryField(label: 'Email', value: orDash(i.clientEmail)),
             SummaryField(
@@ -231,11 +231,12 @@ class _EggInspectionSummaryPageState extends State<EggInspectionSummaryPage> {
             if (i.pasteurisedPresent)
               const SummaryField(
                   label: 'Pasteurised', value: 'Present in consignment'),
-            if (i.haughNotRequired)
-              const SummaryField(
-                label: 'Haugh unit',
-                value: 'Not required for this consignment',
-              ),
+            SummaryField(
+              label: 'Haugh values',
+              value: i.haughNotRequired
+                  ? 'Not taken — weighing only'
+                  : 'Taken',
+            ),
           ],
         ),
         _samplesSection(d),

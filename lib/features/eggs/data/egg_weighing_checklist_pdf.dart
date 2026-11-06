@@ -42,8 +42,10 @@ class EggWeighingRow {
 abstract final class EggWeighingChecklistPdf {
   /// Rows that fit under the header on the first page, and on a continuation
   /// page which carries no particulars block.
-  static const _rowsOnFirstPage = 16;
-  static const _rowsOnLaterPages = 30;
+  // Fewer than before the letterhead (Ethan, 2026-10-04): the logo and
+  // address above and the band below take about five rows' height.
+  static const _rowsOnFirstPage = 11;
+  static const _rowsOnLaterPages = 25;
 
   static Future<File> write({
     required File out,
@@ -67,8 +69,8 @@ abstract final class EggWeighingChecklistPdf {
     String authorisedPersonSignaturePath = '',
   }) async {
     final a = await FsaForm.assets();
-    final inspectorSignature = await FsaForm.image(inspectorSignaturePath);
-    final clientSignature = await FsaForm.image(authorisedPersonSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
+    final clientSignature = await FsaForm.signature(authorisedPersonSignaturePath);
     final trayPhoto = await FsaForm.image(trayLabelPhotoPath);
 
     final firstRows = rows.take(_rowsOnFirstPage).toList();
@@ -178,28 +180,17 @@ abstract final class EggWeighingChecklistPdf {
       );
     }
 
+    // The photograph is its own section under a grey bar, with a caption
+    // under the picture, the same as every other report (Ethan, 2026-10-08).
     pw.Widget photo() => trayPhoto == null
         ? pw.SizedBox()
-        : pw.Padding(
-            padding: const pw.EdgeInsets.only(top: 8),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text('Tray Label Photo', style: a.text(isBold: true)),
-                pw.SizedBox(height: 3),
-                pw.Container(
-                  padding: const pw.EdgeInsets.all(3),
-                  decoration: pw.BoxDecoration(
-                      border:
-                          pw.Border.all(width: 0.5, color: PdfColors.grey600)),
-                  child: pw.SizedBox(
-                    height: 96,
-                    width: 150,
-                    child: pw.Image(trayPhoto, fit: pw.BoxFit.contain),
-                  ),
-                ),
-              ],
-            ),
+        : pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              FsaForm.heading('PHOTOGRAPHS', a),
+              // The tray label, given the room the page has left.
+              FsaForm.photoGrid([trayPhoto], a, maxHeight: 96, perRow: 3),
+            ],
           );
 
     final commentLines = FsaForm.wrap(comments, 150);
@@ -210,9 +201,8 @@ abstract final class EggWeighingChecklistPdf {
 
     document.addPage(
       pw.Page(
-        pageFormat: PdfPageFormat.a4.landscape,
-        margin: const pw.EdgeInsets.fromLTRB(28, 24, 28, 22),
-        theme: a.theme,
+        pageTheme: FsaForm.letterhead(a, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(28, 24, 28, 22)),
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
@@ -223,20 +213,11 @@ abstract final class EggWeighingChecklistPdf {
             consignment(),
             pw.SizedBox(height: 6),
             table(firstRows),
-            photo(),
             if (laterRows.isEmpty) ...[
-              pw.SizedBox(height: 8),
-              pw.Row(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.SizedBox(
-                      width: 130,
-                      child: pw.Text('COMMENTS/ACTIONS:',
-                          style: a.text(isBold: true, size: 7))),
-                  pw.Expanded(child: FsaForm.ruledLines(commentLines, a)),
-                ],
-              ),
+              FsaForm.heading('COMMENTS AND REMARKS', a),
+              FsaForm.ruledLines(commentLines, a),
               pw.SizedBox(height: 10),
+              FsaForm.heading('SIGNATURE CONTROLS', a),
               FsaForm.signedBlock(
                 a,
                 inspectorName: inspectorName,
@@ -244,6 +225,7 @@ abstract final class EggWeighingChecklistPdf {
                 inspectorSignature: inspectorSignature,
                 authorisedPersonSignature: clientSignature,
               ),
+              photo(),
             ],
             pw.Spacer(),
             FsaForm.footer(a),
@@ -258,9 +240,8 @@ abstract final class EggWeighingChecklistPdf {
       final last = i + _rowsOnLaterPages >= laterRows.length;
       document.addPage(
         pw.Page(
-          pageFormat: PdfPageFormat.a4.landscape,
-          margin: const pw.EdgeInsets.fromLTRB(28, 24, 28, 22),
-          theme: a.theme,
+          pageTheme: FsaForm.letterhead(a, PdfPageFormat.a4.landscape,
+              margin: const pw.EdgeInsets.fromLTRB(28, 24, 28, 22)),
           build: (context) => pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.stretch,
             children: [
@@ -268,18 +249,10 @@ abstract final class EggWeighingChecklistPdf {
               pw.SizedBox(height: 6),
               table(slice),
               if (last) ...[
-                pw.SizedBox(height: 8),
-                pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
-                  children: [
-                    pw.SizedBox(
-                        width: 130,
-                        child: pw.Text('COMMENTS/ACTIONS:',
-                            style: a.text(isBold: true, size: 7))),
-                    pw.Expanded(child: FsaForm.ruledLines(commentLines, a)),
-                  ],
-                ),
+                FsaForm.heading('COMMENTS AND REMARKS', a),
+                FsaForm.ruledLines(commentLines, a),
                 pw.SizedBox(height: 10),
+                FsaForm.heading('SIGNATURE CONTROLS', a),
                 FsaForm.signedBlock(
                   a,
                   inspectorName: inspectorName,
@@ -287,6 +260,7 @@ abstract final class EggWeighingChecklistPdf {
                   inspectorSignature: inspectorSignature,
                   authorisedPersonSignature: clientSignature,
                 ),
+                photo(),
               ],
               pw.Spacer(),
               FsaForm.footer(a),

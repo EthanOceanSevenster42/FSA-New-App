@@ -1,5 +1,4 @@
 import 'package:drift/drift.dart';
-import 'package:drift_flutter/drift_flutter.dart';
 
 import 'eggs_tables.dart';
 import 'fruitveg_tables.dart';
@@ -9,7 +8,9 @@ import 'poultry_capture_tables.dart';
 import 'invoice_tables.dart';
 import 'visits_tables.dart';
 import 'poultry_tables.dart';
+import 'planning_tables.dart';
 import 'seizure_tables.dart';
+import 'sqlite_connection.dart';
 
 part 'local_database.g.dart';
 
@@ -131,14 +132,15 @@ class SyncState extends Table {
     RawRmpLabelNonConformances,
     RawRmpInspections,
     RawRmpDirections,
+    PlannedVisits,
   ],
 )
 class LocalDatabase extends _$LocalDatabase {
   LocalDatabase([QueryExecutor? executor])
-      : super(executor ?? driftDatabase(name: 'fsa_local'));
+      : super(executor ?? fsaLocalExecutor());
 
   @override
-  int get schemaVersion => 62;
+  int get schemaVersion => 75;
 
   /// The v8 back-fill: give already-captured work an owner.
   ///
@@ -795,8 +797,137 @@ class LocalDatabase extends _$LocalDatabase {
             // record it was raised off, whatever the commodity.
             await m.createTable(seizures);
           }
+          if (from < 63) {
+            // Travel start and end, compulsory as on APS (Ethan, 2026-10-02).
+            await addColumnIfMissing(m, storeVisits, storeVisits.travelStart);
+            await addColumnIfMissing(m, storeVisits, storeVisits.travelEnd);
+          }
+          if (from < 64) {
+            // The processed-meat form's "Hand Delivered" switch wrote
+            // is_couriered as true for a hand-delivered sample. It now asks
+            // Hand Delivered / Couriered like the raw form, so what was
+            // captured is turned round to keep its meaning (Ethan,
+            // 2026-10-02).
+            await customStatement(
+                'UPDATE pmp_inspections SET is_couriered = NOT is_couriered');
+          }
+          if (from < 65) {
+            // The raw product's class, as APS files it (Ethan, 2026-10-04).
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.productClass);
+          }
+          if (from < 66) {
+            // The processed meat product's class, as APS files it (Ethan,
+            // 2026-10-04).
+            await addColumnIfMissing(
+                m, pmpInspections, pmpInspections.productClass);
+          }
+          if (from < 67) {
+            // What a sample is tested for, asked on the raw and PMP forms as
+            // the office's web app asks it (Ethan, 2026-10-06).
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.testFat);
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.testProtein);
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.testDna);
+            await addColumnIfMissing(
+                m, pmpInspections, pmpInspections.testFat);
+            await addColumnIfMissing(
+                m, pmpInspections, pmpInspections.testProtein);
+            await addColumnIfMissing(
+                m, pmpInspections, pmpInspections.testCalcium);
+            await addColumnIfMissing(
+                m, pmpInspections, pmpInspections.testDna);
+          }
+          if (from < 68) {
+            // Every screen that lists a visit's records looks them up by
+            // visit_uuid, and there was no index on any of these tables, so
+            // each lookup scanned the whole table. Inspection Management
+            // did that six times a visit and took seconds to open
+            // (Ethan, 2026-10-08).
+            await _createVisitUuidIndexes(customStatement);
+          }
+          if (from < 69) {
+            // The inspector now confirms the inspection's start and finish
+            // at sign-off, instead of the handset guessing from when the
+            // record happened to be opened (Ethan, 2026-10-12).
+            await addColumnIfMissing(m, storeVisits, storeVisits.inspectionStart);
+            await addColumnIfMissing(m, storeVisits, storeVisits.inspectionEnd);
+          }
+          if (from < 70) {
+            // The egg labelling rows gained the STD column's lettering
+            // height, which the sheet had always printed as "-"
+            // (Neo Noe, 2026-10-19).
+            await addColumnIfMissing(
+                m, eggRequirements, eggRequirements.minLetteringHeight);
+          }
+          if (from < 71) {
+            // The six eggs that carry the Haugh reading are now drawn by
+            // the app and kept on the record, so a reopened inspection
+            // asks for the same six (Ethan, 2026-10-23).
+            await addColumnIfMissing(
+                m, eggInspections, eggInspections.haughSampleNumbers);
+          }
+          if (from < 72) {
+            // Soya and starch are asked for directly now that the testing
+            // category has come off the raw form (Ethan, 2026-10-23).
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.testSoya);
+            await addColumnIfMissing(
+                m, rawRmpInspections, rawRmpInspections.testStarch);
+          }
+          if (from < 73) {
+            // Inspectors plan their own week on the follow-up calendar now,
+            // alongside the returns the records already dictate
+            // (Ethan, 2026-10-30).
+            await m.createTable(plannedVisits);
+          }
+          if (from < 74) {
+            // Planning goes up to the office, so a removed plan has to be
+            // able to say so and an edited one has to go up again
+            // (Ethan, 2026-10-30).
+            await addColumnIfMissing(m, plannedVisits, plannedVisits.removed);
+            await addColumnIfMissing(
+                m, plannedVisits, plannedVisits.isUploaded);
+          }
+          if (from < 75) {
+            // The office can put a visit on an inspector's calendar now, so
+            // a plan has to be able to say whose instruction it is — the
+            // app refuses to let the inspector delete one that is not
+            // theirs (Ethan, 2026-11-02).
+            await addColumnIfMissing(
+                m, plannedVisits, plannedVisits.scheduledByOffice);
+            await addColumnIfMissing(
+                m, plannedVisits, plannedVisits.scheduledBy);
+          }
+        },
+        beforeOpen: (details) async {
+          // Also on a fresh install: onCreate builds the tables from the
+          // schema, which carries no indexes.
+          await _createVisitUuidIndexes(customStatement);
         },
       );
+
+  /// The visit_uuid indexes, created on upgrade and on a new database alike.
+  static Future<void> _createVisitUuidIndexes(
+      Future<void> Function(String) run) async {
+    const tables = [
+      'egg_inspections',
+      'poultry_inspections',
+      'poultry_quid_inspections',
+      'poultry_label_inspections',
+      'raw_rmp_inspections',
+      'pmp_inspections',
+    ];
+    for (final table in tables) {
+      await run('CREATE INDEX IF NOT EXISTS idx_${table}_visit_uuid '
+          'ON $table (visit_uuid)');
+    }
+    // Seizures are counted by the record they were raised off.
+    await run('CREATE INDEX IF NOT EXISTS idx_seizures_record_uuid '
+        'ON seizures (record_uuid)');
+  }
 
   /// Puts the outer-labelling rows of unfinished drafts back to Compliant.
   ///
@@ -930,4 +1061,9 @@ class LocalDatabase extends _$LocalDatabase {
   Future<void> writeSyncState(String key, String value) =>
       into(syncState).insertOnConflictUpdate(
           SyncStateCompanion.insert(key: key, value: value));
+
+  /// Forgets a sync marker — used when the record it tracked is deleted, so
+  /// no stale bookkeeping is left pointing at a row that no longer exists.
+  Future<void> clearSyncState(String key) =>
+      (delete(syncState)..where((s) => s.key.equals(key))).go();
 }

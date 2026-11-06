@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'compliance_slider.dart';
 
 /// What the inspector decided when the findings turned out to require a
 /// seizure.
@@ -37,10 +38,17 @@ enum SeizureDecision {
 /// finish the round and come back to it, so the other answer carries on with
 /// the inspection rather than cancelling anything.
 ///
+/// Where the annexure reads "Immediate seizure / rectify immediately" — egg
+/// size and grade standards, for one — [orRectifyNow] puts that choice
+/// instead: seize, or have it put right before the inspector leaves. The
+/// other answer is still [SeizureDecision.inspect]; the rejection it leads
+/// to carries no period.
+///
 /// Returns null if it is dismissed without an answer.
 Future<SeizureDecision?> askAboutSeizure(
   BuildContext context, {
   required String reason,
+  bool orRectifyNow = false,
 }) =>
     showDialog<SeizureDecision>(
       context: context,
@@ -49,12 +57,21 @@ Future<SeizureDecision?> askAboutSeizure(
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
         icon: const Icon(Icons.gavel, size: 32, color: AppColors.brandRed),
-        title: const Text('This consignment must be seized'),
+        title: Text(orRectifyNow
+            ? 'Seize, or have it put right now'
+            : 'This consignment must be seized'),
         content: Text(
-          '$reason\n\n'
-          'A seizure is served under section 8 of the APS Act and needs no '
-          'authorisation beforehand. Proceed with it now, or carry on with '
-          'the inspection and decide before you sign off.',
+          orRectifyNow
+              ? '$reason\n\n'
+                  'FSA-SOP-APS-001 gives no rectification period for this: '
+                  'the consignment is seized under section 8 of the APS Act, '
+                  'which needs no authorisation beforehand, or it is put '
+                  'right immediately, before you leave the premises.'
+              : '$reason\n\n'
+                  'A seizure is served under section 8 of the APS Act and '
+                  'needs no authorisation beforehand. Proceed with it now, or '
+                  'carry on with the inspection and decide before you sign '
+                  'off.',
           style: const TextStyle(height: 1.4),
         ),
         actionsOverflowButtonSpacing: 8,
@@ -62,7 +79,8 @@ Future<SeizureDecision?> askAboutSeizure(
           TextButton(
             onPressed: () =>
                 Navigator.of(dialogContext).pop(SeizureDecision.inspect),
-            child: const Text('Carry on inspecting'),
+            child: Text(
+                orRectifyNow ? 'Rectify immediately' : 'Carry on inspecting'),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
@@ -226,7 +244,7 @@ class _SeizureParticularsDialogState extends State<_SeizureParticularsDialog> {
                     key: 'seizure-quantity',
                     hint: 'e.g. 5 packs (2.106 kg)',
                     error: _quantityError),
-                _field(_remarks, 'Remarks / comments',
+                _field(_remarks, 'Remarks/comments',
                     key: 'seizure-remarks', lines: 2),
                 _field(_receiver, 'Received by (name)',
                     key: 'seizure-receiver'),
@@ -249,6 +267,162 @@ class _SeizureParticularsDialogState extends State<_SeizureParticularsDialog> {
             style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
             onPressed: _record,
             child: Text(widget.editing ? 'Save' : 'Record seizure'),
+          ),
+        ],
+      );
+}
+
+/// Said as a seized inspection closes (Ethan, 2026-09-30): the product is
+/// taken, so nothing more is asked of the inspection but its photographs.
+void announceSeizureDone(BuildContext context) =>
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+        content: Text('Seizure recorded — this inspection is done.'),
+      ));
+
+/// What a seized inspection still needs before it closes: [photos], as
+/// "the 2 label photographs — 1 of 2 taken".
+String seizurePhotosOwed(String photos) =>
+    'Seizure recorded. Take $photos to finish the inspection.';
+
+/// How much was taken, asked the moment the seizure is raised.
+///
+/// This is the one particular that stops being knowable once the inspector
+/// leaves: it is a count off the shelf or the cold room. Everything else on
+/// the sheet can be filled from the inspection at the end, but the quantity
+/// cannot, and the client signs the Acknowledgement of receipt on the same
+/// page — so it has to be on it before they sign. Raw, processed meat and
+/// poultry capture it nowhere else, and every seizure sheet the Agency has
+/// issued went out with the column empty (Cinga, 2026-10-26).
+///
+/// Returns the quantity, or null if the inspector backed out.
+Future<String?> askSeizedQuantity(
+  BuildContext context, {
+  required String productName,
+}) =>
+    showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => _SeizedQuantityDialog(productName: productName),
+    );
+
+class _SeizedQuantityDialog extends StatefulWidget {
+  const _SeizedQuantityDialog({required this.productName});
+
+  final String productName;
+
+  @override
+  State<_SeizedQuantityDialog> createState() => _SeizedQuantityDialogState();
+}
+
+
+
+class _SeizedQuantityDialogState extends State<_SeizedQuantityDialog> {
+  final _amount = TextEditingController();
+
+  /// Counted by the unit, or weighed. A consignment comes off a shelf in
+  /// packs or out of a cold room on a scale, so the inspector says which
+  /// and gives one number.
+  bool _byCount = true;
+  String? _error;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  /// How the amount reads on the sheet.
+  static String compose({required String amount, required bool byCount}) {
+    final a = amount.trim();
+    if (a.isEmpty) return '';
+    if (!byCount) return '$a kg';
+    return '$a ${a == '1' ? 'product' : 'products'}';
+  }
+
+  void _done() {
+    final value = compose(amount: _amount.text, byCount: _byCount);
+    if (value.isEmpty) {
+      setState(() => _error = _byCount
+          ? 'How many products were removed?'
+          : 'What weight was removed, in kg?');
+      return;
+    }
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('How much was seized?'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Text(
+                    'Count what is being removed now, before the client '
+                    'signs for it.'
+                    '${widget.productName.trim().isEmpty ? '' : '\n\n${widget.productName.trim()}'}',
+                    style: const TextStyle(height: 1.4),
+                  ),
+                ),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text('Measured by',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w700)),
+                    ),
+                    TwoWaySlider(
+                      key: const Key('seizure-measure'),
+                      leftLabel: 'PRODUCTS',
+                      rightLabel: 'WEIGHT (KG)',
+                      leftOn: _byCount,
+                      // Neither is a finding, so neither is red.
+                      rightColor: AppColors.brandPrimary,
+                      onChanged: (byCount) => setState(() {
+                        _byCount = byCount;
+                        _error = null;
+                      }),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  key: const Key('seizure-amount'),
+                  controller: _amount,
+                  autofocus: true,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _done(),
+                  onChanged: (_) {
+                    if (_error != null) setState(() => _error = null);
+                  },
+                  decoration: InputDecoration(
+                    labelText: _byCount
+                        ? 'Number of products removed'
+                        : 'Weight removed (kg)',
+                    hintText: _byCount ? 'e.g. 12' : 'e.g. 2.106',
+                    errorText: _error,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
+            onPressed: _done,
+            child: const Text('Record seizure'),
           ),
         ],
       );

@@ -10,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/theme_controller.dart';
 import '../../../core/widgets/responsive.dart';
 import '../domain/app_feature.dart';
+import '../../sync/auto_sync.dart';
 import '../domain/home_summary.dart';
 
 /// Post-login home.
@@ -87,8 +88,15 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _summary = widget.loadSummary();
+    // The upload runs in the background after a sign-off; the tile said
+    // "2 waiting to send" long after they had gone (Ethan, 2026-10-01).
+    AutoSync.instance.completedPasses.addListener(_recount);
     unawaited(_watchConnectivity());
     unawaited(_checkForUpdates());
+  }
+
+  void _recount() {
+    if (mounted) setState(() => _summary = widget.loadSummary());
   }
 
   /// Best-effort. Being unable to reach the server is normal here and must not
@@ -144,6 +152,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    AutoSync.instance.completedPasses.removeListener(_recount);
     _connectivitySub?.cancel();
     _isOnline.dispose();
     super.dispose();
@@ -155,6 +164,14 @@ class _HomePageState extends State<HomePage> {
 
   List<AppFeature> _visible(FeatureGroup group) => kAppFeatures
       .where((f) => f.group == group)
+      .where((f) => !f.requiresAdmin || _isAdmin)
+      .toList();
+
+  /// The tools used every day, brought out of the drawer onto the home
+  /// screen. They stay in the drawer too — an inspector who has learned to
+  /// look there must still find them.
+  List<AppFeature> get _homeTools => kAppFeatures
+      .where((f) => f.onHome && f.available)
       .where((f) => !f.requiresAdmin || _isAdmin)
       .toList();
 
@@ -283,6 +300,19 @@ class _HomePageState extends State<HomePage> {
                             _CommodityTile(feature: f, onTap: () => _open(f)),
                         ],
                       ),
+                      if (_homeTools.isNotEmpty) ...[
+                        const SizedBox(height: 26),
+                        const _SectionLabel('Plan and sync'),
+                        const SizedBox(height: 12),
+                        AppTileGrid(
+                          rowHeight: 112,
+                          children: [
+                            for (final f in _homeTools)
+                              _CommodityTile(
+                                  feature: f, onTap: () => _open(f)),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 22),
                       Center(
                         child: TextButton.icon(

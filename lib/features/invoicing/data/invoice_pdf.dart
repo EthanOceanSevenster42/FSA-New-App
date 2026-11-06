@@ -26,18 +26,14 @@ import '../domain/invoice_rules.dart';
 abstract final class InvoicePdf {
   // A signed RIF is printed and filed.  Keep enough vertical space for the
   // captured handwriting to remain plainly legible on paper.
-  static const _signatureHeight = 56.0;
+  static const _signatureHeight = 26.0;
 
-  static const _letterhead = 'Food Safety Agency (Pty) Ltd\n'
-      '318 The Hillside Building, The Hillside Street, Lynnwood, Pretoria '
-      '(4th Floor). PO Box 35224, Menlo Park, 0102\n'
-      'Tel: (012) 361 1937 • Email: info@afsq.co.za • '
-      'www.foodsafetyagency.co.za';
+  /// The date rests on its line, and that line sits level with the
+  /// signature line beside it (Ethan, 2026-10-04), so the date's own text
+  /// height comes out of the room above the line.
+  static const _dateHeight = 12.0;
 
-  static String _dmy(DateTime? d) => d == null
-      ? ''
-      : '${d.day.toString().padLeft(2, '0')}/'
-          '${d.month.toString().padLeft(2, '0')}/${d.year}';
+  static String _dmy(DateTime? d) => d == null ? '' : fsaDateLong(d);
 
   /// Writes the form to [outputPath] and returns it.
   static Future<File> write(
@@ -81,9 +77,7 @@ abstract final class InvoicePdf {
     // Lato is the Agency's typeface and travels in the APK, so the PDF reads
     // as their document rather than in the pdf package's default face.
     final assets = await FsaForm.assets();
-    final regular = assets.regular;
     final bold = assets.bold;
-    final logo = assets.letterhead;
 
     final document = pw.Document(
       title: 'Request for Invoice — ${form.siteVisited}',
@@ -115,33 +109,17 @@ abstract final class InvoicePdf {
         await signature(form.inspectorSignaturePath, 'Inspector Signature');
 
     document.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(30, 22, 30, 22),
-        theme: pw.ThemeData.withFont(base: regular, bold: bold),
-        build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            // The Agency's letterhead, as the printed form carries it: the
-            // anniversary mark at the left, the address block centred.
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.center,
-              children: [
-                pw.SizedBox(
-                  width: 96,
-                  height: 96,
-                  child: pw.Image(logo, fit: pw.BoxFit.contain),
-                ),
-                pw.SizedBox(width: 10),
-                pw.Expanded(
-                  child: pw.Text(
-                    _letterhead,
-                    textAlign: pw.TextAlign.center,
-                    style: const pw.TextStyle(fontSize: 7.5, height: 1.4),
-                  ),
-                ),
-              ],
-            ),
+      // MultiPage, not Page: a fixed page DROPS a block that does not fit
+      // rather than carrying it over, and the Certain Raw Processed Meat
+      // Products laboratory table was being lost off the bottom — an
+      // invoice request went out with a whole cost table missing
+      // (Ethan, 2026-10-08).
+      pw.MultiPage(
+        // On the Agency's letterhead (Ethan, 2026-10-04): the logo, address
+        // and contacts are the page's own, so the form starts at its title.
+        pageTheme: FsaForm.letterhead(assets, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(30, 22, 30, 22)),
+        build: (context) => [
             pw.SizedBox(height: 4),
             pw.Center(
               child: pw.Text('REQUEST FOR INVOICE FORM',
@@ -239,11 +217,15 @@ abstract final class InvoicePdf {
               'kilometre rates are insufficient to cover the costs of the '
               'inspections, Food Safety Agency (Pty) Ltd, at its own '
               'discretion, reserves the right to amend the rates.',
-              style: const pw.TextStyle(fontSize: 6.5, height: 1.25),
+              style: const pw.TextStyle(fontSize: 6.3, height: 1.15),
             ),
             pw.SizedBox(height: 8),
-            _tableHeading('Invoicing:  Laboratory Cost - Processed Meat '
-                'Products (Only applicable if sample taken)'),
+            // One heading over both laboratory tables, naming each commodity
+            // rather than repeating the sentence above each (Ethan,
+            // 2026-10-08).
+            _tableHeading('Invoicing:  Laboratory Cost – Processed Meat '
+                'Products and Certain Raw Processed Meat Products '
+                '(Only applicable if a sample is taken)'),
             _grid(
               header: const [
                 'Type of analysis',
@@ -263,9 +245,7 @@ abstract final class InvoicePdf {
                 ['Total', '', '', InvoiceRules.rand(totals.pmpLab)],
               ],
             ),
-            pw.SizedBox(height: 8),
-            _tableHeading('Invoicing:  Laboratory Cost – Certain Raw Processed '
-                'Meat Products (Only applicable if sample taken)'),
+            pw.SizedBox(height: 4),
             _grid(
               header: const [
                 'Type of analysis',
@@ -284,48 +264,50 @@ abstract final class InvoicePdf {
                     InvoiceRates.rawSoya),
                 _labRow('Starch Content', form.rawStarchTests,
                     InvoiceRates.rawStarch),
-                _labRow('Meat Specie Identification (DNA)',
+                _labRow('Meat Species Identification (DNA)',
                     form.rawDnaTests, InvoiceRates.rawDna),
                 _labRow('Calcium Determination (MRM only)',
                     form.rawCalciumTests, InvoiceRates.rawCalcium),
                 ['Total', '', '', InvoiceRules.rand(totals.rawLab)],
               ],
             ),
-            pw.SizedBox(height: 9),
+            pw.SizedBox(height: 4),
             pw.Text(
               'Total Invoice Amount: ${InvoiceRules.rand(totals.grand)}  '
               '(excluding ${_percent(InvoiceRates.vatRate)} VAT)',
               style: pw.TextStyle(fontSize: 10.5, font: bold),
             ),
-            // Whatever room is left goes above the signatures, so they sit at
-            // the foot of the sheet as they do on the printed form.
-            pw.Spacer(),
+            // No Spacer: it belongs to a fixed-height page, and on a
+            // MultiPage it would swallow the rest of the sheet.
+            //
+            // Both signatures on one line, side by side. They were stacked,
+            // which cost the sheet a whole row it no longer has to spare now
+            // that BOTH laboratory tables print — the Certain Raw Processed
+            // Meat Products one used to be dropped off the bottom
+            // (Ethan, 2026-10-08). The page is landscape; there is width.
+            pw.SizedBox(height: 5),
             pw.Row(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
                 pw.Expanded(
+                  flex: 3,
                   child: managerSignature ??
                       _signatureLine('Manager/Owner/Responsible Person '
                           'Signature'),
                 ),
-                pw.SizedBox(width: 20),
-                pw.Expanded(child: _dateSigned(_dmy(form.signedAt))),
-              ],
-            ),
-            pw.SizedBox(height: 10),
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
+                pw.SizedBox(width: 14),
+                pw.Expanded(flex: 2, child: _dateSigned(_dmy(form.signedAt))),
+                pw.SizedBox(width: 24),
                 pw.Expanded(
+                  flex: 3,
                   child: inspectorSignature ??
                       _signatureLine('Inspector Signature'),
                 ),
-                pw.SizedBox(width: 20),
-                pw.Expanded(child: _dateSigned(_dmy(form.signedAt))),
+                pw.SizedBox(width: 14),
+                pw.Expanded(flex: 2, child: _dateSigned(_dmy(form.signedAt))),
               ],
             ),
-          ],
-        ),
+        ],
       ),
     );
 
@@ -335,9 +317,9 @@ abstract final class InvoicePdf {
     return file;
   }
 
-  /// A band that was not worked leaves the blank the paper form leaves.
-  static String _hours(double hours) =>
-      hours <= 0 ? '____' : _number(hours);
+  /// The hours in a band, 0 where it was not worked — a figure, not the
+  /// paper form's blank (Ethan, 2026-09-29).
+  static String _hours(double hours) => _number(hours <= 0 ? 0 : hours);
 
   /// A rate as the form prints it, taken from the tariff so a rate change is
   /// one edit rather than one per place it is written.
@@ -352,7 +334,9 @@ abstract final class InvoicePdf {
     return [
       analysis,
       '$fee per sample/test',
-      '${count == 0 ? '____' : count} x $fee',
+      // The number of tests itself, 0 included, rather than a blank to be
+      // filled in by hand (Ethan, 2026-09-29).
+      '$count x $fee',
       InvoiceRules.rand(count * rate),
     ];
   }
@@ -368,7 +352,7 @@ abstract final class InvoicePdf {
   static String _percent(double rate) => '${_number(rate * 100)}%';
 
   static pw.Widget _particular(String label, String value) => pw.Padding(
-        padding: const pw.EdgeInsets.only(bottom: 4),
+        padding: const pw.EdgeInsets.only(bottom: 2),
         child: pw.Row(
           crossAxisAlignment: pw.CrossAxisAlignment.end,
           children: [
@@ -431,11 +415,11 @@ abstract final class InvoicePdf {
         headers: header,
         data: rows,
         border: pw.TableBorder.all(width: 0.5, color: PdfColors.grey600),
-        headerStyle: const pw.TextStyle(fontSize: 7.5),
+        headerStyle: const pw.TextStyle(fontSize: 7),
         headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-        cellStyle: const pw.TextStyle(fontSize: 7.5),
+        cellStyle: const pw.TextStyle(fontSize: 7),
         cellPadding:
-            const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 1.8),
+            const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 0.7),
         cellAlignments: const {
           0: pw.Alignment.centerLeft,
           1: pw.Alignment.centerLeft,
@@ -456,9 +440,11 @@ abstract final class InvoicePdf {
   static pw.Widget _dateSigned(String date) => pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.SizedBox(height: _signatureHeight),
+          pw.SizedBox(height: _signatureHeight - _dateHeight),
           pw.Container(
             width: 140,
+            height: _dateHeight,
+            alignment: pw.Alignment.bottomLeft,
             decoration: const pw.BoxDecoration(
               border: pw.Border(bottom: pw.BorderSide(width: 0.8)),
             ),

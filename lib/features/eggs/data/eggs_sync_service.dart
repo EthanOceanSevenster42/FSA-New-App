@@ -125,7 +125,7 @@ class EggsSyncService {
       // lookup table exactly as a save does. Handling rejection only on the
       // save path left everything captured earlier stuck: it retried every two
       // minutes into the same 400 and never recovered.
-      for (final inspection in await repository.savedInspections()) {
+      for (final inspection in await repository.inspectionsForUpload()) {
         // Only finished work goes up; a draft is still being captured.
         if (inspection.status != 'completed') continue;
         if (inspection.isUploaded) {
@@ -153,7 +153,7 @@ class EggsSyncService {
         }
       }
 
-      for (final direction in await repository.savedDirections()) {
+      for (final direction in await repository.directionsForUpload()) {
         if (direction.isUploaded) continue;
         if (direction.status != 'completed') continue;
         final outcome = await _trySend(

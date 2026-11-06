@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/address_search_field.dart';
 import '../../../core/widgets/responsive.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
@@ -14,9 +15,11 @@ import '../../../core/services/photo_storage.dart';
 import '../../../core/services/in_app_camera.dart';
 import '../../sync/auto_sync.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/widgets/compliance_slider.dart';
 import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/required_label.dart';
 import '../../../core/widgets/search_picker.dart';
+import '../../../core/domain/facility_address.dart';
 import '../domain/facility_type_match.dart';
 import '../domain/inspection_reason_match.dart';
 import '../../eggs/data/eggs_repository.dart';
@@ -35,7 +38,11 @@ import '../../rawrmp/presentation/rawrmp_inspection_form.dart';
 import '../../rawrmp/domain/raw_record_kind.dart';
 import '../../pmp/data/pmp_repository.dart';
 import '../../pmp/presentation/pmp_inspection_form.dart';
+import '../../seizures/data/seizure_repository.dart';
+import '../../../core/platform/downloads.dart';
 import '../data/visit_repository.dart';
+import '../../invoicing/domain/invoice_rules.dart';
+import 'record_documents_section.dart';
 import '../../../core/widgets/picker_menu_field.dart';
 
 /// What a signed-off visit page hands back, so the list page above it
@@ -85,6 +92,44 @@ const _kinds = <({String kind, String label, String single, String short})>[
   ),
 ];
 
+/// The words on the button that finishes an inspection inside a visit
+/// (Ethan, 2026-09-29), named for where the visit goes next: another of the
+/// same commodity, the next commodity by name, or — the last one planned —
+/// finalising it.
+///
+/// [plan] is the visit's commodities in the order they are walked, with how
+/// many are planned, begun ([members]) and finished; [kind] is the one being
+/// opened, which counts as finished here. [resuming] is true when it is a
+/// member already begun rather than a fresh one.
+@visibleForTesting
+String finishLabelFor({
+  required String kind,
+  required bool resuming,
+  required List<
+          ({
+            String kind,
+            String single,
+            String short,
+            int planned,
+            int members,
+            int completed
+          })>
+      plan,
+}) {
+  final single = plan.firstWhere((k) => k.kind == kind).single.toUpperCase();
+  for (final k in plan) {
+    final mine = k.kind == kind;
+    final members = k.members + (mine && !resuming ? 1 : 0);
+    final done = k.completed + (mine ? 1 : 0);
+    final total = k.planned > members ? k.planned : members;
+    if (total <= done) continue;
+    return mine
+        ? 'DONE — NEXT $single'
+        : 'DONE — NEXT COMMODITY: ${k.short.toUpperCase()}';
+  }
+  return 'FINALISE $single';
+}
+
 /// Open grouped inspections, and the way into a new one.
 class StoreVisitListPage extends StatefulWidget {
   const StoreVisitListPage({
@@ -127,7 +172,8 @@ class _StoreVisitListPageState extends State<StoreVisitListPage> {
   }
 
   Future<void> _refresh() async {
-    final open = await widget.visits.openVisits();
+    final open =
+        await widget.visits.openVisits(owner: widget.inspectorName);
     if (mounted) {
       setState(() {
         _open = open;
@@ -378,6 +424,19 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
 
   List<EggFacility> _directory = const [];
   List<VisitMember> _members = const [];
+
+  /// The explicit Save button's state. The screen still autosaves on every
+  /// change as a safety net (so an app update never loses an open form), but
+  /// the inspector asked for a clear, confirmed Save too (Ethan, 2026-10-16):
+  /// [_saving] while it writes, [_justSaved] shows a brief "Saved" tick after.
+  bool _saving = false;
+  bool _justSaved = false;
+
+  /// The records under each captured row that ended in a seizure — the
+  /// row's own, and for a label checklist the grading done underneath it —
+  /// so the seizure shows at the end of the visit, before signing (Ethan,
+  /// 2026-09-30).
+  Map<String, List<String>> _seizuresOf = const {};
   final _planned = <String, int>{
     for (final k in _kinds) k.kind: 0,
   };
@@ -390,9 +449,17 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   bool _loading = true;
   bool _completing = false;
   bool _completed = false;
+
+  /// Whether the visit's details are locked: signed off, and not opened to
+  /// correct them (EDIT VISIT DETAILS in Inspection Management).
+  bool get _readOnly => _completed && !widget.detailsOnly;
   bool _isOccurrence = false;
   String _facilityType = '';
   String _occurrenceTime = '';
+
+  /// When the inspector set off and when the travelling ended, HH:mm.
+  String _travelStart = '';
+  String _travelEnd = '';
   final _occurrenceRegistration = TextEditingController();
   final _occurrenceDescription = TextEditingController();
   List<VisitOccurrencePhoto> _occurrencePhotos = const [];
@@ -402,7 +469,6 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   bool _capturingOccurrence = false;
   List<String> _facilityTypeOptions = const [];
   String _inspectionReason = '';
-  List<String> _inspectionReasonOptions = const [];
 
   /// The required fields a refused start or sign-off flagged, so the page
   /// can take the inspector to the first and mark each red.
@@ -449,9 +515,8 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       (await widget.rawRmp.locations()).map((t) => t.name),
       (await widget.pmp.locations()).map((t) => t.name),
     ]);
-    // Why the inspector is here: Inspection or Follow Up, and nothing else.
-    // Each commodity matches its own row for the answer.
-    const reasonOptions = InspectionReasonMatch.offered;
+    final seized = await SeizureRepository(database: widget.visits.database)
+        .seizedAmong(members.map((m) => m.uuid));
     if (!mounted || visit == null) return;
     setState(() {
       _facilityName.text = visit.facilityName;
@@ -488,14 +553,39 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       }
       _isOccurrence = visit.isOccurrenceReport;
       _facilityType = visit.facilityType;
-      _inspectionReason = visit.inspectionReason;
+      // An inspection unless said otherwise: the question is a follow-up
+      // switch (Ethan, 2026-10-01), so nothing is left unanswered.
+      _inspectionReason = visit.inspectionReason.trim().isEmpty
+          ? InspectionReasonMatch.offered.first
+          : visit.inspectionReason;
       _occurrenceTime = visit.occurrenceTimeOfVisit;
+      _travelStart = visit.travelStart;
+      _travelEnd = visit.travelEnd;
       _occurrenceRegistration.text = visit.occurrenceRegistrationCode;
       _occurrenceDescription.text = visit.occurrenceDescription;
       _occurrencePhotos = occurrencePhotos;
       _facilityTypeOptions = typeOptions;
-      _inspectionReasonOptions = reasonOptions;
-      _members = members;
+      // A grading done underneath a label checklist is part of that one
+      // poultry inspection: listed and counted with it, not as a second
+      // (Ethan, 2026-09-30). Both finish together on the checklist.
+      final gradedOnLabels = {
+        for (final m in members)
+          if (m.kind == 'poultry_label')
+            PoultryLabelChecklistForm.gradingUuidFor(m.uuid),
+      };
+      _members = [
+        for (final m in members)
+          if (!(m.kind == 'poultry' && gradedOnLabels.contains(m.uuid))) m,
+      ];
+      _seizuresOf = {
+        for (final m in _members)
+          m.uuid: [
+            if (seized.contains(m.uuid)) m.uuid,
+            if (m.kind == 'poultry_label' &&
+                seized.contains(PoultryLabelChecklistForm.gradingUuidFor(m.uuid)))
+              PoultryLabelChecklistForm.gradingUuidFor(m.uuid),
+          ],
+      };
       _directory = directory;
       _completed = visit.completedAt != null;
       _loading = false;
@@ -521,7 +611,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
             label: 'Name', key: 'name', initial: typedName, isRequired: true),
         const DirectoryField(label: 'Physical address', key: 'address'),
         const DirectoryField(
-            label: 'Telephone / cellphone',
+            label: 'Telephone/cellphone',
             key: 'telephone',
             keyboardType: TextInputType.phone),
       ],
@@ -576,7 +666,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   Widget _occurrenceSection() {
     final palette = AppColors.of(context);
     return IgnorePointer(
-      ignoring: _completed,
+      ignoring: _readOnly,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -712,13 +802,13 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
                   children: [
                     TextButton.icon(
                       onPressed: (_capturingOccurrence ||
-                              _completed ||
+                              _readOnly ||
                               _occurrencePhotos.length >= _maxOccurrencePhotos)
                           ? null
                           : _captureOccurrencePhoto,
                       icon: const Icon(Icons.photo_camera_outlined, size: 18),
                       label: Text(
-                          _capturingOccurrence ? 'Saving…' : 'Take photograph'),
+                          _capturingOccurrence ? 'Saving…' : 'Take photo'),
                     ),
                   ],
                 ),
@@ -765,7 +855,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           top: 0,
           right: 0,
           child: InkWell(
-            onTap: _completed
+            onTap: _readOnly
                 ? null
                 : () async {
                     await widget.visits.removeOccurrencePhoto(photo.id);
@@ -884,10 +974,39 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       ..clearSnackBars()
       ..showSnackBar(const SnackBar(
         content: Text(
-            'Correct the address, telephone / cellphone and contact below. '
+            'Correct the address, telephone/cellphone and contact below. '
             'They go to the office with this visit.'),
         duration: Duration(seconds: 6),
       ));
+  }
+
+  /// The explicit Save the inspector asked for: persists the same details the
+  /// autosave writes, then shows a brief confirmation so it is clear the visit
+  /// details are stored (the autosave remains underneath as a safety net).
+  Future<void> _saveAndConfirm() async {
+    setState(() => _saving = true);
+    try {
+      await _persist();
+      // Correct the office's copy immediately: markChanged clears the visit's
+      // uploaded flag so the sync re-sends it, and the bridge applies the whole
+      // corrected payload to the APS group (edit_inspection) — then kick the
+      // sync now so it goes up at once rather than on the next Server Sync
+      // (Ethan, 2026-10-16).
+      await widget.visits.markChanged(widget.visitUuid);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+    if (!mounted) return;
+    setState(() => _justSaved = true);
+    unawaited(AutoSync.instance.kick());
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(
+        content: Text('Saved — syncing the correction to the office…'),
+      ));
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _justSaved = false);
+    });
   }
 
   Future<void> _persist() => widget.visits.updateDetails(
@@ -920,6 +1039,8 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           facilityType: Value(_facilityType),
           inspectionReason: Value(_inspectionReason),
           occurrenceTimeOfVisit: Value(_occurrenceTime),
+          travelStart: Value(_travelStart),
+          travelEnd: Value(_travelEnd),
           occurrenceRegistrationCode:
               Value(_occurrenceRegistration.text.trim()),
           occurrenceDescription: Value(_occurrenceDescription.text.trim()),
@@ -952,9 +1073,16 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       _membersOf(kind).where((m) => m.completed).length;
 
   /// The next step, walking the commodities in order — all of one commodity
-  /// before the next. An unfinished inspection is the next step of its
-  /// commodity: it gets finished before a new one opens, so a draft can
-  /// never be silently left behind by "start the next".
+  /// before the next.
+  ///
+  /// A slot not yet started comes first, even while another inspection is
+  /// still in progress: inspectors work several at once, stepping out of one
+  /// part-way (weighing waits on a chiller, a label on the store) and into
+  /// the next, then back again from the INSPECTIONS list (Ethan, 2026-11-05). It
+  /// used to reopen the oldest unfinished one instead, so the next could not
+  /// be begun until the first was done. Once every planned slot is begun,
+  /// the button carries on with what is still unfinished, so nothing is left
+  /// behind — and the visit still will not sign off until all are done.
   ({
     String kind,
     String label,
@@ -963,10 +1091,25 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     int of,
     VisitMember? resume
   })? get _nextSlot {
+    // With the plan put away for an occurrence report, only an inspection
+    // already begun still counts as a next step.
+    int plannedOf(String kind) => _isOccurrence ? 0 : (_planned[kind] ?? 0);
     for (final k in _plannedKinds) {
-      // With the plan put away for an occurrence report, only an inspection
-      // already begun still counts as a next step.
-      final planned = _isOccurrence ? 0 : (_planned[k.kind] ?? 0);
+      final planned = plannedOf(k.kind);
+      final members = _membersOf(k.kind);
+      if (members.length < planned) {
+        return (
+          kind: k.kind,
+          label: k.label,
+          single: k.single,
+          number: members.length + 1,
+          of: planned,
+          resume: null,
+        );
+      }
+    }
+    for (final k in _plannedKinds) {
+      final planned = plannedOf(k.kind);
       final members = _membersOf(k.kind);
       final unfinished = members.where((m) => !m.completed).toList();
       if (unfinished.isNotEmpty) {
@@ -979,19 +1122,58 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           resume: unfinished.first,
         );
       }
-      if (members.length < planned) {
-        return (
-          kind: k.kind,
-          label: k.label,
-          single: k.single,
-          number: members.length + 1,
-          of: planned,
-          resume: null,
-        );
-      }
     }
     return null;
   }
+
+  /// One row per planned inspection not yet begun, in plan order, each
+  /// starting the next of its commodity. Empty once the visit is signed off.
+  List<
+      ({
+        String kind,
+        String label,
+        String single,
+        int number,
+        int of,
+        VisitMember? resume
+      })> get _notStarted {
+    if (_completed || _isOccurrence) return const [];
+    return [
+      for (final k in _plannedKinds)
+        for (var n = _membersOf(k.kind).length;
+            n < (_planned[k.kind] ?? 0);
+            n++)
+          (
+            kind: k.kind,
+            label: k.label,
+            single: k.single,
+            number: n + 1,
+            of: _planned[k.kind] ?? 0,
+            resume: null,
+          ),
+    ];
+  }
+
+  /// Inspections begun and not yet finished, across every commodity.
+  int get _inProgress => _members.where((m) => !m.completed).length;
+
+  /// The words on the button that finishes the [kind] inspection being
+  /// opened; see [finishLabelFor].
+  String _finishLabel(String kind, {required bool resuming}) => finishLabelFor(
+        kind: kind,
+        resuming: resuming,
+        plan: [
+          for (final k in _plannedKinds)
+            (
+              kind: k.kind,
+              single: k.single,
+              short: k.short,
+              planned: _isOccurrence ? 0 : (_planned[k.kind] ?? 0),
+              members: _membersOf(k.kind).length,
+              completed: _completedOf(k.kind),
+            ),
+        ],
+      );
 
   /// The commodities to walk, in the order they were planned.
   ///
@@ -1219,20 +1401,35 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           (id: 'facilityType', label: 'the inspection facility type'),
         if (!_isOccurrence && _inspectionReason.trim().isEmpty)
           (id: 'inspectionReason', label: 'the reason for inspection'),
-        // The forms no longer ask for it (Ethan, 2026-09-25).
-        if (_producerApplies && _producer.text.trim().isEmpty)
-          (id: 'producer', label: 'the producer / supplier'),
+        // The forms no longer ask for it (Ethan, 2026-09-25), and it is no
+        // longer held to either (Ethan, 2026-10-12): a retailer's shelf
+        // carries stock from several producers and often names none, so
+        // demanding one here stopped a visit that had nothing to give.
+        // Each form can still be given its own on the day.
+        // Only a blank address stops an inspection. A short one is
+        // asked about, under the box and again on the way out of it, but
+        // never refused: an inspector standing at a counter with a
+        // premises whose address does not fit the pattern must still be
+        // able to record the visit. Teaching the shape gets it written
+        // properly; refusing the work does not (Ethan, 2026-10-30).
         if (_facilityAddress.text.trim().isEmpty)
           (id: 'facilityAddress', label: 'the facility address'),
-        if (signingOff && !_isOccurrence && _contactPerson.text.trim().isEmpty)
+        // Before an inspection starts too, and on an occurrence report as
+        // well (Ethan, 2026-10-01): every document is addressed to them.
+        if (_contactPerson.text.trim().isEmpty)
           (
             id: 'contactPerson',
-            label: 'the person in charge / representative at store',
+            label: 'the person in charge/representative at store',
           ),
-        if (!_isOccurrence && _contactEmail.text.trim().isEmpty)
+        if (_contactEmail.text.trim().isEmpty)
           (id: 'contactEmail', label: 'the contact email'),
         if (double.tryParse(_distanceTravelled.text.trim()) == null)
           (id: 'distance', label: 'the distance travelled (km)'),
+        // Compulsory, as APS asks for them: the office's analytics run on
+        // travel time as well as kilometres (Ethan, 2026-10-02).
+        if (_travelStart.isEmpty)
+          (id: 'travelStart', label: 'the travel start'),
+        if (_travelEnd.isEmpty) (id: 'travelEnd', label: 'the travel end'),
       ];
 
   /// The anchors of the page, top to bottom, so a refused start or sign-off
@@ -1246,6 +1443,8 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     'contactPerson',
     'contactEmail',
     'distance',
+    'travelStart',
+    'travelEnd',
     'occurrenceDescription',
     'occurrencePhotos',
   ];
@@ -1316,8 +1515,17 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     return true;
   }
 
-  Future<void> _startNext() async {
-    final slot = _nextSlot;
+  Future<void> _startNext([
+    ({
+      String kind,
+      String label,
+      String single,
+      int number,
+      int of,
+      VisitMember? resume
+    })? chosen,
+  ]) async {
+    final slot = chosen ?? _nextSlot;
     if (slot == null) return;
     if (_stoppedByMissingDetails(signingOff: false)) return;
     _missing.clear();
@@ -1366,6 +1574,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           syncService: widget.eggsSync,
           resumeUuid: resumeUuid,
           visit: prefill,
+          finishLabel: _finishLabel('egg', resuming: resumeUuid != null),
         ),
       'poultry' => PoultryInspectionForm(
           repository: widget.poultry,
@@ -1412,8 +1621,73 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
   /// An unfinished row is work the inspector should be able to select and
   /// continue. It keeps that row's UUID, so its samples, photographs and
   /// details are never replaced with a new inspection.
+  /// Opens a member to carry on with it — or, once captured, to correct
+  /// it before the visit is signed off (Ethan, 2026-09-29). A signed-off
+  /// visit's inspections are corrected from Inspection Management, which
+  /// sends the change up again.
+  /// The seizure sheet off [recordUuid], as the office will receive it —
+  /// the signatures go on at the final sign-off.
+  Future<void> _viewSeizure(String recordUuid) async {
+    final seizures = SeizureRepository(database: widget.visits.database);
+    final seizure = await seizures.forRecord(recordUuid);
+    if (seizure == null || !mounted) return;
+    await openRecordDocument(
+      context,
+      (
+        title: 'Seizure',
+        note: '',
+        downloadName: Downloads.documentName(
+            seizure.clientName, 'Seizure', seizure.issuedAt),
+        build: () => seizures.buildDocument(recordUuid),
+      ),
+      download: false,
+    );
+  }
+
+  /// Deletes one captured inspection, asked once since it cannot be
+  /// undone, and takes it off the plan with it (Ethan, 2026-10-01).
+  Future<void> _deleteCaptured(VisitMember member) async {
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete this inspection?'),
+        content: Text(
+          '${member.label} and everything captured on it — readings, '
+          'deviations and photographs — are removed. It has not been sent, '
+          'so it cannot be brought back.',
+          style: const TextStyle(height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep it'),
+          ),
+          FilledButton(
+            style:
+                FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (sure != true || !mounted) return;
+    await widget.visits.removeMember(member);
+    if (!mounted) return;
+    // The plan counts poultry's kinds together.
+    final key =
+        _poultryKinds.contains(member.kind) ? 'poultry' : member.kind;
+    final planned = _planned[key] ?? 0;
+    setState(() {
+      _planned[key] = planned > 0 ? planned - 1 : 0;
+      _forgetPlanned(key);
+    });
+    await _persist();
+    await _load();
+  }
+
   Future<void> _continueMember(VisitMember member) async {
-    if (member.completed) return;
+    if (member.completed && _completed) return;
     await _persist();
     final visit = await widget.visits.byUuid(widget.visitUuid);
     if (visit == null || !mounted) return;
@@ -1441,7 +1715,12 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           inspectorName: widget.inspectorName,
           syncService: widget.eggsSync,
           resumeUuid: member.uuid,
-          visit: prefill),
+          visit: prefill,
+          // Reopened to correct it: finishing puts it back as it was, and
+          // the visit carries on from where it stood.
+          finishLabel: member.completed
+              ? 'SAVE CHANGES'
+              : _finishLabel('egg', resuming: true)),
       'poultry' => PoultryInspectionForm(
           repository: widget.poultry,
           captureRepository: widget.poultryCapture,
@@ -1484,6 +1763,134 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     await Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => form));
     if (mounted) await _load();
+  }
+
+  /// Shows the inspector the start and finish the handset worked out, and
+  /// lets them put it right before it becomes an invoice.
+  ///
+  /// The times offered run from the first commodity form the inspector
+  /// opened to this moment, which is the signature just given — not from
+  /// when the visit record was created. The facility details are often
+  /// filled in days before the drive: a record opened on 22 September was
+  /// signed off on 12 October, and the handset offered its creation time,
+  /// 12:00, as the start of an inspection worked at 11:20 that morning
+  /// (Ethan, 2026-10-12). Nobody ever saw these figures before they became
+  /// billable hours, and visits reached the office at 0.03 hours and at 98.
+  ///
+  /// Returns false if they back out.
+  Future<bool> _confirmInspectionTimes() async {
+    final visit = await widget.visits.byUuid(widget.visitUuid);
+    if (visit == null || !mounted) return true;
+    final window = InvoiceRules.workedWindow(
+      captures: [for (final m in _members) m.inspectedAt],
+      visitStarted: visit.startedAt,
+      // Asked straight after the signing, so now is when the inspection
+      // finished.
+      signedAt: DateTime.now(),
+    );
+    var start = TimeOfDay.fromDateTime(window.start);
+    var end = TimeOfDay.fromDateTime(window.end);
+    // A time the inspector has already confirmed wins over a fresh guess.
+    TimeOfDay? saved(String value) {
+      final parts = value.split(':');
+      if (parts.length != 2) return null;
+      final h = int.tryParse(parts[0]);
+      final m = int.tryParse(parts[1]);
+      if (h == null || m == null) return null;
+      return TimeOfDay(hour: h, minute: m);
+    }
+
+    start = saved(visit.inspectionStart) ?? start;
+    end = saved(visit.inspectionEnd) ?? end;
+
+    String text(TimeOfDay t) =>
+        '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          Future<void> pick(bool isStart) async {
+            final picked = await showTimePicker(
+              context: dialogContext,
+              initialTime: isStart ? start : end,
+            );
+            if (picked == null) return;
+            setDialogState(() {
+              if (isStart) {
+                start = picked;
+              } else {
+                end = picked;
+              }
+            });
+          }
+
+          Widget row(String label, TimeOfDay value, bool isStart) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    SizedBox(
+                        width: 190,
+                        child: Text(label,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600))),
+                    OutlinedButton.icon(
+                      onPressed: () => pick(isStart),
+                      icon: const Icon(Icons.schedule, size: 18),
+                      label: Text(text(value),
+                          style: const TextStyle(fontSize: 16)),
+                    ),
+                  ],
+                ),
+              );
+
+          return AlertDialog(
+            constraints: const BoxConstraints(maxWidth: 520),
+            title: const Text('Inspection times'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('This is what the system has as the start and '
+                    'finish of this inspection. Does it look right?'),
+                const SizedBox(height: 14),
+                row('Inspection started:', start, true),
+                row('Inspection ended:', end, false),
+                const SizedBox(height: 10),
+                Text(
+                  'Tap a time to change it. These go on the Request for '
+                  'Invoice, which charges a minimum of one hour and then in '
+                  'half hour segments.',
+                  style: TextStyle(fontSize: 12, color: AppColors.muted),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Back'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Yes, these are correct'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (confirmed != true) return false;
+    await widget.visits.updateDetails(
+      widget.visitUuid,
+      StoreVisitsCompanion(
+        uuid: Value(widget.visitUuid),
+        inspectionStart: Value(text(start)),
+        inspectionEnd: Value(text(end)),
+      ),
+    );
+    return true;
   }
 
   Future<void> _complete() async {
@@ -1529,7 +1936,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
     // the inspector, whose signature is never optional.
     final managerPath = await captureSignature(
       context,
-      title: 'Store / Client Signature',
+      title: 'Store/Client Signature',
       caption: _isOccurrence && _members.isEmpty
           ? 'To be signed by the store owner, manager or client, if they '
               'will sign. This signature goes on the occurrence report.'
@@ -1551,6 +1958,12 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           storage.pathFor('visit_${widget.visitUuid}_inspector_$stamp.png'),
     );
     if (inspectorPath == null || !mounted) return;
+
+    // Asked last, once the signing is done: that is the moment the
+    // inspector is actually finished and walking out, and asking earlier
+    // interrupts a visit that is still running (Ethan, 2026-10-12).
+    if (!await _confirmInspectionTimes()) return;
+    if (!mounted) return;
 
     setState(() => _completing = true);
     try {
@@ -1618,6 +2031,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
       {bool required = false,
       bool revealing = false,
       FocusNode? focus,
+      String? helper,
       String? missingId}) {
     final field = LabelledField(
       label: label,
@@ -1626,21 +2040,92 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
         builder: (context) => TextField(
           controller: controller,
           focusNode: focus,
-          enabled: !_completed,
+          enabled: !_readOnly,
           onChanged: (_) {
             if (revealing) setState(() {});
             unawaited(_persist());
           },
           style: const TextStyle(fontSize: 15.5),
           // Red while a refused start or sign-off has flagged it.
-          decoration:
-              InputDecoration(errorText: MissingFieldScope.errorOf(context)),
+          decoration: InputDecoration(
+            errorText: MissingFieldScope.errorOf(context),
+            helperText: helper,
+            helperMaxLines: 3,
+          ),
         ),
       ),
     );
     return missingId == null
         ? field
         : _anchor(missingId, listenable: controller, field);
+  }
+
+  /// A time of day, typed as hours and minutes with AM/PM — the control the
+  /// occurrence report's time of visit uses — stored as 24-hour HH:mm.
+  Widget _timeField({
+    required String id,
+    required String label,
+    required String value,
+    required String help,
+    required ValueChanged<String> onPicked,
+  }) {
+    final palette = AppColors.of(context);
+    return _anchor(
+      id,
+      LabelledField(
+        label: label,
+        isRequired: true,
+        child: Builder(
+          builder: (context) => InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: _readOnly
+                ? null
+                : () async {
+                    final parts = value.split(':');
+                    final initial = parts.length == 2
+                        ? TimeOfDay(
+                            hour:
+                                int.tryParse(parts[0]) ?? TimeOfDay.now().hour,
+                            minute: int.tryParse(parts[1]) ?? 0)
+                        : TimeOfDay.now();
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: initial,
+                      initialEntryMode: TimePickerEntryMode.inputOnly,
+                      helpText: help,
+                      hourLabelText: 'Hour',
+                      minuteLabelText: 'Minute',
+                      builder: (context, child) => MediaQuery(
+                        data: MediaQuery.of(context)
+                            .copyWith(alwaysUse24HourFormat: false),
+                        child: child!,
+                      ),
+                    );
+                    if (picked == null || !mounted) return;
+                    setState(() => onPicked(
+                        '${picked.hour.toString().padLeft(2, '0')}:'
+                        '${picked.minute.toString().padLeft(2, '0')}'));
+                    unawaited(_persist());
+                  },
+            child: InputDecorator(
+              isEmpty: false,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.schedule, size: 20),
+                // Red while a refused start or sign-off has flagged it.
+                errorText: MissingFieldScope.errorOf(context),
+              ),
+              child: Text(
+                value.isEmpty ? 'Tap to choose the time' : _timeOfDay(value),
+                style: TextStyle(
+                  fontSize: 15.5,
+                  color: value.isEmpty ? palette.muted : palette.ink,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Takes one off the plan, and the draft with it if there is one.
@@ -1854,7 +2339,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           24 + MediaQuery.paddingOf(context).bottom,
         ),
         children: [
-          if (_completed)
+          if (_readOnly)
             Container(
               margin: const EdgeInsets.only(bottom: 14),
               padding: const EdgeInsets.all(13),
@@ -1883,7 +2368,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // telephone, exactly as the egg form's facility box does. A store
           // that is not on the list can still be typed in.
           _anchor('facilityName', listenable: _facilityName, IgnorePointer(
-            ignoring: _completed,
+            ignoring: _readOnly,
             child: SearchPickerField<EggFacility>(
               label: 'Facility name',
               controller: _facilityName,
@@ -1906,7 +2391,7 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // inspection inside it; each form finds its own row for the
           // answer and only asks again if its list has nothing like it.
           _anchor('facilityType', IgnorePointer(
-            ignoring: _completed,
+            ignoring: _readOnly,
             child: PickerMenuField<String>(
               label: 'Inspection facility type',
               isRequired: true,
@@ -1924,43 +2409,48 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
             ),
           )),
           // Likewise the reason: one answer for the errand, not one per
-          // inspection captured during it.
+          // inspection captured during it. A switch rather than a picker
+          // (Ethan, 2026-10-01): the only other answer was "Inspection".
           _anchor('inspectionReason', IgnorePointer(
-            ignoring: _completed,
-            child: PickerMenuField<String>(
-              label: 'Reason for inspection',
-              isRequired: true,
-              value: _inspectionReasonOptions.contains(_inspectionReason)
-                  ? _inspectionReason
-                  : null,
-              options: [
-                for (final name in _inspectionReasonOptions)
-                  (value: name, text: name),
-              ],
-              onChanged: (v) {
-                setState(() => _inspectionReason = v ?? '');
+            ignoring: _readOnly,
+            child: YesNoQuestion(
+              label: 'Is this a follow-up inspection?',
+              value: InspectionReasonMatch.key(_inspectionReason) ==
+                  InspectionReasonMatch.key('Follow Up'),
+              onChanged: (on) {
+                setState(() => _inspectionReason =
+                    on ? 'Follow Up' : InspectionReasonMatch.offered.first);
                 unawaited(_persist());
               },
             ),
           )),
-          _field('Facility address', _facilityAddress,
-              required: true,
-              focus: _facilityAddressFocus,
-              missingId: 'facilityAddress'),
-          _field('Facility telephone / cellphone', _facilityPhone),
+          // Searchable by name — "Pick n Pay Lynnwood" rather than the
+          // street address. This is where a premises is first written down
+          // and the address flows from here to every commodity form, so it
+          // is the one place worth having it (Ethan, 2026-10-08). With no
+          // signal or no key it is the plain typed box it has always been.
+          AddressSearchField(
+            controller: _facilityAddress,
+            tokenProvider: widget.eggs.storedToken,
+            child: _field('Facility address', _facilityAddress,
+                required: true,
+                focus: _facilityAddressFocus,
+                helper: FacilityAddress.asking,
+                missingId: 'facilityAddress'),
+          ),
+          _field('Facility telephone/cellphone', _facilityPhone),
           // Asked once for the whole visit (Ethan, 2026-09-24): every raw,
           // processed meat and egg inspection under it starts with this
           // producer filled in. Only those commodities have a producer, so
           // the question is only asked when one of them is on the plan.
           if (_producerApplies) ...[
-            _field('Producer / supplier', _producer,
-                required: true, missingId: 'producer'),
+            _field('Producer/supplier', _producer, missingId: 'producer'),
             Padding(
               padding: const EdgeInsets.only(top: 2, bottom: 6),
               child: Text(
-                'Filled in on every raw, processed meat and egg inspection '
-                'in this visit. A product from a different producer can '
-                'still be changed on its own form.',
+                'Optional. Filled in on every raw, processed meat and egg '
+                'inspection in this visit. A product from a different '
+                'producer can still be changed on its own form.',
                 style: TextStyle(fontSize: 12.5, color: AppColors.muted),
               ),
             ),
@@ -1969,12 +2459,12 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
           // representative and an authorised manager, which at a store is
           // the same person answering the same question three times — and
           // the address it is asked for is the one the documents go to.
-          // Named for an inspection — the documents are addressed to them.
-          // An occurrence report may have found nobody in charge to name.
-          _field('Person in charge / Representative at store', _contactPerson,
-              required: !_isOccurrence, missingId: 'contactPerson'),
+          // The documents are addressed to them — on an occurrence report
+          // as well (Ethan, 2026-10-01); it used to let these go unnamed.
+          _field('Person in charge/Representative at store', _contactPerson,
+              required: true, missingId: 'contactPerson'),
           _field('Contact email', _contactEmail,
-              required: !_isOccurrence, missingId: 'contactEmail'),
+              required: true, missingId: 'contactEmail'),
           // The original asks for these two on every commodity form. A visit
           // is one errand to one site, so they are asked once, here, and
           // carried onto every record captured under it.
@@ -2000,6 +2490,22 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
               'What the invoice is billed on, at R6.50 per kilometre.',
               style: TextStyle(fontSize: 12.5, color: AppColors.muted),
             ),
+          ),
+          // Travel start and end, compulsory as on APS (Ethan, 2026-10-02):
+          // the office's analytics run on travel time as well as kilometres.
+          _timeField(
+            id: 'travelStart',
+            label: 'Travel start',
+            value: _travelStart,
+            help: 'WHAT TIME DID THE TRAVELLING START?',
+            onPicked: (v) => _travelStart = v,
+          ),
+          _timeField(
+            id: 'travelEnd',
+            label: 'Travel end',
+            value: _travelEnd,
+            help: 'WHAT TIME DID THE TRAVELLING END?',
+            onPicked: (v) => _travelEnd = v,
           ),
           const SizedBox(height: 10),
           // The plan belongs to inspections. An occurrence report is not one,
@@ -2061,11 +2567,28 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
               ),
               const SizedBox(height: 6),
               Text(
-                'The flow walks the plan one commodity at a time; each form '
-                'opens with the facility above already filled in.',
+                'Each form opens with the facility above already filled in. '
+                'You can leave an inspection part-way with the back arrow '
+                'and start the next — it is kept. Tap any inspection in '
+                'the list below to go into it.',
                 style: TextStyle(
                     fontSize: 12, color: AppColors.muted, height: 1.35),
               ),
+              if (next.resume == null && _inProgress > 0) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _inProgress == 1
+                      ? '1 inspection is still in progress — tap it below '
+                          'to carry on.'
+                      : '$_inProgress inspections are still in progress — '
+                          'tap one below to carry on.',
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.brandOrange,
+                      height: 1.35),
+                ),
+              ],
             ] else if (_members.isEmpty && !_isOccurrence)
               Text(
                 'Set the plan above — for example 2 poultry and 2 raw — and '
@@ -2123,9 +2646,9 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
             ],
           ],
           const SizedBox(height: 14),
-          if (_members.isNotEmpty) ...[
+          if (_members.isNotEmpty || _notStarted.isNotEmpty) ...[
             Text(
-              'CAPTURED SO FAR',
+              'INSPECTIONS',
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w900,
@@ -2146,16 +2669,115 @@ class _StoreVisitPageState extends State<StoreVisitPage> {
                 ),
                 title: Text(member.label,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: Text(member.completed
-                    ? (_completed
-                        ? 'Submitted'
-                        : 'Captured — submits at the final sign-off')
-                    : 'Still in progress'),
-                trailing: member.completed
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(member.completed
+                        ? (_completed
+                            ? 'Submitted — correct it from Inspection '
+                                'Management'
+                            : 'Captured — tap to edit. Submits at the final '
+                                'sign-off')
+                        : 'In progress — tap to carry on'),
+                    for (final record in _seizuresOf[member.uuid] ?? const <String>[])
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.gavel,
+                                size: 16, color: AppColors.brandRed),
+                            const SizedBox(width: 6),
+                            const Text('Seizure recorded',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.brandRed)),
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: () => _viewSeizure(record),
+                              child: const Text('View seizure'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                // A captured inspection can still be opened and corrected
+                // until the visit is signed off (Ethan, 2026-09-29) — or
+                // deleted (Ethan, 2026-10-01).
+                trailing: member.completed && _completed
                     ? null
-                    : const Icon(Icons.play_arrow, color: AppColors.brandTeal),
-                onTap: member.completed ? null : () => _continueMember(member),
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: member.completed ? 'Edit' : 'Continue',
+                            icon: Icon(
+                                member.completed
+                                    ? Icons.edit
+                                    : Icons.play_arrow,
+                                color: AppColors.brandTeal),
+                            onPressed: () => _continueMember(member),
+                          ),
+                          if (!_completed)
+                            IconButton(
+                              tooltip: 'Delete',
+                              icon: const Icon(Icons.delete_outline,
+                                  color: AppColors.brandRed),
+                              onPressed: () =>
+                                  unawaited(_deleteCaptured(member)),
+                            ),
+                        ],
+                      ),
+                onTap: member.completed && _completed
+                    ? null
+                    : () => _continueMember(member),
               ),
+            // Planned and not yet begun: listed too, so any of them can be
+            // gone into straight from here, out of the plan's order — the
+            // main button above still walks it in order (Ethan, 2026-11-05).
+            for (final slot in _notStarted)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.radio_button_unchecked,
+                    color: AppColors.border),
+                title: Text(slot.single,
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: const Text('Not started — tap to start'),
+                trailing: IconButton(
+                  tooltip: 'Start',
+                  icon: const Icon(Icons.play_arrow,
+                      color: AppColors.brandTeal),
+                  onPressed: () => unawaited(_startNext(slot)),
+                ),
+                onTap: () => unawaited(_startNext(slot)),
+              ),
+          ],
+          // Explicit Save, only on the Edit-visit-details screen (Ethan,
+          // 2026-10-16): editing an existing visit's details (detailsOnly) ends
+          // in a clear, confirmed save. The capture/new-inspection flow keeps
+          // its silent autosave and shows no button.
+          if (widget.detailsOnly) ...[
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: FilledButton.icon(
+                onPressed: _saving ? null : _saveAndConfirm,
+                icon: Icon(
+                    _justSaved ? Icons.check_circle : Icons.save_outlined),
+                label: Text(_saving
+                    ? 'Saving…'
+                    : _justSaved
+                        ? 'Saved'
+                        : 'Save'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _justSaved
+                      ? const Color(0xFF2E7D32)
+                      : AppColors.brandTeal,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
           ],
         ],
       )),

@@ -111,6 +111,35 @@ class DirectionRequirement {
 /// parts that decide a regulatory outcome can be tested exhaustively. The
 /// rules stay out of the presentation layer entirely.
 abstract final class EggRules {
+  /// Which photographs belong on a rejection, given the parts it serves.
+  ///
+  /// An egg record holds photographs of several kinds at once -- the
+  /// quality deviations, the label, the egg numbering -- while the notice
+  /// served off it may be for the labelling, the quality, or both. A
+  /// notice served for a labelling deviation went out carrying the
+  /// egg-quality photographs, which is evidence of something it does not
+  /// allege, and without the label photograph the form will not let an
+  /// inspector past (Jary Investments, PR-IND-IND-3647-001, reported
+  /// 2026-10-11).
+  ///
+  /// `deviation` is the older name for a quality photograph and is still
+  /// on records in the field ("Dirty and cracked shells"), so it is
+  /// counted with `egg`. `numbering` is on neither: it evidences how the
+  /// eggs were numbered, not a deviation.
+  ///
+  /// A direction naming neither part is malformed rather than empty, so it
+  /// keeps every kind: losing the evidence is the worse failure.
+  static Set<String> rejectionPhotoKinds({
+    required bool labellingPart,
+    required bool qualityPart,
+  }) {
+    final servesBoth = !labellingPart && !qualityPart;
+    return <String>{
+      if (qualityPart || servesBoth) ...['egg', 'deviation'],
+      if (labellingPart || servesBoth) 'label',
+    };
+  }
+
   /// The size band a mass falls into, or null when it falls outside every
   /// band. Null is a real answer — an egg lighter than the smallest band is
   /// not "Small", it is unclassified, and forcing it into a band would
@@ -282,6 +311,40 @@ abstract final class EggRules {
   /// Required as soon as one deviation exceeds its tolerance.
   /// [countsByDeviationId] is how many eggs in the sample showed each
   /// deviation.
+  /// The deviations counted past what the Agency allows for a consignment
+  /// declared [sizeId] and [gradeId] — the reasons a sample fails the
+  /// standard it is sold as, in deviation order. [allowed] is the most the
+  /// band permits, or null where the table has no band (none allowed).
+  static List<({int deviationId, int count, int? allowed})> overLimit({
+    required Map<int, int> countsByDeviationId,
+    required int sizeId,
+    required int gradeId,
+    required Iterable<DeviationTolerance> tolerances,
+  }) {
+    final rules = tolerances.toList(growable: false);
+    final ids = countsByDeviationId.keys.toList()..sort();
+    return [
+      for (final id in ids)
+        if (!isDeviationPermissible(
+          deviationId: id,
+          count: countsByDeviationId[id]!,
+          sizeId: sizeId,
+          gradeId: gradeId,
+          tolerances: rules,
+        ))
+          (
+            deviationId: id,
+            count: countsByDeviationId[id]!,
+            allowed: toleranceFor(
+              deviationId: id,
+              sizeId: sizeId,
+              gradeId: gradeId,
+              tolerances: rules,
+            )?.maximum,
+          ),
+    ];
+  }
+
   static bool isQualityDirectionRequired({
     required Map<int, int> countsByDeviationId,
     required int sizeId,
@@ -323,6 +386,92 @@ abstract final class EggRules {
 
   /// Both parts of the direction decision for a finished inspection.
   ///
+  // ------------------------------------------------------------------
+  // R.345 Table 4 item 12 and regulation 5 (Ethan, 2026-09-29): the grade a
+  // consignment actually meets.
+  // ------------------------------------------------------------------
+
+  /// Item 6 of Table 4 — Haugh values not more than five units under the
+  /// minimum — which item 12's total leaves out.
+  static bool isTable4Item6(DeviationRef d) =>
+      d.description == _haughWithinDescription ||
+      d.description == _pasteurisedWithinDescription;
+
+  /// How many sampled eggs carry a defect counted by item 12: any deviation
+  /// but item 6's.
+  static int defectiveEggs(
+    Iterable<Set<int>> deviationIdsPerEgg,
+    List<DeviationRef> deviations,
+  ) {
+    final excluded = {for (final d in deviations) if (isTable4Item6(d)) d.id};
+    return deviationIdsPerEgg
+        .where((ids) => ids.any((id) => !excluded.contains(id)))
+        .length;
+  }
+
+  /// Table 4 item 12, "Total number of eggs with defects, excluding defects
+  /// mentioned under item 6": 10% for Grade 1, 20% for Grade 2, not
+  /// specified for Grade 3 — as a number of eggs by Table 5, whose columns
+  /// are a sample of 60 eggs and more, and one of fewer. Null where there is
+  /// no limit.
+  static int? totalDefectsAllowed({
+    required String gradeName,
+    required int sampleSize,
+  }) {
+    final sixtyOrMore = sampleSize >= 60;
+    return switch (gradeName) {
+      'Grade 1' => sixtyOrMore ? 6 : 3,
+      'Grade 2' => sixtyOrMore ? 12 : 6,
+      _ => null,
+    };
+  }
+
+  /// Whether item 12's total is exceeded for [gradeName].
+  static bool totalDefectsExceeded({
+    required int defectiveEggs,
+    required String gradeName,
+    required int sampleSize,
+  }) {
+    final allowed =
+        totalDefectsAllowed(gradeName: gradeName, sampleSize: sampleSize);
+    return allowed != null && defectiveEggs > allowed;
+  }
+
+  /// The consignment's grade, as regulation 5 decides it: Grade 1 when every
+  /// Grade 1 limit is met — each defect within Table 4 as Table 5 counts it,
+  /// and item 12's total — otherwise Grade 2 on Grade 2's limits, otherwise
+  /// Grade 3 on Grade 3's. Null when not even Grade 3 is met: such eggs may
+  /// not be presented for sale (regulation 4(2)).
+  static EggGradeRef? consignmentGradeFor({
+    required Map<int, int> countsByDeviationId,
+    required int defectiveEggs,
+    required int sampleSize,
+    required int sizeId,
+    required List<EggGradeRef> grades,
+    required Iterable<DeviationTolerance> tolerances,
+  }) {
+    final rules = tolerances.toList(growable: false);
+    final ranked = [
+      for (final g in grades)
+        if (RegExp(r'^Grade [123]$').hasMatch(g.name)) g,
+    ]..sort((a, b) => a.rank.compareTo(b.rank));
+    for (final grade in ranked) {
+      final withinEach = !isQualityDirectionRequired(
+        countsByDeviationId: countsByDeviationId,
+        sizeId: sizeId,
+        gradeId: grade.id,
+        tolerances: rules,
+      );
+      final withinTotal = !totalDefectsExceeded(
+        defectiveEggs: defectiveEggs,
+        gradeName: grade.name,
+        sampleSize: sampleSize,
+      );
+      if (withinEach && withinTotal) return grade;
+    }
+    return null;
+  }
+
   /// The original computes these separately and stores them on one direction
   /// record, each with its own correct-by date.
   static DirectionRequirement directionRequired({
@@ -528,55 +677,66 @@ abstract final class EggRules {
   /// this many.
   static const haughReadingsRequired = 6;
 
-  /// Six additional samples are required when the mean Haugh unit
-  /// of those measured fell below this threshold.
-  static const haughAdditionalSampleThreshold = 70.0;
+  /// Which eggs of the set carry the Haugh reading, chosen for the
+  /// inspector rather than left to them.
+  ///
+  /// Letting the inspector pick invites the easy ones - the first six out
+  /// of the tray, or six that look sound - and six chosen that way are not
+  /// a sample of the consignment. Six drawn at random across the whole set
+  /// are. The count is unchanged: [haughReadingsRequired].
+  ///
+  /// Spread rather than clustered: the set is cut into [count] equal bands
+  /// and one egg is drawn from each, so the readings cover the tray from
+  /// front to back instead of landing together by chance. Returned in
+  /// order, so the inspector works forwards through the tray.
+  ///
+  /// [seed] fixes the draw. The form stores the result on the record, so
+  /// the same eggs are asked for every time it is reopened; the seed is
+  /// only how the first draw is made, and a test can pin it.
+  static List<int> haughSample({
+    required int sampleSize,
+    int count = haughReadingsRequired,
+    required int seed,
+  }) {
+    if (sampleSize <= 0 || count <= 0) return const [];
+    if (sampleSize <= count) {
+      return [for (var i = 1; i <= sampleSize; i++) i];
+    }
+    final random = math.Random(seed);
+    final band = sampleSize / count;
+    final picked = <int>{};
+    for (var i = 0; i < count; i++) {
+      final low = (i * band).floor() + 1;
+      final high = ((i + 1) * band).ceil().clamp(low, sampleSize);
+      final span = high - low + 1;
+      var egg = low + random.nextInt(span);
+      // A band can overlap its neighbour by a rounding of one; step off
+      // rather than return the same egg twice.
+      while (picked.contains(egg)) {
+        egg = egg < sampleSize ? egg + 1 : low;
+      }
+      picked.add(egg);
+    }
+    final out = picked.toList()..sort();
+    return out;
+  }
 
-  /// How many extra eggs are required when the mean falls short.
-  static const haughAdditionalSampleCount = 6;
+  /// The eggs still owed a Haugh reading, of those selected.
+  static List<int> haughOutstanding({
+    required List<int> selected,
+    required Map<int, double?> readings,
+  }) =>
+      [
+        for (final egg in selected)
+          if ((readings[egg] ?? 0) <= 0) egg,
+      ];
 
-  /// Mean Haugh unit across eggs that have one. Null when none were measured —
-  /// not 0, which would trip the "below 70" rule on an unmeasured sample.
+  /// Mean Haugh unit across eggs that have one. Null when none were
+  /// measured — not 0, which would read as the worst possible result.
   static double? meanHaughUnit(Iterable<double?> haughUnits) {
     final measured = haughUnits.whereType<double>().toList();
     if (measured.isEmpty) return null;
     return measured.reduce((a, b) => a + b) / measured.length;
-  }
-
-  /// How many more eggs the Haugh rule requires, or 0 if none.
-  ///
-  /// Message: "The average value of the available Haugh Value samples is below
-  /// 70 HU. An additional six (6) samples is required."
-  ///
-  /// [baselineCount] is how many eggs the inspection held when the mean was
-  /// first seen below the threshold. The requirement is six *more than that* —
-  /// a single escalation that can actually be satisfied.
-  ///
-  /// An earlier version derived the target from the current measured count, so
-  /// every egg added and measured pushed the target six further out and the
-  /// inspection could never be saved. Anchoring on the baseline is what makes
-  /// it terminate.
-  ///
-  /// NOTE: this escalates once. Whether the FSA expects a further six when the
-  /// mean is *still* below 70 after the extra samples is not settled here and
-  /// needs confirming with them.
-  static int additionalSamplesRequired({
-    required Iterable<double?> haughUnits,
-    required int sampledCount,
-    int? baselineCount,
-  }) {
-    final measured = haughUnits.whereType<double>().length;
-    // The original only evaluates the average once the minimum number of
-    // readings exists (`MinHaughMeterReadings`).
-    if (measured < haughMinimumReadings) return 0;
-    final mean = meanHaughUnit(haughUnits);
-    if (mean == null || mean >= haughAdditionalSampleThreshold) return 0;
-
-    // With no baseline recorded, the shortfall is being evaluated for the
-    // first time: the eggs on hand now are the baseline.
-    final baseline = baselineCount ?? sampledCount;
-    final shortfall = (baseline + haughAdditionalSampleCount) - sampledCount;
-    return shortfall > 0 ? shortfall : 0;
   }
 
   // ---------------------------------------------------------------- seizure
@@ -648,7 +808,7 @@ abstract final class EggRules {
   //
   //   Container / outer container (Reg. 6) .... rectify immediately
   //   Size and grade designation (Reg. 10) .... seizure if omitted; 30 days
-  //   Expression "Eggs" (Reg. 8(1)(b)) ......... seizure if omitted; 30 days
+  //   Expression "Eggs" (Reg. 8(1)(b)) ......... seizure (Ethan, 2026-10-03)
   //   Indication of packer (Reg. 11) ........... 30 days
   //   Best before (Reg. 8(1)(f)) ............... seizure if omitted; 30 days
   //   "Oiled" (Reg. 8(1)(g)) ................... 30 days
@@ -659,8 +819,10 @@ abstract final class EggRules {
   //   Species (Reg. 8(1)(e)) ................... 30 days
   //   Size and grade standards (Reg. 3, 5) ..... seizure / rectify at once
   //
-  // Whether "Eggs" or the best-before date was omitted rather than wrong
-  // is the inspector's answer when the row is unticked.
+  // Whether the best-before date was omitted rather than wrong is the
+  // inspector's answer when the row is unticked. The "Eggs" expression row
+  // fails only when the expression is not there, so a failed row is the
+  // seizure, whatever [eggsExpressionAbsent] says (Ethan, 2026-10-03).
   // --------------------------------------------------------------------
 
   static bool isEggsExpressionRow(EggRequirement r) =>
@@ -680,9 +842,7 @@ abstract final class EggRules {
   }) {
     if (r.kind == 'packing') return EggAction.rectifyNow;
     if (isLooseQuantityRow(r)) return EggAction.seizeOrRectifyNow;
-    if (isEggsExpressionRow(r)) {
-      return eggsExpressionAbsent ? EggAction.seize : EggAction.rectify30Days;
-    }
+    if (isEggsExpressionRow(r)) return EggAction.seize;
     if (isBestBeforeRow(r)) {
       return bestBeforeAbsent ? EggAction.seize : EggAction.rectify30Days;
     }

@@ -186,7 +186,7 @@ class _PoultryInspectionSummaryPageState
         _kv('Location', loaded.names['location']),
         _kv('Reason', loaded.names['reason']),
         _kv('Facility address', i.facilityAddress),
-        _kv('Telephone / cellphone', i.facilityTelephone),
+        _kv('Telephone/cellphone', i.facilityTelephone),
         _kv('Company reg.', i.companyRegNumber),
         _kv('Contact person', i.contactPerson),
         _kv('Manager', i.managerName),

@@ -1,3 +1,4 @@
+import '../../../core/data/inspector_name.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -12,6 +13,7 @@ import '../domain/egg_rules.dart';
 import '../../../core/documents/direction_pdf.dart';
 import '../../../core/documents/fsa_checklist_pdf.dart';
 import '../../../core/documents/fsa_documents.dart';
+import '../../../core/documents/fsa_form_pdf.dart';
 import 'egg_weighing_checklist_pdf.dart';
 import '../../visits/domain/facility_type_match.dart';
 import '../../visits/domain/inspection_reason_match.dart';
@@ -469,6 +471,12 @@ class EggsRepository {
                 // from the wording it files against the record.
                 screenLabel: Value(j['screen_label'] as String? ?? ''),
                 regulation: Value(j['regulation'] as String? ?? ''),
+                // Absent on a backend from before the STD column: keep
+                // whatever the handset already holds rather than clearing
+                // it, because this is an upsert that replaces the row.
+                minLetteringHeight: j.containsKey('min_lettering_height')
+                    ? Value(j['min_lettering_height'] as String? ?? '')
+                    : const Value.absent(),
                 sortOrder: Value(j['sort_order'] as int? ?? 0),
                 isActive: Value(j['is_active'] as bool? ?? true),
                 updatedAt: Value(j['updated_at'] as String? ?? ''),
@@ -852,12 +860,25 @@ class EggsRepository {
 
   /// Restricts a query to the signed-in inspector's own rows.
   ///
-  /// `null` owner is deliberately excluded rather than treated as a wildcard.
-  /// The alternative — showing unowned rows to everyone — would quietly
-  /// reintroduce the very leak this scoping exists to close, on exactly the
-  /// rows whose owner is unknown.
+  /// `null` owner — nobody signed in — is deliberately excluded rather than
+  /// treated as a wildcard. The alternative, showing unowned rows to
+  /// everyone, would quietly reintroduce the very leak this scoping exists
+  /// to close, on exactly the rows whose owner is unknown.
+  ///
+  /// The name is compared without regard to case, as the other commodities
+  /// compare theirs. An exact match meant that signing in as "Lwandile2"
+  /// could not see work captured as "lwandile2": the records were skipped by
+  /// every upload pass and, because they were never in the list, no failure
+  /// was ever reported — four egg inspections sat on one handset for five
+  /// days looking sent (Ethan, 2026-10-28). Rows with no owner at all
+  /// predate ownership and go to whoever is signed in, again as the other
+  /// commodities treat them.
   Expression<bool> _ownedBy(GeneratedColumn<String> column, String? owner) =>
-      owner == null ? const Constant(false) : column.equals(owner);
+      owner == null
+          ? const Constant(false)
+          : column.isNull() |
+              column.equals('') |
+              column.lower().equals(owner.toLowerCase());
 
   Future<void> saveDirection(EggDirectionsCompanion direction) async {
     final owner = await currentInspector();
@@ -880,6 +901,18 @@ class EggsRepository {
           ]))
         .get();
   }
+
+  /// Every direction on this handset, for the upload pass alone. As
+  /// [inspectionsForUpload]: sending is not a question of who may look.
+  Future<List<EggDirection>> directionsForUpload() =>
+      (database.select(database.eggDirections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.issuedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
 
   Future<int> pendingDirectionCount() async {
     final owner = await currentInspector();
@@ -1025,6 +1058,24 @@ class EggsRepository {
         .get();
   }
 
+  /// Everything on this handset, for the upload pass alone.
+  ///
+  /// Who may *see* a record is a question about this screen; whether a
+  /// finished inspection reaches the server is not. Scoping the upload to
+  /// the signed-in name meant a record captured under any other spelling of
+  /// it was never offered to the server and never counted as a failure, so
+  /// it sat on the handset indefinitely while the app reported all clear.
+  /// Nothing here is shown to anyone — it is read, sent, and marked.
+  Future<List<EggInspection>> inspectionsForUpload() =>
+      (database.select(database.eggInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<int> pendingUploadCount() async {
     final owner = await currentInspector();
     final rows = await (database.select(database.eggInspections)
@@ -1142,6 +1193,33 @@ class EggsRepository {
     final facility = ctx?.facilityName ?? direction.clientName;
     final correctBy = direction.qualityCorrectBy ?? direction.labelCorrectBy;
 
+    // The photographs the notice is about, and only those.
+    //
+    // Up to six quality photographs are taken on the form and NONE of them
+    // reached the rejection: the sheet listed "underweight — 6 of 12 eggs"
+    // with nothing to show for it (Ethan, 2026-10-08). Fixing that by
+    // taking every 'egg' photograph then went too far the other way: a
+    // notice served for a LABELLING deviation went out carrying the
+    // egg-quality shots, which is evidence of something the notice does
+    // not allege, while its own label photograph — the one the form
+    // refuses to let the inspector past without - was left off (Jary
+    // Investments, PR-IND-IND-3647-001, reported 2026-10-11).
+    //
+    // A sheet may carry both parts, and then it carries both sets. A
+    // direction that names neither part is malformed rather than empty, so
+    // it keeps everything rather than losing the evidence.
+    final wantedKinds = EggRules.rejectionPhotoKinds(
+      labellingPart: direction.labellingPart,
+      qualityPart: direction.qualityPart,
+    );
+    final deviationPhotos = i == null
+        ? const <String>[]
+        : [
+            for (final p in await photosFor(i.clientUuid))
+              if (wantedKinds.contains(p.kind) && p.filePath.isNotEmpty)
+                p.filePath,
+          ];
+
     return DirectionPdf.write(
       out: _eggDocumentFile(facility, 'Egg-Rejection', direction.clientUuid,
           into),
@@ -1162,8 +1240,11 @@ class EggsRepository {
       emailAddress: i?.clientEmail ?? '',
       dateOfVisit: i?.inspectedAt ?? direction.issuedAt,
       inspectionReason: '',
-      latestReference: direction.directionNumber,
-      originalReference: '',
+      // Latest Reference No. = inspection number; Original Reference No. =
+      // the rejection (direction) number (Ethan, 2026-10-08). Eggs carry no
+      // separate inspection number yet, so Latest shows N/A until one exists.
+      latestReference: '',
+      originalReference: direction.directionNumber,
       subjectFields: [
         (
           label: 'Producer/Supplier',
@@ -1173,7 +1254,7 @@ class EggsRepository {
         ),
         (label: 'Batch Number', value: i?.batchNumber ?? ''),
         (
-          label: 'Quantity Removed',
+          label: 'Quantity Rejected',
           value: direction.quantityRemoved == null
               ? ''
               : '${direction.quantityRemoved}'
@@ -1185,15 +1266,25 @@ class EggsRepository {
         for (final r in remarks) r.remarkText,
         if (direction.additionalRemarks.trim().isNotEmpty)
           direction.additionalRemarks.trim(),
+        // What the inspector wrote about the non-conformance. It reached
+        // the labelling checklist but not the notice served on the client,
+        // so the client was told what was wrong with the consignment and
+        // not what the inspector had recorded about it. Raw, PMP and
+        // poultry have all carried their comments here from the start;
+        // eggs was the one that did not (Cinga, 2026-10-26).
+        if ((i?.nonConformanceComments ?? '').trim().isNotEmpty)
+          i!.nonConformanceComments.trim(),
       ].join('\n'),
-      inspectorName:
-          ctx?.inspectorName ?? (direction.inspectorUsername ?? ''),
+      inspectorName: ctx?.inspectorName ??
+          await database.inspectorFullName(direction.inspectorUsername ?? ''),
       authorisedPersonName: ctx?.authorisedPersonName ?? direction.clientName,
       inspectorSignaturePath: ctx?.inspectorSignaturePath ?? '',
       authorisedPersonSignaturePath:
           ctx?.authorisedPersonSignaturePath ?? '',
       pleaseNote: 'Failure to rectify by the date above may result in '
-          'further action under the Act.',
+          'further action under the Agricultural Product Standards Act, '
+          'No. 119 of 1990.',
+      photoPaths: deviationPhotos,
     );
   }
 
@@ -1206,8 +1297,16 @@ class EggsRepository {
         .map((s) => int.tryParse(s.trim()))
         .whereType<int>()
         .toSet();
-    // Nothing worked through at all: no ticks, no deviations, no samples.
-    if (samples.isEmpty && failed.isEmpty && !i.outerLabellingAvailable) {
+    // Nothing worked through at all: no ticks, no deviations, no samples —
+    // AND the labelling checklist was never completed. A completed inspection
+    // always gets its labelling checklist, even when every requirement was
+    // met: a clean retail check with no weighing used to produce no document,
+    // so the office saw the inspection on APS with no compliance sheet, the
+    // way every other commodity always sends one (Ethan, 2026-10-06).
+    if (samples.isEmpty &&
+        failed.isEmpty &&
+        !i.outerLabellingAvailable &&
+        !i.labelChecklistComplete) {
       return null;
     }
 
@@ -1235,6 +1334,11 @@ class EggsRepository {
             FsaChecklistRow(
               requirement: r.description,
               regulation: cleanRegulation(r.regulation),
+              // Table 1 of R.345's Annexure, where that table has a line
+              // for the row; "-" where it has none (Neo Noe, 2026-10-19).
+              standard: r.minLetteringHeight.isEmpty
+                  ? '-'
+                  : r.minLetteringHeight,
               deviation:
                   failed.contains(r.id) ? FsaDeviation.yes : FsaDeviation.no,
             ),
@@ -1246,21 +1350,25 @@ class EggsRepository {
     final ctx = await _eggDocumentContext(uuid, i);
     return FsaChecklistPdf.write(
       out: _eggDocumentFile(
-          ctx.facilityName, 'Egg-Labeling-Checklist', uuid, into),
+          ctx.facilityName, 'Egg-Labelling-Checklist', uuid, into),
       control: FsaDocuments.eggLabelling,
       facilityName: ctx.facilityName,
       leftFields: [
-        (label: 'Date of Inspection:', value: _ymd(i.inspectedAt)),
+        (label: 'Date of Inspection:', value: fsaDateLong(i.inspectedAt)),
         (label: 'Facility Name:', value: ctx.facilityName),
         (label: 'Site Representative:', value: ctx.representative),
-        (label: 'Tray Packaging Size', value: ctx.traySize),
+        // The size was nowhere on this report, so an Extra Large check and
+        // a Medium one read identically apart from the tray count
+        // (Ethan, 2026-10-23).
+        (label: 'Egg Size/Class', value: ctx.declaredSize),
+        (label: 'Tray Packaging Size', value: _trayNumber(ctx.traySize)),
       ],
       rightFields: [
         (label: 'Producer/Supplier', value: i.producerSupplier),
         (label: 'Batch Number', value: i.batchNumber),
         (
           label: 'Best Before Date',
-          value: i.bestBefore == null ? '' : _ymd(i.bestBefore!)
+          value: i.bestBefore == null ? '' : fsaDateLong(i.bestBefore!)
         ),
         (label: 'Type of Facility', value: ctx.facilityType),
       ],
@@ -1274,7 +1382,7 @@ class EggsRepository {
       ],
       inspectorSignaturePath: ctx.inspectorSignaturePath,
       authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
-      documentTitle: 'Egg Labeling Checklist',
+      documentTitle: 'Egg Labelling Checklist',
     );
   }
 
@@ -1344,15 +1452,9 @@ class EggsRepository {
     final facility = inspection.facilityName.isNotEmpty
         ? inspection.facilityName
         : inspection.clientName;
-    final dir = into ?? Directory.systemTemp;
-    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
-    final slug = facility
-        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
-        .replaceAll(RegExp(r'-+'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
 
     return EggWeighingChecklistPdf.write(
-      out: File('${dir.path}/FSA-$slug-Egg-Weighing-Checklist-$short.pdf'),
+      out: _eggDocumentFile(facility, 'Egg-Weighing-Checklist', uuid, into),
       facilityName: facility,
       facilityAddress: inspection.facilityAddress.isNotEmpty
           ? inspection.facilityAddress
@@ -1408,6 +1510,11 @@ class EggsRepository {
         : await (database.select(database.eggTraySizes)
               ..where((t) => t.id.equals(i.traySizeId!)))
             .getSingleOrNull();
+    final size = i.declaredSizeId == null
+        ? null
+        : await (database.select(database.eggSizes)
+              ..where((t) => t.id.equals(i.declaredSizeId!)))
+            .getSingleOrNull();
     final facilityType = i.facilityTypeId == null
         ? null
         : await (database.select(database.eggFacilityTypes)
@@ -1429,6 +1536,7 @@ class EggsRepository {
     final full =
         user == null ? '' : '${user.firstName} ${user.lastName}'.trim();
     return _EggDocumentContext(
+      declaredSize: size?.name ?? '',
       facilityName: i.facilityName.isNotEmpty ? i.facilityName : i.clientName,
       facilityAddress:
           i.facilityAddress.isNotEmpty ? i.facilityAddress : i.clientAddress,
@@ -1449,23 +1557,32 @@ class EggsRepository {
   }
 
   File _eggDocumentFile(
-      String facility, String kind, String uuid, Directory? into) {
+      String facility, String kind, String uuid, Directory? into,
+      {String product = 'Eggs'}) {
     final dir = into ?? Directory.systemTemp;
-    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
-    final slug = facility
-        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
-        .replaceAll(RegExp(r'-+'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
-    return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
+    return File('${dir.path}/${FsaForm.documentFileName(
+      facility: facility,
+      kind: kind,
+      record: uuid,
+      product: product,
+    )}');
   }
 
-  static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
-      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+  // All document dates read the one way — "1 September 2026" (Ethan,
+  // 2026-10-08). Kept as named helpers so existing call sites are unchanged.
+  static String _dmy(DateTime d) => fsaDateLong(d);
 
-  /// The sheets date themselves the office system's way round.
-  static String _ymd(DateTime d) => '${d.year}/'
-      '${d.month.toString().padLeft(2, '0')}/'
-      '${d.day.toString().padLeft(2, '0')}';
+  static String _ymd(DateTime d) => fsaDateLong(d);
+
+  /// The tray size as just its number for the report — "12-Pack" -> "12"
+  /// (Ethan, 2026-10-08). A non-numeric value (e.g. "Loose") is kept as is.
+  static String _trayNumber(String s) {
+    final stripped = s
+        .trim()
+        .replaceAll(RegExp(r'[\s-]*pack\s*$', caseSensitive: false), '')
+        .trim();
+    return stripped.isEmpty ? s.trim() : stripped;
+  }
 
   Future<List<EggSample>> samplesFor(String uuid) =>
       (database.select(database.eggSamples)
@@ -1814,9 +1931,19 @@ class EggsRepository {
   /// The direction this inspection raised, if it raised one. Read back on
   /// the record's own page: what was served on the client belongs with the
   /// inspection that found it.
+  ///
+  /// The newest, should a record carry more than one: the Rejection Form
+  /// used to mint a fresh rejection every time it was opened, and a lookup
+  /// that expected one threw "Too many elements" — which stopped the whole
+  /// grouped inspection going up (Ethan, 2026-10-02).
   Future<EggDirection?> directionForInspection(String inspectionUuid) =>
       (database.select(database.eggDirections)
-            ..where((t) => t.inspectionUuid.equals(inspectionUuid)))
+            ..where((t) => t.inspectionUuid.equals(inspectionUuid))
+            ..orderBy([
+              (t) => OrderingTerm(
+                  expression: t.updatedAt, mode: OrderingMode.desc),
+            ])
+            ..limit(1))
           .getSingleOrNull();
 
   /// How many eggs in this inspection carry each deviation.
@@ -2164,6 +2291,9 @@ class EggsRepository {
   /// off (Ethan, 2026-09-24).
   static const fileUploadTimeout = Duration(minutes: 5);
 
+  /// What the server keeps of a photo caption (`EggPhoto.caption`).
+  static const maxCaptionLength = 200;
+
   Future<void> uploadAttachments(
     String inspectionUuid, {
     required String token,
@@ -2172,20 +2302,34 @@ class EggsRepository {
       if (photo.isUploaded) continue;
       final file = File(photo.filePath);
       if (!file.existsSync()) continue;
+      if (file.lengthSync() == 0) {
+        // Nothing to send: the camera left an empty file. The server
+        // refuses it on every pass, so the row goes rather than failing
+        // the sync for ever (Ethan, 2026-10-02).
+        await deletePhoto(photo.id);
+        continue;
+      }
+      // The server keeps 200 characters of caption; a deviation photo's
+      // caption lists every deviation on the egg and ran past that, and
+      // the photo was refused on every sync (Ethan, 2026-10-02).
+      final caption = photo.caption.length > maxCaptionLength
+          ? photo.caption.substring(0, maxCaptionLength)
+          : photo.caption;
       final request = http.MultipartRequest(
         'POST',
         Uri.parse('$baseUrl/api/eggs/inspections/$inspectionUuid/photos/'),
       )
         ..headers['Authorization'] = 'Bearer $token'
         ..fields['kind'] = photo.kind
-        ..fields['caption'] = photo.caption
+        ..fields['caption'] = caption
         // When the photograph was taken, not when it happened to upload. A
         // record synced days later would otherwise carry no capture time at
         // all, since the column is nullable server-side.
         ..fields['captured_at'] = photo.capturedAt.toUtc().toIso8601String()
         ..files.add(await http.MultipartFile.fromPath('image', photo.filePath,
             filename: 'photo_${photo.kind}.jpg'));
-      final photoResponse = await request.send().timeout(fileUploadTimeout);
+      final photoResponse =
+          await _client.send(request).timeout(fileUploadTimeout);
       if (photoResponse.statusCode == 201 || photoResponse.statusCode == 200) {
         await (database.update(database.eggPhotos)
               ..where((t) => t.id.equals(photo.id)))
@@ -2216,7 +2360,8 @@ class EggsRepository {
               filename: 'signature_${signature.role}.png'),
         );
       }
-      final signatureResponse = await request.send().timeout(fileUploadTimeout);
+      final signatureResponse =
+          await _client.send(request).timeout(fileUploadTimeout);
       if (signatureResponse.statusCode == 201 ||
           signatureResponse.statusCode == 200) {
         await (database.update(database.eggSignatures)
@@ -2799,6 +2944,7 @@ class _EggDocumentContext {
     required this.facilityAddress,
     required this.facilityType,
     required this.traySize,
+    required this.declaredSize,
     required this.representative,
     required this.inspectorName,
     required this.authorisedPersonName,
@@ -2811,6 +2957,11 @@ class _EggDocumentContext {
   final String facilityAddress;
   final String facilityType;
   final String traySize;
+
+  /// The size the consignment is sold as - Medium, Large, Extra Large,
+  /// Jumbo. Every weight on the record is judged against this size's
+  /// minimum mass, so the report has to say which one it was.
+  final String declaredSize;
   final String representative;
   final String inspectorName;
   final String authorisedPersonName;

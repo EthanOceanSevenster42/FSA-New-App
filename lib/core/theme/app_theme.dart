@@ -114,9 +114,10 @@ abstract final class AppColors {
   ///
   /// An occurrence is not an inspection — nothing was graded and nothing is
   /// billed — so the document and the report that makes it are marked out
-  /// from the teal the inspection flow uses. White on it measures 4.6:1.
-  static const brandOrange = Color(0xFFB35309);
-  static const brandOrangePressed = Color(0xFF8C4107);
+  /// from the teal the inspection flow uses. A plain orange (Ethan,
+  /// 2026-10-01): the burnt shade it was read as brown.
+  static const brandOrange = Color(0xFFF57C00);
+  static const brandOrangePressed = Color(0xFFE65100);
 
   /// The exact red of the Food Safety Agency logo, sampled from
   /// foodsafetyagency.co.za's own artwork.

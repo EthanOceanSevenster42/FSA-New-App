@@ -1,3 +1,4 @@
+import '../../rawrmp/domain/composition_checklist.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,7 @@ import '../../eggs/data/eggs_repository.dart';
 import '../../eggs/domain/egg_rules.dart';
 import '../../pmp/data/pmp_repository.dart';
 import '../../poultry/data/poultry_repository.dart';
+import '../../poultry/domain/label_grading.dart';
 import '../../poultry/domain/quid_determination.dart';
 import '../../poultry/domain/quid_flow.dart';
 import '../../rawrmp/data/rawrmp_repository.dart';
@@ -61,6 +63,24 @@ class _Evidence {
   final List<String> paths;
 }
 
+/// What came of asking the server to delete a visit.
+enum VisitDeleteResult {
+  /// The server removed it — and, with it, the office's copy in APS.
+  removed,
+
+  /// The server holds no such visit, so there is nothing of it at the
+  /// office: the handset's own copy can be removed on its own.
+  notOnServer,
+
+  /// The server could not be reached. Nothing was deleted anywhere; the
+  /// handset keeps the visit so the office's copy is not left behind.
+  offline,
+
+  /// The server was reached but would not delete it (APS unreachable, or it
+  /// refused). Nothing was deleted; worth another try.
+  failed,
+}
+
 /// Owns the store-visit records and the closing-signature fan-out.
 ///
 /// The fan-out writes directly into the egg and poultry signature tables —
@@ -71,7 +91,20 @@ class VisitRepository {
 
   /// Marks a visit brought down from the server rather than captured here.
   static const _fromServerPrefix = 'visits.fromServer.';
-  static const localRetention = Duration(days: 3);
+  /// How long a synced visit stays on the handset once the server has it:
+  /// **two weeks**, then it and its images are cleared (Ethan, 2026-10-23;
+  /// was five days from 2026-10-03).
+  ///
+  /// Five days was too short in practice. An inspector who needs to look
+  /// back at a visit — a client querying an invoice, a follow-up due, a
+  /// correction to make through Inspection Management — found it already
+  /// gone from the tablet. Two weeks covers a fortnight's round and the
+  /// usual lag before a query comes back.
+  ///
+  /// This also sets how far back [pullFromServer] asks for, so the tablet
+  /// shows the same two weeks the office holds rather than a shorter
+  /// window than it keeps.
+  static const localRetention = Duration(days: 14);
 
   VisitRepository(this.database, {this.baseUrl = '', http.Client? client})
       : _client = client ?? http.Client();
@@ -129,6 +162,22 @@ class VisitRepository {
   Future<bool> isFromServer(String visitUuid) async =>
       await database.readSyncState('$_fromServerPrefix$visitUuid') == '1';
 
+  /// Which of [visitUuids] came down from the server, in one query rather
+  /// than one per visit (Ethan, 2026-10-08).
+  Future<Set<String>> fromServerAmong(Iterable<String> visitUuids) async {
+    final ids = visitUuids.toSet();
+    if (ids.isEmpty) return const {};
+    final keys = [for (final id in ids) '$_fromServerPrefix$id'];
+    final rows = await (database.select(database.syncState)
+          ..where((t) => t.key.isIn(keys)))
+        .get();
+    return {
+      for (final row in rows)
+        if (row.value == '1')
+          row.key.substring(_fromServerPrefix.length),
+    };
+  }
+
   /// Brings the inspector's recent visits down from the server, seizures
   /// included, so Inspection Management shows what the office holds and
   /// not only what this tablet captured (Ethan, 2026-09-29).
@@ -137,7 +186,8 @@ class VisitRepository {
   /// visit the tidy-up has already cleared is not brought back. A visit
   /// captured on this tablet is never replaced: the tablet's copy is the
   /// full record. Returns how many visits were new here.
-  Future<int> pullFromServer({required String token}) async {
+  Future<int> pullFromServer(
+      {required String token, String owner = ''}) async {
     if (baseUrl.isEmpty) return 0;
     final response = await _client.get(
       Uri.parse('$baseUrl/api/visits/mine/?detail=1'
@@ -161,14 +211,14 @@ class VisitRepository {
             ..where((t) => t.uuid.equals(uuid)))
           .getSingleOrNull();
       if (local != null && !await isFromServer(uuid)) continue;
-      await _storeFromServer(v, local);
+      await _storeFromServer(v, local, owner: owner);
       if (local == null) added++;
     }
     return added;
   }
 
-  Future<void> _storeFromServer(
-      Map<String, Object?> v, StoreVisit? local) async {
+  Future<void> _storeFromServer(Map<String, Object?> v, StoreVisit? local,
+      {String owner = ''}) async {
     String text(String key) => '${v[key] ?? ''}';
     DateTime? when(Object? value) =>
         value == null ? null : DateTime.tryParse('$value')?.toLocal();
@@ -192,6 +242,11 @@ class VisitRepository {
       await database.into(database.storeVisits).insertOnConflictUpdate(
             StoreVisitsCompanion.insert(
               uuid: uuid,
+              // Whose it is: the inspector whose sign-in fetched it — the
+              // server sends only theirs — so it shows to them alone on a
+              // shared handset (Ethan, 2026-10-02).
+              inspectorUsername:
+                  Value(owner.isNotEmpty ? owner : text('inspector_name')),
               startedAt: started,
               completedAt: Value(completed),
               facilityName: Value(text('facility_name')),
@@ -203,6 +258,8 @@ class VisitRepository {
               managerName: Value(text('manager_name')),
               managerEmail: Value(text('manager_email')),
               facilityType: Value(text('facility_type')),
+              travelStart: Value(text('travel_start')),
+              travelEnd: Value(text('travel_end')),
               isOccurrenceReport: Value(v['is_occurrence_report'] == true),
               isUploaded: const Value(true),
               approvedAt: keepLocalApproval
@@ -367,6 +424,29 @@ class VisitRepository {
     return true;
   }
 
+  /// Asks the server to delete a signed-off visit, taking the office's copy
+  /// in APS with it. Nothing is removed from the handset here — the caller
+  /// does that only when the office has let go of it, so a visit is never
+  /// dropped from the tablet while the office still holds it.
+  Future<VisitDeleteResult> deleteOnServer(String visitUuid,
+      {required String token}) async {
+    if (baseUrl.isEmpty) return VisitDeleteResult.offline;
+    final http.Response response;
+    try {
+      response = await _client.delete(
+        Uri.parse('$baseUrl/api/visits/$visitUuid/'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 30));
+    } on Object {
+      return VisitDeleteResult.offline;
+    }
+    if (response.statusCode == 200) return VisitDeleteResult.removed;
+    // The server holds no such visit (it only ever lived on this handset, or
+    // was already removed): safe to clear the local copy on its own.
+    if (response.statusCode == 404) return VisitDeleteResult.notOnServer;
+    return VisitDeleteResult.failed;
+  }
+
   /// Sends every approval still waiting; returns how many went.
   Future<int> sendPendingApprovals({required String token}) async {
     var sent = 0;
@@ -392,6 +472,30 @@ class VisitRepository {
             ..where((t) => t.uuid.equals(visitUuid)))
           .write(const StoreVisitsCompanion(isUploaded: Value(false)));
 
+  /// Puts every finished visit still on this device back in front of the
+  /// sync, changed or not.
+  ///
+  /// Signing in re-sends the lot. A record the office never received, or
+  /// received from an older build that left something out of the documents,
+  /// is put right without anyone having to spot it first — an egg rejection
+  /// went up with none of its six deviation photographs and nothing said so
+  /// (Ethan, 2026-10-08).
+  ///
+  /// Safe to repeat: the server clears the inspection's folder for each
+  /// category before saving the batch, so the documents are replaced rather
+  /// than filed a second time. Bounded by [localRetention] — only what the
+  /// device still holds goes up.
+  Future<int> markAllForResend() async {
+    final rows = await (database.select(database.storeVisits)
+          ..where((t) => t.completedAt.isNotNull() & t.isUploaded.equals(true)))
+        .get();
+    if (rows.isEmpty) return 0;
+    await (database.update(database.storeVisits)
+          ..where((t) => t.completedAt.isNotNull() & t.isUploaded.equals(true)))
+        .write(const StoreVisitsCompanion(isUploaded: Value(false)));
+    return rows.length;
+  }
+
   /// Puts a corrected record back into the state the group is in.
   ///
   /// The capture forms leave a finished member as `ready`, because inside a
@@ -415,6 +519,11 @@ class VisitRepository {
               ..where((t) => t.clientUuid.equals(member.uuid)))
             .write(const PoultryLabelInspectionsCompanion(
                 status: Value(submitted)));
+        await (database.update(database.poultryInspections)
+              ..where((t) =>
+                  t.clientUuid.equals(gradingUuidForLabel(member.uuid)) &
+                  t.status.equals('ready')))
+            .write(const PoultryInspectionsCompanion(status: Value(submitted)));
       case 'pmp':
         await (database.update(database.pmpInspections)
               ..where((t) => t.clientUuid.equals(member.uuid)))
@@ -429,6 +538,21 @@ class VisitRepository {
             .write(const PoultryQuidInspectionsCompanion(
                 status: Value(submitted)));
     }
+  }
+
+  /// The member kinds whose inspections are not billed through the Request
+  /// for Invoice: eggs and poultry, poultry's label checklist and QUID
+  /// determination included.
+  static const rfiLocalKinds = {'egg', 'poultry', 'poultry_label', 'quid'};
+
+  /// Whether this visit's Request for Invoice stays on the handset (Ethan,
+  /// 2026-09-29): a visit of only egg and poultry inspections still has its
+  /// RFI drawn up and kept here, but it is not sent to the office, so it
+  /// never reaches the web folder documents are sent out from. A visit that
+  /// also holds a meat inspection sends it as before.
+  Future<bool> rfiStaysOnHandset(String visitUuid) async {
+    final kinds = [for (final m in await members(visitUuid)) m.kind];
+    return kinds.isNotEmpty && kinds.every(rfiLocalKinds.contains);
   }
 
   /// Sends one signed-off group, with its Request for Invoice.
@@ -446,6 +570,8 @@ class VisitRepository {
     File? invoicePdf,
     double kilometres = 0,
     double hours = 0,
+    String inspectionStart = '',
+    String inspectionEnd = '',
   }) async {
     if (baseUrl.isEmpty) return false;
     final members = await this.members(visit.uuid);
@@ -457,7 +583,7 @@ class VisitRepository {
         'kind': member.kind,
         'client_uuid': member.uuid,
         'product_name': await _productName(member),
-        'product_class': await _productClass(member),
+        'product_class': await productClassFor(member),
         'is_sample_taken': await _wasSampled(member),
         // What the sample was sent for. APS prints the laboratory and the
         // tests beside the product, and until now the office had to open
@@ -493,8 +619,19 @@ class VisitRepository {
       'occurrence_time_of_visit': visit.occurrenceTimeOfVisit,
       'occurrence_registration_code': visit.occurrenceRegistrationCode,
       'occurrence_description': visit.occurrenceDescription,
+      // Travel start and end, HH:mm (Ethan, 2026-10-02). Left out when a
+      // visit from before they were asked has none: the server's time
+      // field takes a time or nothing, not an empty string.
+      if (visit.travelStart.isNotEmpty) 'travel_start': visit.travelStart,
+      if (visit.travelEnd.isNotEmpty) 'travel_end': visit.travelEnd,
       'kilometres': '$kilometres',
+      // What is billed: a minimum of one hour, then half-hour segments.
       'hours': '$hours',
+      // What was actually worked, so the office keeps the real duration
+      // alongside the billed one. The two differ by design -- a 20-minute
+      // egg check bills an hour (Ethan, 2026-10-12).
+      if (inspectionStart.isNotEmpty) 'inspection_start': inspectionStart,
+      if (inspectionEnd.isNotEmpty) 'inspection_end': inspectionEnd,
       'started_at': visit.startedAt.toUtc().toIso8601String(),
       if (visit.completedAt != null)
         'completed_at': visit.completedAt!.toUtc().toIso8601String(),
@@ -516,6 +653,11 @@ class VisitRepository {
     // handset means the only copy of the evidence is on a device in a van.
     final documents = <Map<String, String>>[];
     for (final member in members) {
+      // The member's product, sent with each of its documents so the office
+      // files every sheet under its own inspection — a visit with two of the
+      // same commodity (two raw products, say) would otherwise file both under
+      // the first (Ethan, 2026-10-06).
+      final productName = await _productName(member);
       for (final document in await _documentsFor(member)) {
         request.files.add(await http.MultipartFile.fromPath(
           'documents',
@@ -524,6 +666,7 @@ class VisitRepository {
         ));
         documents.add({
           'commodity': member.kind,
+          'product_name': productName,
           'document_type': document.type,
           'filename': document.filename,
         });
@@ -662,7 +805,20 @@ class VisitRepository {
             row.productItem.isNotEmpty ? row.productItem : row.newProductItem;
         return name.isEmpty ? 'Processed Meat Products' : name;
       case 'egg':
-        return 'Eggs';
+        // "Extra Large Eggs 30" rather than a bare "Eggs". The size the
+        // consignment is sold as is the whole point of an egg inspection,
+        // and without it the APS record, the document filename and the
+        // folder the documents file under all read the same for every egg
+        // check at a facility (Ethan, 2026-10-23).
+        final egg = await (database.select(database.eggInspections)
+              ..where((t) => t.clientUuid.equals(member.uuid)))
+            .getSingleOrNull();
+        if (egg == null) return 'Eggs';
+        final eggSize = await _nameOf('egg_sizes', egg.declaredSizeId);
+        final tray = trayCount(await _nameOf('egg_tray_sizes', egg.traySizeId));
+        return [eggSize, 'Eggs', tray]
+            .where((part) => part.isNotEmpty)
+            .join(' ');
       case 'poultry_label':
         return 'Label/Container';
       case 'quid':
@@ -672,9 +828,11 @@ class VisitRepository {
     }
   }
 
-  /// APS prints a class beside each product and the handset has no such
-  /// field, so it sends a short sentence describing what was inspected.
-  Future<String> _productClass(VisitMember member) async {
+  /// APS prints a class beside each product. A raw or processed meat record
+  /// carries the class the inspector picked from APS's own list (Ethan,
+  /// 2026-10-04); the other commodities have no such field, so they send a
+  /// short sentence describing what was inspected.
+  Future<String> productClassFor(VisitMember member) async {
     switch (member.kind) {
       case 'egg':
         final row = await (database.select(database.eggInspections)
@@ -704,6 +862,9 @@ class VisitRepository {
         final row = await (database.select(database.rawRmpInspections)
               ..where((t) => t.clientUuid.equals(member.uuid)))
             .getSingleOrNull();
+        if (row != null && row.productClass.trim().isNotEmpty) {
+          return row.productClass.trim();
+        }
         final storage = row == null
             ? ''
             : await _nameOf('raw_rmp_storage_types', row.storageTypeId);
@@ -714,6 +875,9 @@ class VisitRepository {
         final row = await (database.select(database.pmpInspections)
               ..where((t) => t.clientUuid.equals(member.uuid)))
             .getSingleOrNull();
+        if (row != null && row.productClass.trim().isNotEmpty) {
+          return row.productClass.trim();
+        }
         final storage = row == null
             ? ''
             : await _nameOf('pmp_storage_types', row.storageTypeId);
@@ -907,7 +1071,13 @@ class VisitRepository {
             for (final r in requirements)
               if (!failed.contains(r.id)) r.id,
           },
-          checklistWorked: samples.isNotEmpty || failed.isNotEmpty,
+          // Finishing the inspection is the evidence it was worked. Before
+          // this, a clean check with nothing weighed looked identical to a
+          // checklist nobody opened, so it recorded no verdict — two thirds
+          // of every egg inspection reached the office with neither a pass
+          // nor a fail against it (Ethan, 2026-11-02).
+          checklistWorked:
+              samples.isNotEmpty || failed.isNotEmpty || row.status != 'draft',
           extraFindings: extra,
         );
       case 'poultry':
@@ -950,7 +1120,13 @@ class VisitRepository {
             ],
           },
           compliantIds: compliantIds,
-          checklistWorked: compliantIds.isNotEmpty,
+          // As with eggs: a finished record was worked through, whether or
+          // not anything was ticked on it. Judging "worked" by the presence
+          // of ticks meant a grading sheet with nothing to note produced no
+          // verdict at all.
+          checklistWorked: compliantIds.isNotEmpty ||
+              (grading != null && grading.status != 'draft') ||
+              (label != null && label.status != 'draft'),
         );
       case 'quid':
         // QUID is measured, not ticked, so it cannot go through the
@@ -1034,23 +1210,30 @@ class VisitRepository {
   }
 
   /// Whether a direction was served off the back of this inspection.
+  ///
+  /// Any direction, not exactly one: a record the Rejection Form was opened
+  /// on twice carried two, and asking for a single row threw "Too many
+  /// elements" — which stopped the whole group going up (Ethan, 2026-10-02).
   Future<bool> _raisedDirectionFor(VisitMember member) async {
     switch (member.kind) {
       case 'rawrmp':
-        return await (database.select(database.rawRmpDirections)
-                  ..where((t) => t.sourceInspectionUuid.equals(member.uuid)))
-                .getSingleOrNull() !=
-            null;
+        return (await (database.select(database.rawRmpDirections)
+                  ..where((t) => t.sourceInspectionUuid.equals(member.uuid))
+                  ..limit(1))
+                .get())
+            .isNotEmpty;
       case 'pmp':
-        return await (database.select(database.pmpDirections)
-                  ..where((t) => t.sourceInspectionUuid.equals(member.uuid)))
-                .getSingleOrNull() !=
-            null;
+        return (await (database.select(database.pmpDirections)
+                  ..where((t) => t.sourceInspectionUuid.equals(member.uuid))
+                  ..limit(1))
+                .get())
+            .isNotEmpty;
       case 'egg':
-        return await (database.select(database.eggDirections)
-                  ..where((t) => t.inspectionUuid.equals(member.uuid)))
-                .getSingleOrNull() !=
-            null;
+        return (await (database.select(database.eggDirections)
+                  ..where((t) => t.inspectionUuid.equals(member.uuid))
+                  ..limit(1))
+                .get())
+            .isNotEmpty;
       case 'quid':
         // The rejection lives on the determination itself rather than in
         // a directions table: it is raised when the weighing ends in one.
@@ -1059,10 +1242,11 @@ class VisitRepository {
             .getSingleOrNull();
         return row?.directionRequired ?? false;
       default:
-        return await (database.select(database.poultryDirections)
-                  ..where((t) => t.clientUuid.equals(member.uuid)))
-                .getSingleOrNull() !=
-            null;
+        return (await (database.select(database.poultryDirections)
+                  ..where((t) => t.clientUuid.equals(member.uuid))
+                  ..limit(1))
+                .get())
+            .isNotEmpty;
     }
   }
 
@@ -1183,20 +1367,23 @@ class VisitRepository {
         // A QUID member used to fall through to the default and send the
         // office no sheet at all, only figures.
         final repository = PoultryRepository(database: database, baseUrl: '');
-        wanted.addAll([
-          (
+        // One report per injector (Ethan, 2026-10-05).
+        for (final inj in await repository.quidReportInjectors(member.uuid)) {
+          wanted.add((
             type: 'compliance',
-            build: () =>
-                repository.buildQuidChecklist(member.uuid, into: folder)
-          ),
-          // The rejection the weighing ended in, as served on the facility.
-          // Null while there is none.
-          (
-            type: 'direction',
-            build: () =>
-                repository.buildQuidRejection(member.uuid, into: folder)
-          ),
-        ]);
+            build: () => repository.buildQuidChecklist(member.uuid,
+                into: folder,
+                injectorPosition: inj.position,
+                onlyThisInjector: true),
+          ));
+        }
+        // The rejection the weighing ended in, as served on the facility.
+        // Null while there is none.
+        wanted.add((
+          type: 'direction',
+          build: () =>
+              repository.buildQuidRejection(member.uuid, into: folder),
+        ));
       case 'poultry':
       case 'poultry_label':
         final repository = PoultryRepository(database: database, baseUrl: '');
@@ -1222,8 +1409,13 @@ class VisitRepository {
     }
 
     // The seizure served off this record, when one was: FSA-SOP-APS-001
-    // Annexure E, the same sheet whatever the commodity, so it travels with
-    // the visit like the rejection does and is filed beside it.
+    // Annexure E, the same sheet whatever the commodity. It takes the
+    // rejection's place — a record ends in one or the other, never both
+    // (Ethan, 2026-09-30).
+    if (await SeizureRepository(database: database).forRecord(member.uuid) !=
+        null) {
+      wanted.removeWhere((d) => d.type == 'direction');
+    }
     wanted.add((
       type: 'seizure',
       build: () => SeizureRepository(database: database)
@@ -1253,8 +1445,21 @@ class VisitRepository {
     int? laboratoryId;
     int? categoryId;
     var categoryIds = '';
+    // The explicit "what is it tested for" flags the inspector now ticks
+    // (Ethan, 2026-10-06), the same set the APS web app asks. OR'd below with
+    // the category-name derivation so records from before the flags still read.
+    var fat = false;
+    var protein = false;
     var calcium = false;
+    var dna = false;
+    // Whether the inspector answered the "what are you testing for"
+    // question at all. A record from before it existed answered nothing,
+    // and only those fall back to reading the category.
+    var anyTestTicked = false;
     var dnaText = '';
+    // The sample number the handset generated and the inspector wrote on the
+    // bag — carried to the office so it can match the bag to the record.
+    var internalSample = '';
     switch (member.kind) {
       case 'rawrmp':
         final row = await (database.select(database.rawRmpInspections)
@@ -1264,14 +1469,29 @@ class VisitRepository {
         laboratoryId = row.laboratoryId;
         categoryId = row.sampleCategoryId;
         categoryIds = row.sampleCategoryIds;
+        fat = row.testFat;
+        protein = row.testProtein;
         calcium = row.calciumTestRequired;
+        dna = row.testDna;
         dnaText = row.dnaSpeciesText;
+        internalSample = row.internalSampleNumber;
+        anyTestTicked = row.testFat ||
+            row.testProtein ||
+            row.testDna ||
+            row.testSoya ||
+            row.testStarch ||
+            row.calciumTestRequired;
       case 'pmp':
         final row = await (database.select(database.pmpInspections)
               ..where((t) => t.clientUuid.equals(member.uuid)))
             .getSingleOrNull();
         if (row == null || !row.isSampled) return const {};
         laboratoryId = row.laboratoryId;
+        fat = row.testFat;
+        protein = row.testProtein;
+        calcium = row.testCalcium;
+        dna = row.testDna;
+        internalSample = row.internalSampleNumber;
       default:
         return const {};
     }
@@ -1291,18 +1511,28 @@ class VisitRepository {
       names.add(await _nameOf('raw_rmp_sample_categories', id));
     }
 
-    // The categories name what the laboratory is asked to determine —
-    // "Category A - Meat (Protein) & Fat Content" and so on — so the flags
-    // are read off the categories rather than asked for twice.
-    final wanted = names.join(' ').toLowerCase();
+    // A record captured before the inspector was asked what the sample is
+    // tested for carries only a category, so the category's name is read
+    // for those. It is NOT OR'd in any more: the names contain the words
+    // themselves — "Category A - Meat (Protein) & Fat Content", and worse
+    // "Category B - Soya Protein & Starch Content" — so a soya sample
+    // reported protein to the office, and a sample the inspector ticked as
+    // fat alone reported protein because the category he left selected
+    // happened to say the word (Kabelo, N1 Factory Clayville, 2026-10-23).
+    final wanted = anyTestTicked ? '' : names.join(' ').toLowerCase();
     return {
       // The office record calls this `laboratory`; sending `lab` meant the
       // name was quietly dropped on arrival.
       'laboratory': laboratory,
-      'fat': wanted.contains('fat'),
-      'protein': wanted.contains('protein'),
+      'internal_sample_number': internalSample,
+      'fat': fat || wanted.contains('fat'),
+      // "Soya Protein" is not a protein determination, so the fallback
+      // only reads protein off a category that is not the soya one.
+      'protein': protein ||
+          (wanted.contains('protein') && !wanted.contains('soya')),
       'calcium': calcium,
-      'dna': dnaText.trim().isNotEmpty ||
+      'dna': dna ||
+          dnaText.trim().isNotEmpty ||
           wanted.contains('specie') ||
           wanted.contains('dna'),
     };
@@ -1325,6 +1555,16 @@ class VisitRepository {
     }
   }
 
+  /// The number off a tray size: "30-Pack" is thirty eggs, and the word
+  /// "Pack" adds nothing beside the size and the word Eggs.
+  static String trayCount(String name) {
+    final stripped = name
+        .trim()
+        .replaceAll(RegExp(r'[\s-]*pack\s*$', caseSensitive: false), '')
+        .trim();
+    return stripped;
+  }
+
   Future<String> _nameOf(String table, int? id) async {
     if (id == null) return '';
     final rows = await database.customSelect(
@@ -1333,11 +1573,19 @@ class VisitRepository {
     return rows.isEmpty ? '' : (rows.first.data['name'] as String? ?? '');
   }
 
-  Future<List<StoreVisit>> openVisits() =>
-      (database.select(database.storeVisits)
-            ..where((t) => t.completedAt.isNull())
-            ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]))
-          .get();
+  /// Visits still being captured, newest first. With [owner], only that
+  /// inspector's: a shared handset shows each inspector their own work and
+  /// nobody else's (Ethan, 2026-10-02).
+  Future<List<StoreVisit>> openVisits({String? owner}) {
+    final q = database.select(database.storeVisits)
+      ..where((t) => t.completedAt.isNull())
+      ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]);
+    if (owner != null) {
+      q.where((t) =>
+          t.inspectorUsername.lower().equals(owner.trim().toLowerCase()));
+    }
+    return q.get();
+  }
 
   Future<StoreVisit?> byUuid(String uuid) =>
       (database.select(database.storeVisits)..where((t) => t.uuid.equals(uuid)))
@@ -1389,6 +1637,56 @@ class VisitRepository {
     }
     await discard(uuid);
     return true;
+  }
+
+  /// Removes a visit and every inspection captured under it, whatever its
+  /// state — the local half of deleting a signed-off visit from Inspection
+  /// Management.
+  ///
+  /// Unlike [discardWithMembers], this does not refuse a signed-off visit:
+  /// the caller has already taken it off the server and out of APS, so the
+  /// handset's copy is cleared to match. The per-commodity path clears each
+  /// member's samples, photographs and signatures; the seizures and
+  /// occurrence photographs that hang off the visit go here.
+  Future<void> deleteWithMembers(String uuid) async {
+    for (final kind in const [
+      'egg',
+      'poultry',
+      'poultry_label',
+      'quid',
+      'pmp',
+      'rawrmp',
+    ]) {
+      for (var i = 0; i < 60; i++) {
+        final removed =
+            await discardDraftMember(uuid, kind, includeCaptured: true);
+        if (!removed) break;
+      }
+    }
+    await (database.delete(database.seizures)
+          ..where((t) => t.visitUuid.equals(uuid)))
+        .go();
+    await (database.delete(database.visitOccurrencePhotos)
+          ..where((t) => t.visitUuid.equals(uuid)))
+        .go();
+    await (database.delete(database.storeVisits)
+          ..where((t) => t.uuid.equals(uuid)))
+        .go();
+    // The sync bookkeeping for a visit that no longer exists.
+    await database.clearSyncState('$_fromServerPrefix$uuid');
+    await database.clearSyncState('$_uploadedAtPrefix$uuid');
+  }
+
+  /// Removes the grading done underneath the label checklist [labelUuid],
+  /// with its photographs, when the checklist goes.
+  Future<void> _deleteLabelGrading(String labelUuid) async {
+    final graded = gradingUuidForLabel(labelUuid);
+    await (database.delete(database.poultryPhotos)
+          ..where((t) => t.recordUuid.equals(graded)))
+        .go();
+    await (database.delete(database.poultryInspections)
+          ..where((t) => t.clientUuid.equals(graded)))
+        .go();
   }
 
   /// Removes a QUID determination and everything that hangs off it.
@@ -1462,9 +1760,23 @@ class VisitRepository {
         // grading table left a QUID record listed under "captured so far"
         // that nothing on the plan asked for, and the visit could not be
         // signed off without it.
+        //
+        // A grading done underneath a label checklist is part of that one
+        // inspection: never taken on its own, and taken with its checklist.
+        // Removing the checklist alone left the grading behind, listed as a
+        // poultry inspection nobody had asked for (Ethan, 2026-09-30).
+        final gradedOnLabels = [
+          for (final l in await (database.select(
+                  database.poultryLabelInspections)
+                ..where((t) => t.visitUuid.equals(visitUuid)))
+              .get())
+            gradingUuidForLabel(l.clientUuid),
+        ];
         final grading = await (database.select(database.poultryInspections)
-              ..where(
-                  (t) => t.visitUuid.equals(visitUuid) & removable(t.status))
+              ..where((t) =>
+                  t.visitUuid.equals(visitUuid) &
+                  removable(t.status) &
+                  t.clientUuid.isNotIn(gradedOnLabels))
               ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)])
               ..limit(1))
             .getSingleOrNull();
@@ -1509,6 +1821,7 @@ class VisitRepository {
               await (database.delete(database.poultryLabelInspections)
                     ..where((t) => t.clientUuid.equals(uuid!)))
                   .go();
+              await _deleteLabelGrading(uuid);
             default:
               await _deleteQuid(uuid);
           }
@@ -1534,6 +1847,7 @@ class VisitRepository {
           await (database.delete(database.poultryLabelInspections)
                 ..where((t) => t.clientUuid.equals(uuid!)))
               .go();
+          await _deleteLabelGrading(uuid);
         }
       case 'pmp':
         final row = await (database.select(database.pmpInspections)
@@ -1619,14 +1933,30 @@ class VisitRepository {
       );
 
   /// Every inspection captured under this visit, across the commodities.
-  Future<List<VisitMember>> members(String visitUuid) async {
-    final members = <VisitMember>[];
+  Future<List<VisitMember>> members(String visitUuid) async =>
+      (await membersForVisits([visitUuid]))[visitUuid] ?? const [];
+
+  /// The members of many visits at once, grouped by visit.
+  ///
+  /// One query per commodity table for the whole set, not per visit: calling
+  /// [members] in a loop cost six queries a visit, so a screen listing a
+  /// hundred visits ran six hundred of them one after another and took
+  /// seconds to appear (Ethan, 2026-10-08).
+  Future<Map<String, List<VisitMember>>> membersForVisits(
+      Iterable<String> visitUuids) async {
+    final ids = visitUuids.toSet().toList();
+    final byVisit = <String, List<VisitMember>>{
+      for (final id in ids) id: <VisitMember>[],
+    };
+    if (ids.isEmpty) return byVisit;
+    void add(String visitUuid, VisitMember member) =>
+        byVisit.putIfAbsent(visitUuid, () => <VisitMember>[]).add(member);
 
     final eggs = await (database.select(database.eggInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in eggs) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'egg',
         label: 'Egg inspection',
@@ -1638,13 +1968,13 @@ class VisitRepository {
     }
 
     final poultry = await (database.select(database.poultryInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in poultry) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'poultry',
-        label: 'Poultry inspection',
+        label: 'Poultry Grading',
         completed: row.status == 'completed' || row.status == 'ready',
         status: row.status,
         isUploaded: row.isUploaded,
@@ -1653,13 +1983,13 @@ class VisitRepository {
     }
 
     final quid = await (database.select(database.poultryQuidInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in quid) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'quid',
-        label: 'Poultry QUID verification',
+        label: 'Poultry QUID',
         completed: row.status == 'completed' || row.status == 'ready',
         status: row.status,
         isUploaded: row.isUploaded,
@@ -1668,15 +1998,22 @@ class VisitRepository {
     }
 
     final raw = await (database.select(database.rawRmpInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in raw) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'rawrmp',
         label: row.recordKind == RawRecordKind.composition.stored
             ? 'Compositional checklist'
-            : 'Certain Raw Processed Meat Product inspection',
+            // The checklist done underneath the inspection (Ethan,
+            // 2026-10-01) is named with it.
+            : row.recordKind == RawRecordKind.both.stored &&
+                    CompositionChecklist.isAnswered(
+                        CompositionChecklist.decode(row.compositionChecklistJson))
+                ? 'Certain Raw Processed Meat Product inspection and '
+                    'compositional checklist'
+                : 'Certain Raw Processed Meat Product inspection',
         completed: row.status == 'completed' || row.status == 'ready',
         status: row.status,
         isUploaded: row.isUploaded,
@@ -1685,10 +2022,10 @@ class VisitRepository {
     }
 
     final pmp = await (database.select(database.pmpInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in pmp) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'pmp',
         label: 'Processed Meat Product inspection',
@@ -1700,13 +2037,17 @@ class VisitRepository {
     }
 
     final labels = await (database.select(database.poultryLabelInspections)
-          ..where((t) => t.visitUuid.equals(visitUuid)))
+          ..where((t) => t.visitUuid.isIn(ids)))
         .get();
     for (final row in labels) {
-      members.add(VisitMember(
+      add(row.visitUuid, VisitMember(
         uuid: row.clientUuid,
         kind: 'poultry_label',
-        label: 'Label/Container inspection',
+        // Named for the commodity first, and for the grading done under
+        // it when there is one (Ethan, 2026-09-30).
+        label: row.gradingToFollow
+            ? 'Poultry Labelling and Grading'
+            : 'Poultry Labelling',
         completed: row.status == 'completed' || row.status == 'ready',
         status: row.status,
         isUploaded: row.isUploaded,
@@ -1714,20 +2055,30 @@ class VisitRepository {
       ));
     }
 
-    return members;
+    return byVisit;
   }
 
-  /// Every visit ever captured on this device, newest first — the grouped
-  /// inspections the management screen lists, open and signed-off alike.
-  Future<List<StoreVisit>> allVisits() => (database.select(database.storeVisits)
-        ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]))
-      .get();
+  /// Every visit on this device, newest first — the grouped inspections the
+  /// management screen lists, open and signed-off alike. With [owner], only
+  /// that inspector's; without, everything, for the sync.
+  Future<List<StoreVisit>> allVisits({String? owner}) {
+    final q = database.select(database.storeVisits)
+      ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]);
+    if (owner != null) {
+      q.where((t) =>
+          t.inspectorUsername.lower().equals(owner.trim().toLowerCase()));
+    }
+    return q.get();
+  }
 
   /// Frees device storage from completed visits only after the server has
   /// confirmed the group and every constituent record/evidence item.
   ///
   /// This deliberately never touches drafts, pending uploads, or records
-  /// whose three-day retention period has not elapsed.
+  /// whose [localRetention] has not elapsed. Runs after every sync pass and
+  /// when Inspection Management opens (Ethan, 2026-10-03). An occurrence
+  /// report with nothing else captured is cleared the same way: its
+  /// photographs travel inside its document, which went up with it.
   Future<int> purgeUploadedVisits({Duration retention = localRetention}) async {
     final cutoff = DateTime.now().toUtc().subtract(retention);
     final storage = await PhotoStorage.instance();
@@ -1741,11 +2092,18 @@ class VisitRepository {
       if (uploadedAt == null || uploadedAt.toUtc().isAfter(cutoff)) continue;
 
       final members = await this.members(visit.uuid);
-      if (members.isEmpty || members.any((member) => !member.isUploaded)) {
-        continue;
-      }
+      if (members.isEmpty && !visit.isOccurrenceReport) continue;
+      if (members.any((member) => !member.isUploaded)) continue;
 
       final imagePaths = <String>[];
+      // The occurrence report's photographs, and the document bound from
+      // them, which is written beside them.
+      final occurrence = await occurrencePhotos(visit.uuid);
+      imagePaths.addAll(occurrence.map((p) => p.filePath));
+      if (occurrence.isNotEmpty) {
+        imagePaths.add(
+            '${File(occurrence.first.filePath).parent.path}/visit_${visit.uuid}_occurrence.pdf');
+      }
       var evidenceComplete = true;
       for (final member in members) {
         final evidence = await _evidenceFor(member.uuid, member.kind);
@@ -1768,6 +2126,9 @@ class VisitRepository {
         for (final member in members) {
           await _deleteMember(member);
         }
+        await (database.delete(database.visitOccurrencePhotos)
+              ..where((t) => t.visitUuid.equals(visit.uuid)))
+            .go();
         await (database.delete(database.invoiceRequests)
               ..where((t) => t.visitUuid.equals(visit.uuid)))
             .go();
@@ -1811,6 +2172,14 @@ class VisitRepository {
       paths.addAll(signatures.map((row) => row.filePath));
     }
     return _Evidence(complete: complete, paths: paths);
+  }
+
+  /// Takes one inspection out of the visit, with everything under it —
+  /// its photographs, signatures and seizure, and for a label checklist the
+  /// grading done underneath it (Ethan, 2026-10-01).
+  Future<void> removeMember(VisitMember member) async {
+    await _deleteMember(member);
+    if (member.kind == 'poultry_label') await _deleteLabelGrading(member.uuid);
   }
 
   Future<void> _deleteMember(VisitMember member) async {
@@ -1911,7 +2280,7 @@ class VisitRepository {
       members.add(VisitMember(
         uuid: row.clientUuid,
         kind: 'poultry',
-        label: 'Poultry inspection',
+        label: 'Poultry Grading',
         completed: row.status == 'completed',
         status: row.status,
         isUploaded: row.isUploaded,
@@ -1943,7 +2312,11 @@ class VisitRepository {
       members.add(VisitMember(
         uuid: row.clientUuid,
         kind: 'poultry_label',
-        label: 'Label/Container inspection',
+        // Named for the commodity first, and for the grading done under
+        // it when there is one (Ethan, 2026-09-30).
+        label: row.gradingToFollow
+            ? 'Poultry Labelling and Grading'
+            : 'Poultry Labelling',
         completed: row.status == 'completed',
         status: row.status,
         isUploaded: row.isUploaded,

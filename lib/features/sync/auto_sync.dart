@@ -74,6 +74,28 @@ class AutoSync {
   /// The session ended; nothing further uploads until the next sign-in.
   void stop() => _username = null;
 
+  /// Signing out: push whatever is still waiting, then stop.
+  ///
+  /// Signing out used to stop the syncing dead. An inspector who finished a
+  /// day's work and signed out while they still had signal sent nothing —
+  /// the records sat on the device until the next sign-in, which might be
+  /// the next morning from somewhere with no signal at all. The work goes
+  /// up at the moment there is still a connection to send it over
+  /// (Ethan, 2026-10-08).
+  ///
+  /// Never blocks the sign-out: the caller does not await it, and the
+  /// session is cleared either way.
+  Future<void> flushAndStop() async {
+    if (_username == null) return;
+    try {
+      await kick();
+    } on Object catch (e) {
+      debugPrint('AutoSync: sign-out flush failed: $e');
+    } finally {
+      _username = null;
+    }
+  }
+
   /// Runs one silent sync if signed in, online, and not already running.
   Future<void> kick() async {
     final runner = _runner;

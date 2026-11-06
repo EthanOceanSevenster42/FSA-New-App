@@ -32,6 +32,20 @@ class UserSyncRepository {
   final Duration timeout;
   final http.Client _client;
 
+  /// Supplies the signed-in inspector's access token. The sync-users endpoints
+  /// now require authentication (they hand out offline credentials, so they
+  /// must not answer anonymous callers), and these calls only ever run after a
+  /// successful online sign-in — so a token is available. Set once the token
+  /// source exists (see main.dart). (Ethan, 2026-10-16)
+  Future<String?> Function()? tokenProvider;
+
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await tokenProvider?.call();
+    return (token != null && token.isNotEmpty)
+        ? {'Authorization': 'Bearer $token'}
+        : const {};
+  }
+
   /// Pulls everything changed since the stored cursor and returns how many
   /// users were new to this device — not how many rows were written. The two
   /// diverge on the manual button below, which re-fetches everyone: rows
@@ -67,7 +81,8 @@ class UserSyncRepository {
         },
       );
 
-      final response = await _client.get(uri).timeout(timeout);
+      final response =
+          await _client.get(uri, headers: await _authHeaders()).timeout(timeout);
       if (response.statusCode != 200) {
         throw http.ClientException(
           'Sync failed with status ${response.statusCode}.',
@@ -115,7 +130,8 @@ class UserSyncRepository {
   /// the one thing this protects.
   Future<int> pruneDeleted() async {
     final uri = Uri.parse('$baseUrl/api/auth/sync-users/ids/');
-    final response = await _client.get(uri).timeout(timeout);
+    final response =
+        await _client.get(uri, headers: await _authHeaders()).timeout(timeout);
     if (response.statusCode != 200) {
       throw http.ClientException(
         'Reconcile failed with status ${response.statusCode}.',
@@ -147,7 +163,11 @@ class UserSyncRepository {
         roleName: Value(json['role_name'] as String?),
         isActive: Value(json['is_active'] as bool? ?? true),
         isSuspended: Value(json['is_suspended'] as bool? ?? false),
-        offlineVerifier: Value(json['offline_verifier'] as String? ?? ''),
+        // Preserve the stored verifier if the server omits the field, rather
+        // than wiping a working offline credential (upsert replaces columns).
+        offlineVerifier: json.containsKey('offline_verifier')
+            ? Value(json['offline_verifier'] as String? ?? '')
+            : const Value.absent(),
         updatedAt: Value(json['updated_at'] as String? ?? ''),
       );
 

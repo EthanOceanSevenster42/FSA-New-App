@@ -17,18 +17,18 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V5',
+    revision: 'V6',
   );
 
   /// SOP-APS-EGGS-003 — the marking and labelling checklist for eggs. The
   /// Agency gives the weighing and labelling checklists the same number.
   static const eggLabelling = FsaDocControl(
     docNo: 'SOP-APS-EGGS-003',
-    title: 'EGG LABELING CHECKLIST',
+    title: 'EGG LABELLING',
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V5',
+    revision: 'V6',
   );
 
   /// SOP-APS-PM-001 — poultry meat QUID determination.
@@ -39,7 +39,7 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V5',
+    revision: 'V6',
   );
 
   /// SOP-APS-PM-002 — poultry meat labelling verification.
@@ -50,7 +50,7 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V5',
+    revision: 'V6',
   );
 
   /// SOP-APS-PM-003 — classification and grading of poultry meat.
@@ -61,7 +61,7 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V5',
+    revision: 'V6',
   );
 
   /// SOP-APS-RAW-001 — certain raw processed meat container and labelling.
@@ -111,7 +111,7 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V4',
+    revision: 'V5',
   );
 
   /// SOP-APS-001 — processed meat direction.
@@ -122,7 +122,7 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V4',
+    revision: 'V5',
   );
 
   /// SOP-APS-001 — poultry meat direction.
@@ -133,39 +133,56 @@ abstract final class FsaDocuments {
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V4',
+    revision: 'V5',
   );
 
   /// SOP-APS-001 — egg direction.
   static const eggDirection = FsaDocControl(
     docNo: 'SOP-APS-001',
-    title: 'EGG REJECTION AS PER THE REGULATION NO. R.541 OF 30 JUNE 2017',
-    issueDate: '1 September 2021',
-    effectiveDate: '1 September 2021',
-    revisionDate: '1 January 2023',
-    revision: 'V4',
-  );
-
-  /// SOP-APS-PMP-001 — processed meat container and labelling.
-  static const pmpLabelling = FsaDocControl(
-    docNo: 'SOP-APS-PMP-001',
-    title: 'PROCESSED MEAT PRODUCTS CONTAINER AND LABELLING VERIFICATION '
-        'CHECKLIST AS PER THE REGULATION NO. R1283 OF 4 OCTOBER 2019',
+    title: 'EGG REJECTION AS PER THE REGULATION NO. R.345 OF 20 MARCH 2020',
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
     revision: 'V5',
   );
 
+  /// SOP-APS-PMP-001 — processed meat container and labelling.
+  ///
+  /// The kind of document is carried by the Doc Type cell, so the title line
+  /// names only the commodity and the regulation rather than repeating it
+  /// (Ethan, 2026-10-08).
+  static const pmpLabelling = FsaDocControl(
+    docNo: 'SOP-APS-PMP-001',
+    docType: 'LABELLING VERIFICATION CHECKLIST',
+    title: 'PROCESSED MEAT PRODUCTS AS PER THE REGULATION NO. R1283 OF '
+        '4 OCTOBER 2019',
+    issueDate: '1 September 2021',
+    effectiveDate: '1 September 2021',
+    revisionDate: '1 January 2023',
+    revision: 'V6',
+  );
+
   /// SOP-APS-PMP-002 — processed meat sampling.
   static const pmpSampling = FsaDocControl(
     docNo: 'SOP-APS-PMP-002',
-    title: 'PROCESSED MEAT PRODUCTS SAMPLING CHECKLIST AS PER THE '
+    title: 'PROCESSED MEAT PRODUCTS SAMPLING AS PER THE '
         'REGULATION NO. R1283 OF 4 OCTOBER 2019',
     issueDate: '1 September 2021',
     effectiveDate: '1 September 2021',
     revisionDate: '1 January 2023',
-    revision: 'V4',
+    revision: 'V5',
+  );
+
+  /// SOP-APS-009 — the occurrence document written at the door when entry
+  /// or access is refused. The only form whose Doc Type is not "Checklist".
+  static const occurrence = FsaDocControl(
+    docNo: 'SOP-APS-009',
+    title: 'OCCURRENCE DOCUMENT',
+    docType: 'Document',
+    issueDate: '1 August 2022',
+    effectiveDate: '1 August 2022',
+    revisionDate: '31 July 2025',
+    revision: 'V3',
   );
 
   /// Every form above, for the tests that assert the catalogue against the

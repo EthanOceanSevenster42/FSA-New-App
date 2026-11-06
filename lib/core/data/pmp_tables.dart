@@ -211,6 +211,10 @@ class PmpInspections extends Table {
   TextColumn get manufacturedPackedDate =>
       text().withDefault(const Constant(''))();
   IntColumn get storageTypeId => integer().nullable()();
+
+  /// The product's class as APS files it — one of [pmpProductClasses]
+  /// (Ethan, 2026-10-04). Empty on a record from before the dropdown.
+  TextColumn get productClass => text().withDefault(const Constant(''))();
   TextColumn get primarySampleSize => text().withDefault(const Constant(''))();
 
   BoolColumn get markingLabelsPresent =>
@@ -251,10 +255,17 @@ class PmpInspections extends Table {
   TextColumn get internalSampleNumber =>
       text().withDefault(const Constant(''))();
   TextColumn get testSampleSize => text().withDefault(const Constant(''))();
+  // What the sample is tested for, as the office's web app asks it (Ethan,
+  // 2026-10-06): the office record shows fat/protein/calcium/dna per product.
+  BoolColumn get testFat => boolean().withDefault(const Constant(false))();
+  BoolColumn get testProtein => boolean().withDefault(const Constant(false))();
+  BoolColumn get testCalcium => boolean().withDefault(const Constant(false))();
+  BoolColumn get testDna => boolean().withDefault(const Constant(false))();
 
-  /// The original's field is named IsCouriered but captioned "Hand
-  /// Delivered" — kept exactly as they are, disagreement included, because
-  /// the Pending Courier screen filters on the field.
+  /// Whether the sample went by courier, as the raw form asks it (Ethan,
+  /// 2026-10-02). The Pending Courier screen lists these until the waybill
+  /// is in. Until schema 64 the form's "Hand Delivered" switch wrote it the
+  /// other way round; the upgrade flipped those records.
   BoolColumn get isCouriered => boolean().withDefault(const Constant(false))();
   BoolColumn get labInfoComplete =>
       boolean().withDefault(const Constant(false))();

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/address_search_field.dart';
 import '../../../core/widgets/responsive.dart';
 import 'package:uuid/uuid.dart';
 
@@ -17,6 +18,7 @@ import '../domain/poultry_rules.dart';
 import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/search_picker.dart';
 import 'poultry_form_widgets.dart';
+import 'poultry_quid_continue_page.dart';
 import '../domain/quid_flow.dart';
 
 /// Setup QUID Checklist.
@@ -118,9 +120,12 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
   /// Regulated Standard / Dispensation switch beside every injector.
   final _injectors = <({String name, bool dispensation, String percent})>[];
 
-  // The original's switches start off, and off reads Water and Whole
-  // Carcass.
+  // The original's switch starts off, and off reads Water.
   bool _isWaterChilled = true;
+
+  /// Whether what is being injected is whole carcasses or portions — a
+  /// toggle beside the typed product (Ethan, 2026-10-04). The regulated
+  /// standard follows it: 10% on whole carcasses, 15% on portions.
   bool _isWholeCarcass = true;
 
   /// The next injector is under a dispensation, not the regulation.
@@ -159,6 +164,19 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
       return;
     }
     setState(() => _companyReg.text = carried);
+  }
+
+  /// An abattoir or a repacker is registered, so its registration number
+  /// is required there (Ethan, 2026-09-30); anywhere else it is optional.
+  bool _registrationRequired(_SetupReference reference) {
+    final chosen = reference.locations
+            .where((l) => l.id == _locationId)
+            .map((l) => l.name)
+            .firstOrNull ??
+        widget.visit?.facilityType ??
+        '';
+    final name = chosen.toLowerCase();
+    return name.contains('abattoir') || name.contains('repack');
   }
 
   Future<_SetupReference> _load() async => _SetupReference(
@@ -261,10 +279,38 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
       setState(() => _setupComplete = false);
       return;
     }
+    // Near the top, so possibly scrolled out of the list by now, where
+    // validate() does not see them: checked from the controllers.
+    final reference = await _reference;
+    if (!mounted) return;
+    final missing = [
+      if (_registrationRequired(reference) && _companyReg.text.trim().isEmpty)
+        (id: 'registration', label: 'the Company Registration Number'),
+      if (_productDetails.text.trim().isEmpty)
+        (id: 'productName', label: 'the product'),
+    ];
+    if (missing.isNotEmpty) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text('Fill in '
+              '${[for (final m in missing) m.label].join(' and ')} before '
+              'completing the set-up.'),
+        ));
+      await _missing.flag(
+        context,
+        [for (final m in missing) m.id],
+        stillMissing: (id) => switch (id) {
+          'registration' => _companyReg.text.trim().isEmpty,
+          _ => _productDetails.text.trim().isEmpty,
+        },
+      );
+      return;
+    }
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_injectors.isEmpty) {
-      await _alert('Injector Details Error',
-          'No Injector details has been added. Please address.');
+      await _alert('No injectors yet',
+          'Add at least one injector, with its name, before going on.');
       if (!mounted) return;
       await _missing.flag(
         context,
@@ -274,21 +320,46 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
       return;
     }
     _missing.clear();
+    // What is being confirmed, on the confirmation itself; confirming goes
+    // straight on to the weighing (Ethan, 2026-09-30).
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Confirm Setup Data'),
-        content: const Text(
-            'Please confirm that all the inspection particulars is correct.',
-            style: TextStyle(height: 1.4)),
+        title: const Text('Are you happy with this set-up?'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                  'Product: ${_productDetails.text.trim()} '
+                  '(${_isWholeCarcass ? 'whole carcass' : 'portions'})',
+                  style: const TextStyle(height: 1.5)),
+              Text('Chilling: ${_isWaterChilled ? 'Water' : 'Air'}',
+                  style: const TextStyle(height: 1.5)),
+              for (var i = 0; i < _injectors.length; i++)
+                Text(
+                    'Injector ${i + 1}: ${_injectors[i].name} — '
+                    '${_percentOf(_injectors[i])}%',
+                    style: const TextStyle(height: 1.5)),
+              const SizedBox(height: 10),
+              const Text(
+                'The weighing opens next. The set-up cannot be changed once '
+                'carcasses are weighed against it.',
+                style: TextStyle(height: 1.4),
+              ),
+            ],
+          ),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Edit/Review'),
+            child: const Text('Change it'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Save'),
+            child: const Text('Yes, start weighing'),
           ),
         ],
       ),
@@ -421,8 +492,7 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
       ),
     );
 
-    // Each injector with the percentage it is held to, worked out now from
-    // the portion type as it finally stands.
+    // Each injector with the percentage it is held to.
     await widget.captureRepository.replaceQuidInjectors(uuid, [
       for (var i = 0; i < _injectors.length; i++)
         PoultryQuidInjectorsCompanion.insert(
@@ -435,23 +505,20 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
 
     if (!mounted) return;
     setState(() => _saving = false);
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('QUID checklist set up'),
-        content: const Text(
-          'Weigh the carcasses from "Continue with QUID Checklist" when you '
-          'are at the line.',
-          style: TextStyle(height: 1.4),
+    // Straight on to the weighing, rather than out to the visit and back in
+    // through Continue. Left before it is finished, it is continued from
+    // the visit like any other inspection.
+    final saved = await widget.captureRepository.quidInspectionByUuid(uuid);
+    if (!mounted) return;
+    if (saved != null) {
+      await Navigator.of(context).push(MaterialPageRoute<bool>(
+        builder: (_) => PoultryQuidWeighingForm(
+          repository: widget.repository,
+          captureRepository: widget.captureRepository,
+          inspection: saved,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
+      ));
+    }
     if (mounted) Navigator.of(context).pop(true);
   }
 
@@ -512,7 +579,9 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                     items: reference.reasons,
                     onChanged: (v) => setState(() => _reasonId = v),
                   ),
-                if (!_locationFromVisit)
+                // Inside a visit the facility type is the one chosen at the
+                // top of it, and not asked again here (Ethan, 2026-09-30).
+                if (!_locationFromVisit && widget.visit == null)
                   poultryDropdown(
                     label: 'Inspection Facility Type',
                     value: _locationId,
@@ -546,14 +615,20 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                   ),
                   poultryField(
                       _tradingName, 'Name or Trading Name of New Facility'),
-                  poultryField(_facilityAddress, 'Facility Address', lines: 2),
+                  // Searchable by facility name; a plain typed box with no
+                  // signal or no key (Ethan, 2026-10-08).
+                  AddressSearchField(
+                    controller: _facilityAddress,
+                    tokenProvider: widget.repository.storedToken,
+                    child: poultryField(_facilityAddress, 'Facility Address', lines: 2),
+                  ),
                   poultryField(
                     _facilityTelephone,
-                    'Facility Primary Contact Telephone / Cellphone Number',
+                    'Facility Primary Contact Telephone/Cellphone Number',
                     keyboard: TextInputType.phone,
                   ),
                   poultryField(
-                      _contactPerson, 'Representative Name / Person in Charge'),
+                      _contactPerson, 'Representative Name/Person in Charge'),
                   poultryField(
                     _contactEmail,
                     'Representative Name Email Address',
@@ -570,33 +645,54 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                           color: AppColors.inkSoft),
                     ),
                   ),
-                poultryField(
-                    _companyReg, 'Company Registration Number (optional)'),
-                poultryField(_productDetails, 'Product Name'),
+                MissingFieldAnchor(
+                  fields: _missing,
+                  id: 'registration',
+                  framed: false,
+                  listenable: _companyReg,
+                  child: _registrationRequired(reference)
+                      ? poultryField(
+                          _companyReg, 'Company Registration Number',
+                          required: true)
+                      : poultryField(_companyReg,
+                          'Company Registration Number (optional)'),
+                ),
+                // The product is typed, and whether it is whole carcasses
+                // or portions is a toggle beside it (Ethan, 2026-10-04):
+                // the regulated standard follows the toggle.
+                MissingFieldAnchor(
+                  fields: _missing,
+                  id: 'productName',
+                  framed: false,
+                  listenable: _productDetails,
+                  child: poultryField(_productDetails, 'Product',
+                      markRequired: true),
+                ),
+                poultryChoice(
+                  label: 'Whole carcass or portions?',
+                  options: const ['Whole carcass', 'Portions'],
+                  selectedIndex: _isWholeCarcass ? 0 : 1,
+                  onChanged: (i) => setState(() => _isWholeCarcass = i == 0),
+                ),
 
                 // The original's own heading for the block below.
-                poultrySection('Inspection Setup Control'),
-                // Chilling method: one boolean, both states named.
+                poultrySection('Chilling'),
+                // Chilling method: one boolean, both states named. There is
+                // no portion-type choice: whole carcasses only (Ethan,
+                // 2026-10-01).
                 poultryChoice(
                   label: 'Chilling Method',
                   options: const ['Water', 'Air'],
                   selectedIndex: _isWaterChilled ? 0 : 1,
                   onChanged: (i) => setState(() => _isWaterChilled = i == 0),
                 ),
-                poultryChoice(
-                  label: 'Poultry Portion Type',
-                  options: const ['Whole Carcass', 'Cuts'],
-                  selectedIndex: _isWholeCarcass ? 0 : 1,
-                  onChanged: (i) => setState(() => _isWholeCarcass = i == 0),
-                ),
                 // The original's own sub-heading for the injector block.
-                poultrySection('Injector Setup Details'),
+                poultrySection('Injectors'),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Text(
-                    'Add each injector on the line and the QUID percentage '
-                    'it is set to. The weighing screen assigns every carcass '
-                    'to one of them.',
+                    'Add each injector on the line and what it is set to. '
+                    'The weighing then takes one injector at a time.',
                     style: TextStyle(
                         fontSize: 12.5, color: AppColors.muted, height: 1.35),
                   ),
@@ -606,11 +702,13 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                   id: 'injectorName',
                   framed: false,
                   listenable: _injectorName,
-                  child:
-                      poultryField(_injectorName, 'Injector Name/Identifier'),
+                  // Required (Ethan, 2026-09-30): Add refuses an injector
+                  // without one, and the weighing is laid out by it.
+                  child: poultryField(_injectorName, 'Injector name',
+                      markRequired: true),
                 ),
                 poultryChoice(
-                  label: 'QUID Percentage for this Injector',
+                  label: 'What is this injector set to?',
                   options: const ['Regulated Standard', 'Dispensation'],
                   selectedIndex: _nextIsDispensation ? 1 : 0,
                   onChanged: (i) => setState(() {
@@ -625,13 +723,14 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                   listenable: _dispensation,
                   child: poultryField(
                   _dispensation,
-                  'Dispensation QUID %',
+                  'Dispensation percentage (%)',
+                  required: _nextIsDispensation,
                   enabled: _nextIsDispensation,
                   keyboard:
                       const TextInputType.numberWithOptions(decimal: true),
                   helper: _nextIsDispensation
                       ? 'The percentage the plant\'s dispensation allows.'
-                      : 'Not Used — the regulated '
+                      : 'Not needed: the regulated '
                           '${quidRegulatedPercent(isWholeCarcass: _isWholeCarcass).toStringAsFixed(0)}% '
                           'applies.',
                 ),
@@ -667,16 +766,18 @@ class _PoultryQuidSetupFormState extends State<PoultryQuidSetupForm> {
                   message: 'Add at least one injector',
                   child: _injectorList(),
                 ),
-                // The original saves the set-up from this switch: it checks
-                // there is an injector, asks for confirmation, then saves.
-                poultrySwitch(
-                  label: 'Injector Inspection Set-Up Details Complete',
-                  value: _setupComplete,
-                  onChanged:
-                      _saving ? (_) {} : (v) => unawaited(_completeSetup(v)),
-                  helper: _saving
-                      ? 'Saving…'
-                      : 'Turn on to confirm and save the set-up.',
+                // NEXT rather than a YES/NO: it checks there is an injector,
+                // asks whether the set-up is right, then goes on to the
+                // weighing (Ethan, 2026-09-30).
+                const SizedBox(height: 16),
+                SizedBox(
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _saving
+                        ? null
+                        : () => unawaited(_completeSetup(true)),
+                    child: Text(_saving ? 'Saving…' : 'NEXT'),
+                  ),
                 ),
               ],
             ),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
+import '../../../core/documents/fsa_documents.dart';
 import '../../../core/documents/fsa_form_pdf.dart';
 import '../domain/composition_checklist.dart';
 
@@ -11,7 +12,7 @@ import '../domain/composition_checklist.dart';
 ///
 /// One landscape A4 page, laid out as the paper form: the document-control
 /// header with the logo and the Act and regulation titles, FACILITY
-/// INFORMATION in two columns, SAMPLE DETAILS, the nine-row Regulation 5
+/// INFORMATION in two columns, SAMPLE DETAILS, the seven-row Regulation 5
 /// table (deviation YES/NO, contribution in grams, remarks), COMMENTS/ACTIONS
 /// on ruled lines, and the two signature blocks.
 abstract final class CompositionChecklistPdf {
@@ -29,6 +30,18 @@ abstract final class CompositionChecklistPdf {
     required List<CompositionAnswer> answers,
     required String comments,
     required String inspectorName,
+
+    /// The checklist's one remark, printed under the table (Ethan,
+    /// 2026-09-30) — the rows no longer carry their own.
+    String remarks = '',
+
+    /// The unit the amounts were typed in: kg, or grams on a record from
+    /// before the change (Ethan, 2026-10-01).
+    String unit = CompositionChecklist.kg,
+
+    /// The remarks of the rejection the checklist raised, one per line;
+    /// printed under the comments when there are any (Ethan, 2026-09-29).
+    String rejectionRemarks = '',
     String authorisedPersonName = '',
     String inspectorSignaturePath = '',
     String authorisedPersonSignaturePath = '',
@@ -36,17 +49,9 @@ abstract final class CompositionChecklistPdf {
     final assets = await FsaForm.assets();
     final regular = assets.regular;
     final bold = assets.bold;
-    final logo = assets.logo;
-    final theme = assets.theme;
 
-    Future<pw.MemoryImage?> image(String path) async {
-      final file = File(path);
-      if (path.isEmpty || !file.existsSync()) return null;
-      return pw.MemoryImage(await file.readAsBytes());
-    }
-
-    final inspectorSignature = await image(inspectorSignaturePath);
-    final clientSignature = await image(authorisedPersonSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
+    final clientSignature = await FsaForm.signature(authorisedPersonSignaturePath);
 
     pw.TextStyle text({bool isBold = false, double size = 7.5}) =>
         pw.TextStyle(fontSize: size, font: isBold ? bold : regular);
@@ -58,7 +63,7 @@ abstract final class CompositionChecklistPdf {
             pw.Alignment align = pw.Alignment.centerLeft}) =>
         pw.Container(
           color: fill,
-          padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 1.5),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 1),
           alignment: align,
           child: pw.Text(value, style: text(isBold: isBold, size: size)),
         );
@@ -102,7 +107,7 @@ abstract final class CompositionChecklistPdf {
             ]),
             pw.TableRow(children: [
               cell('Approved by', fill: grey),
-              cell('Chief Executive Officer'),
+              cell('Compliance Manager'),
               cell('Page', fill: grey),
               cell('Page 1 of 1'),
             ]),
@@ -111,20 +116,13 @@ abstract final class CompositionChecklistPdf {
 
     pw.Widget header() => pw.Table(
           border: border,
-          columnWidths: const {
-            0: pw.FlexColumnWidth(1.0),
-            1: pw.FlexColumnWidth(6.4),
-          },
+          columnWidths: const {0: pw.FlexColumnWidth(1.0)},
           children: [
             pw.TableRow(
               verticalAlignment: pw.TableCellVerticalAlignment.middle,
               children: [
-                pw.Container(
-                  height: 96,
-                  alignment: pw.Alignment.center,
-                  padding: const pw.EdgeInsets.all(6),
-                  child: pw.Image(logo, fit: pw.BoxFit.contain),
-                ),
+                // The Agency's mark is on the letterhead now (Ethan,
+                // 2026-10-04), not beside the control table.
                 pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                   children: [
@@ -155,18 +153,16 @@ abstract final class CompositionChecklistPdf {
         );
 
     // ------------------------------------------------------------ fields
-    pw.Widget heading(String label) => pw.Padding(
-          padding: const pw.EdgeInsets.only(top: 7, bottom: 3),
-          child: pw.Text(label,
-              style: pw.TextStyle(
-                  fontSize: 7.5,
-                  font: bold,
-                  decoration: pw.TextDecoration.underline)),
-        );
+    // Shared grey section bar, so this sheet sections off the same as every
+    // other report (Ethan, 2026-10-08).
+    // Compact bars: this is the Agency's one-sheet form and must not
+    // run to a second page (Ethan, 2026-10-08).
+    pw.Widget heading(String label) =>
+        FsaForm.heading(label, assets, compact: true);
 
     pw.Widget box(String value, {double width = 190}) => pw.Container(
           width: width,
-          height: 13,
+          height: 11,
           padding: const pw.EdgeInsets.symmetric(horizontal: 3),
           alignment: pw.Alignment.centerLeft,
           decoration: pw.BoxDecoration(border: pw.Border.all(width: 0.7)),
@@ -179,7 +175,7 @@ abstract final class CompositionChecklistPdf {
     pw.Widget field(String label, String value,
             {double labelWidth = 130, double boxWidth = 190}) =>
         pw.Padding(
-          padding: const pw.EdgeInsets.only(bottom: 4),
+          padding: const pw.EdgeInsets.only(bottom: 1),
           child: pw.Row(
             crossAxisAlignment: pw.CrossAxisAlignment.center,
             children: [
@@ -241,34 +237,40 @@ abstract final class CompositionChecklistPdf {
           cell('PERMISSABLE INGREDIENTS - REGULATION 5', isBold: true),
           cell('YES', isBold: true, align: pw.Alignment.center),
           cell('NO', isBold: true, align: pw.Alignment.center),
-          cell('CONTRIBUTION (g)', isBold: true, align: pw.Alignment.center),
+          cell('CONTRIBUTION ($unit)',
+              isBold: true, align: pw.Alignment.center),
           cell('REMARKS', isBold: true, align: pw.Alignment.center),
         ]),
       ];
+      final totalPercent = CompositionChecklist.totalMeatPercent(answers);
       for (var i = 0; i < CompositionChecklist.items.length; i++) {
         final a = i < answers.length ? answers[i] : const CompositionAnswer();
+        // Total Meat Content is not judged: no number and no deviation
+        // mark, only its percentage (Ethan, 2026-10-01).
+        final isTotal = i == CompositionChecklist.totalMeatIndex;
         rows.add(pw.TableRow(children: [
-          cell('${i + 1}. ${CompositionChecklist.items[i]}'),
-          cell(a.deviation == true ? 'X' : '',
-              isBold: true, align: pw.Alignment.center),
-          cell(a.deviation == false ? 'X' : '',
-              isBold: true, align: pw.Alignment.center),
-          // Total Meat Content prints its worked-out percentage, and the
-          // two amounts it came from beside the remark.
           cell(
-              i == CompositionChecklist.totalMeatIndex &&
-                      a.totalMeatPercent != null
-                  ? CompositionChecklist.percentText(a.totalMeatPercent!)
+              isTotal
+                  ? CompositionChecklist.items[i]
+                  : '${i + 1}. ${CompositionChecklist.items[i]}',
+              isBold: isTotal),
+          cell(!isTotal && a.deviation == true ? 'X' : '',
+              isBold: true, align: pw.Alignment.center),
+          // A row left on Compliant — the slider's starting place — is a
+          // NO, as the form shows it (Ethan, 2026-09-30).
+          cell(!isTotal && a.deviation != true ? 'X' : '',
+              isBold: true, align: pw.Alignment.center),
+          // Total Meat Content prints its worked-out percentage: meat (row
+          // 1) over the whole (rows 1 to 6), × 100 (Ethan, 2026-10-02).
+          cell(
+              isTotal
+                  ? (totalPercent == null
+                      ? ''
+                      : CompositionChecklist.percentText(totalPercent))
                   : a.contributionGrams,
+              isBold: isTotal,
               align: pw.Alignment.center),
-          cell(i == CompositionChecklist.totalMeatIndex &&
-                  a.totalMeatPercent != null
-              ? [
-                  'Meat ${a.meatGrams} g / all other ingredients '
-                      '${a.otherGrams} g',
-                  if (a.remarks.trim().isNotEmpty) a.remarks,
-                ].join('\n')
-              : a.remarks),
+          cell(a.remarks),
         ]));
       }
       return pw.Column(
@@ -280,7 +282,7 @@ abstract final class CompositionChecklistPdf {
             pw.Expanded(flex: 620, child: pw.SizedBox()),
             pw.Container(
               width: 100,
-              padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
+              padding: const pw.EdgeInsets.symmetric(vertical: 0.8),
               alignment: pw.Alignment.center,
               decoration: pw.BoxDecoration(
                   border: pw.Border.all(width: 0.6, color: PdfColors.grey800)),
@@ -304,32 +306,31 @@ abstract final class CompositionChecklistPdf {
     }
 
     // ---------------------------------------------------- comments, signing
-    final commentLines = _wrap(comments, 150);
-    pw.Widget commentsBlock() => pw.Row(
+    /// A caption beside ruled lines, as the form's comments are written.
+    pw.Widget linedBlock(String caption, List<String> lines) => pw.Row(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
             pw.SizedBox(
                 width: 130,
                 child: pw.Padding(
-                  padding: const pw.EdgeInsets.only(top: 6),
-                  child: pw.Text('COMMENTS/ACTIONS:',
-                      style: text(isBold: true, size: 7)),
+                  padding: const pw.EdgeInsets.only(top: 4),
+                  child: pw.Text(caption, style: text(isBold: true, size: 7)),
                 )),
             pw.Expanded(
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                 children: [
-                  for (var i = 0;
-                      i < (commentLines.length > 2 ? commentLines.length : 2);
-                      i++)
+                  // One ruled line is enough when the text is short: this
+                  // form is one sheet and a rejection's remarks can add
+                  // three lines of their own (Ethan, 2026-10-08).
+                  for (var i = 0; i < (lines.length > 1 ? lines.length : 1); i++)
                     pw.Container(
-                      height: 14,
+                      height: 10,
                       alignment: pw.Alignment.bottomLeft,
                       padding: const pw.EdgeInsets.only(bottom: 1, left: 2),
                       decoration: const pw.BoxDecoration(
                           border: pw.Border(bottom: pw.BorderSide(width: 0.6))),
-                      child: pw.Text(
-                          i < commentLines.length ? commentLines[i] : '',
+                      child: pw.Text(i < lines.length ? lines[i] : '',
                           style: text(size: 7.5)),
                     ),
                 ],
@@ -337,15 +338,26 @@ abstract final class CompositionChecklistPdf {
             ),
           ],
         );
+    pw.Widget commentsBlock() =>
+        linedBlock('COMMENTS:', _wrap(comments, 150));
+    final remarksLines = _wrap(remarks, 150);
+    final remarkLines = [
+      for (final remark in rejectionRemarks.split('\n'))
+        if (remark.trim().isNotEmpty) ..._wrap('• ${remark.trim()}', 150),
+    ];
 
+    // A signature gets a line tall enough to read (Ethan, 2026-09-30); a
+    // name line stays one line of type.
     pw.Widget signLine(pw.MemoryImage? sig, {String name = ''}) => pw.Container(
           width: 150,
-          height: 22,
+          height: sig != null ? 40 : 22,
           alignment: pw.Alignment.bottomCenter,
           decoration: const pw.BoxDecoration(
               border: pw.Border(bottom: pw.BorderSide(width: 0.7))),
           child: sig != null
-              ? pw.Image(sig, height: 20, fit: pw.BoxFit.contain)
+              ? pw.Padding(
+                  padding: const pw.EdgeInsets.only(bottom: 1),
+                  child: pw.Image(sig, height: 36, fit: pw.BoxFit.contain))
               : pw.Text(name, style: text(size: 7.5)),
         );
 
@@ -414,30 +426,36 @@ abstract final class CompositionChecklistPdf {
       author: inspectorName,
     );
     document.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4.landscape,
-        margin: const pw.EdgeInsets.fromLTRB(28, 24, 28, 22),
-        theme: theme,
-        build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            header(),
+      pw.MultiPage(
+        pageTheme: FsaForm.letterhead(assets, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14)),
+        build: (context) => [
+            FsaForm.header(assets, FsaDocuments.rawComposition),
             heading('FACILITY INFORMATION:'),
             facility(),
             heading('SAMPLE DETAILS'),
             sample(),
-            pw.SizedBox(height: 6),
             checklist(),
-            pw.SizedBox(height: 8),
+            heading('COMMENTS AND REMARKS'),
+            if (remarksLines.isNotEmpty) ...[
+              linedBlock('REMARKS:', remarksLines),
+              pw.SizedBox(height: 2),
+            ],
             commentsBlock(),
-            pw.SizedBox(height: 10),
-            signing(),
-            pw.Spacer(),
-            pw.Center(
-                child: pw.Text('@ Food Safety Agency (Pty) Ltd',
-                    style: text(size: 6.5))),
-          ],
-        ),
+            if (remarkLines.isNotEmpty) ...[
+              pw.SizedBox(height: 2),
+              linedBlock('REJECTION REMARKS:', remarkLines),
+            ],
+            FsaForm.heading('SIGNATURE CONTROLS', assets, compact: true),
+            FsaForm.signedBlock(
+              assets,
+              compact: true,
+              inspectorName: inspectorName,
+              authorisedPersonName: authorisedPersonName,
+              inspectorSignature: inspectorSignature,
+              authorisedPersonSignature: clientSignature,
+            ),
+        ],
       ),
     );
 

@@ -13,6 +13,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
 import '../../../core/widgets/date_field.dart';
 import '../../../core/widgets/missing_fields.dart';
+import '../../../core/widgets/required_label.dart';
 import '../../../core/widgets/seizure_decision_dialog.dart';
 import '../../../core/data/sample_number.dart';
 import '../../../core/widgets/restricted_particulars_picker.dart';
@@ -27,7 +28,9 @@ import '../../visits/domain/inspection_reason_match.dart';
 import '../../eggs/presentation/new_directory_entry_sheet.dart';
 import '../data/pmp_repository.dart';
 import '../../seizures/presentation/record_seizure.dart';
+import '../domain/pmp_product_classes.dart';
 import '../domain/pmp_rules.dart';
+import '../../../core/widgets/picker_menu_field.dart';
 import '../../../core/widgets/correct_by_date_field.dart';
 
 /// New PMP Inspection.
@@ -116,6 +119,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   /// True when the reason chosen at the door settled [_reasonId].
   bool _reasonFromVisit = false;
   int? _storageTypeId;
+
+  /// The product's class as APS files it (Ethan, 2026-10-04): one of
+  /// [pmpProductClasses]. Optional; nothing else on the form changes.
+  String? _productClass;
   int? _subClassId;
   int? _ingredientId;
   int? _laboratoryId;
@@ -158,7 +165,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   final _internalSampleNumber = TextEditingController();
   final _testSampleSize = TextEditingController();
   final _ingredientPercentage = TextEditingController();
-  final _directionRemarks = TextEditingController();
+
+  /// The remarks added to the direction, in the order they were added.
+  /// Stored as one per line on the record, as the raw form stores them.
+  final _addedRemarks = <String>[];
   final _correctByDate = TextEditingController();
   final _nonConformanceComments = TextEditingController();
   final _managerName = TextEditingController();
@@ -178,11 +188,22 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   bool _restrictedPresent = false;
   bool _labelPackComplete = false;
   bool _isSampled = false;
+  // What the sample is being tested for, the same set the APS web app asks
+  // (Ethan, 2026-10-06): at least one must be on when the inspection is
+  // sampled.
+  bool _testFat = false;
+  bool _testProtein = false;
+  bool _testCalcium = false;
+  bool _testDna = false;
   bool _recipeAvailable = false;
   bool _recipeComplete = false;
   bool _isCouriered = false;
   bool _labInfoComplete = false;
   bool _saving = false;
+
+  /// The record was already finished when it was opened: going back
+  /// leaves it so, rather than turning it into a draft.
+  bool _wasCompleted = false;
 
   /// Set once and restored on resume, so touching a draft does not move it
   /// between days and out from under the date filter that found it.
@@ -204,6 +225,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
 
   /// Whether the seizure question has been put on this visit to the form.
   bool _seizureAsked = false;
+
+  /// The findings the last answer to the seizure question covered; null
+  /// until known (a resumed record takes what stands when first checked).
+  Set<String>? _answeredFindings;
   SeizureDecision? _seizureDecision;
 
   /// The recipe rows, one per line: "<n>. <description> <pct>%".
@@ -247,10 +272,13 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
     if (saved == null || !mounted) return;
     setState(() {
       _inspectedAt = saved.inspectedAt;
+      _wasCompleted = saved.status != 'draft';
       _waybill = saved.waybill;
       _locationId = saved.locationId;
       _reasonId = saved.reasonId;
       _storageTypeId = saved.storageTypeId;
+      _productClass =
+          saved.productClass.isEmpty ? null : saved.productClass;
       _subClassId = saved.subClassProductId;
       _ingredientId = saved.ingredientId;
       _laboratoryId = saved.laboratoryId;
@@ -278,7 +306,12 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       _newIngredient.text = saved.newIngredient;
       _internalSampleNumber.text = saved.internalSampleNumber;
       _testSampleSize.text = saved.testSampleSize;
-      _directionRemarks.text = saved.directionRemarks;
+      _addedRemarks
+        ..clear()
+        ..addAll(saved.directionRemarks
+            .split('\n')
+            .map((line) => line.trim())
+            .where((line) => line.isNotEmpty));
       _correctBy = saved.correctByDate;
       _savedCorrectBy = saved.correctByDate;
       _correctByDate.text =
@@ -306,6 +339,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       _restrictedPresent = saved.restrictedParticularsPresent;
       _labelPackComplete = saved.labelPackComplete;
       _isSampled = saved.isSampled;
+      _testFat = saved.testFat;
+      _testProtein = saved.testProtein;
+      _testCalcium = saved.testCalcium;
+      _testDna = saved.testDna;
       _recipeAvailable = saved.recipeAvailable;
       _recipeComplete = saved.recipeComplete;
       _isCouriered = saved.isCouriered;
@@ -385,7 +422,6 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       _internalSampleNumber,
       _testSampleSize,
       _ingredientPercentage,
-      _directionRemarks,
       _correctByDate,
       _nonConformanceComments,
       _managerName,
@@ -446,6 +482,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         batchNumber: Value(BatchNumber.forRecord(_batchNumber.text)),
         manufacturedPackedDate: Value(_manuPackedDate.text.trim()),
         storageTypeId: Value(_storageTypeId),
+        productClass: Value(_productClass ?? ''),
         primarySampleSize: Value(_primarySampleSize.text.trim()),
         markingLabelsPresent: Value(_markingPresent),
         scaleLabelsPresent: Value(_scalePresent),
@@ -459,6 +496,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             Value(TypedParticulars.pack(_typedRestricted)),
         labelPackComplete: Value(_labelPackComplete),
         isSampled: Value(_isSampled),
+        testFat: Value(_testFat),
+        testProtein: Value(_testProtein),
+        testCalcium: Value(_testCalcium),
+        testDna: Value(_testDna),
         recipeAvailable: Value(_recipeAvailable),
         recipeComplete: Value(_recipeComplete),
         subClassProductId: Value(_subClassId),
@@ -472,11 +513,14 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         labInfoComplete: Value(_labInfoComplete),
         waybill: Value(_waybill),
         directionRemarkTypeId: Value(_remarkTypeId),
-        directionRemarks: Value(_directionRemarks.text.trim()),
+        directionRemarks: Value(_addedRemarks.join('\n')),
         correctByDate: Value(_correctBy),
         productNameAbsent: Value(_productNameAbsent),
         seizureDecision: Value(_seizureDecision?.stored ?? ''),
-        nonConformanceComments: Value(_nonConformanceComments.text.trim()),
+        // Only with a deviation (Ethan, 2026-09-30).
+        nonConformanceComments: Value(_directionPresent(await _reference)
+            ? _nonConformanceComments.text.trim()
+            : ''),
         managerName: Value(_managerName.text.trim()),
         managerEmail: Value(_managerEmail.text.trim()),
         clientEmail: Value(_clientEmail.text.trim()),
@@ -494,13 +538,44 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   /// form is a lazy list, and a field scrolled off screen is not built, so
   /// `validate()` never sees it.
   List<({String id, String message})> _missingRequired() => [
+        // The product being inspected must be named (Ethan, 2026-10-14), unless
+        // the inspector marked the product name as not shown on the label.
+        if (!_productNameAbsent &&
+            _productItem.text.trim().isEmpty &&
+            _newProductItem.text.trim().isEmpty)
+          (
+            id: 'productName',
+            message: 'Product Name is required — choose or add the product, or '
+                'mark the product name as not shown on the label.',
+          ),
         // Required on every commodity (Ethan, 2026-09-24).
         if (BatchNumber.missing(_batchNumber.text) case final batch?)
           (id: 'batchNumber', message: batch),
         if (_primarySizeIssue() case final size?)
           (id: 'primarySampleSize', message: size),
+        // The laboratory the sample is going to. Left optional, ten of the
+        // 109 samples in the 11-16 October lab report reached the office
+        // with no laboratory against them.
+        if (_isSampled && _laboratoryId == null)
+          (
+            id: 'laboratory',
+            message: 'Laboratory is required — choose where the sample is '
+                'being sent.',
+          ),
         if (_labSizeIssue() case final size?)
           (id: 'testSampleSize', message: size),
+        // A sampled inspection must say what the sample is being tested for,
+        // the same requirement the APS web app enforces (Ethan, 2026-10-06).
+        if (_isSampled &&
+            !_testFat &&
+            !_testProtein &&
+            !_testCalcium &&
+            !_testDna)
+          (
+            id: 'testTypes',
+            message: 'Choose at least one test the sample is for '
+                '(Fat, Protein, Calcium or DNA).',
+          ),
       ];
 
   /// Wraps a required field so a refused save can scroll to it and mark it.
@@ -518,8 +593,75 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         child: child,
       );
 
+  /// The remark chosen but not yet added, by name.
+  String? _remarkName(_Reference reference) {
+    for (final r in reference.remarks) {
+      if (r.id == _remarkTypeId) return r.name;
+    }
+    return null;
+  }
+
+  /// The original's remark list: bullet-prefixed lines, Cancel to leave it.
+  Future<void> _pickDirectionRemark(_Reference reference) async {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rejection Remark'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final remark in reference.remarks)
+                InkWell(
+                  onTap: () => Navigator.of(dialogContext).pop(remark.id),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Text('• ${remark.name}',
+                        style: const TextStyle(fontSize: 15, height: 1.35)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('CANCEL'),
+          ),
+        ],
+      ),
+    );
+    if (picked != null && mounted) setState(() => _remarkTypeId = picked);
+  }
+
+  /// Adds the chosen remark to the direction. The same remark twice says
+  /// nothing twice, so it is added once.
+  ///
+  /// Written straight to the draft: an install or a crash between adding a
+  /// remark and leaving the form would otherwise lose it.
+  void _addRemark(_Reference reference) {
+    final name = _remarkName(reference);
+    if (name == null || _addedRemarks.contains(name)) return;
+    setState(() => _addedRemarks.add(name));
+    unawaited(_persist(completed: false));
+  }
+
+  /// Empties the list and writes that through, for the same reason.
+  void _clearRemarks() {
+    setState(_addedRemarks.clear);
+    unawaited(_persist(completed: false));
+  }
+
+  /// Product photos: two required, three at most (Ethan, 2026-09-30).
+  static const _minProductPhotos = 2;
+  static const _maxProductPhotos = 3;
+
   Future<void> _save(_Reference reference, {required bool completed}) async {
-    if (completed) {
+    // Seized, the rest of the checklist is not asked for — only the
+    // photographs (Ethan, 2026-09-30).
+    final seized = _seizureDecision == SeizureDecision.seize;
+    if (completed && !seized) {
       // Marks whatever is on screen red; the list below finds the rest.
       final formValid = _formKey.currentState?.validate() ?? false;
       final missing = _missingRequired();
@@ -536,14 +678,19 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       }
       if (!formValid) return;
     }
-    if (completed &&
-        (await widget.captureRepository.photosFor(_clientUuid)).isEmpty) {
+    final taken =
+        (await widget.captureRepository.photosFor(_clientUuid, kind: 'pmp'))
+            .length;
+    if (completed && taken < _minProductPhotos) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          content:
-              Text('Capture at least one inspection photo before completing.'),
+        ..showSnackBar(SnackBar(
+          content: Text(seized
+              ? seizurePhotosOwed('$_minProductPhotos product photos — '
+                  '$taken of $_minProductPhotos taken')
+              : 'Take $_minProductPhotos product photos before completing — '
+                  '$taken of $_minProductPhotos taken.'),
         ));
       await _missing.flag(context, const ['photos']);
       return;
@@ -565,6 +712,13 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
     if (completed && findings.isNotEmpty) {
       await _spawnDirection(reference, findings);
       if (!mounted) return;
+    }
+
+    // Seized: said so, and back to where the inspection was opened from.
+    if (completed && seized) {
+      announceSeizureDone(context);
+      Navigator.of(context).pop(true);
+      return;
     }
 
     // Inside a grouped inspection there is nothing to announce — the record
@@ -676,14 +830,25 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   }
 
   Future<void> _askAboutSeizureIfNeeded(_Reference reference) async {
-    if (_seizureAsked) return;
     final rows = PmpRules.seizureFindings(
       items: reference.checklist,
       present: _presentSections,
       compliantItemIds: _compliant,
       productNameAbsent: _productNameAbsent,
     );
-    if (rows.isEmpty || !mounted) return;
+    if (rows.isEmpty) {
+      _forgetSeizureQuestion();
+      return;
+    }
+    // A finding the last answer did not cover is asked about afresh: a
+    // second omission is a second reason to seize. A seizure already
+    // recorded covers the consignment, whatever else is found.
+    final findings = {for (final r in rows) '${r.id}'};
+    if (_seizureDecision == SeizureDecision.seize || !mounted) return;
+    if (_seizureAsked &&
+        (_answeredFindings ??= findings).containsAll(findings)) {
+      return;
+    }
     _seizureAsked = true;
     final answer =
         await askAboutSeizure(context, reason: _seizureReason(rows));
@@ -691,6 +856,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
       _seizureAsked = false;
       return;
     }
+    _answeredFindings = findings;
     setState(() => _seizureDecision = answer);
     // Seized: the Annexure E sheet is drawn up here, on the premises.
     if (answer == SeizureDecision.seize) {
@@ -715,6 +881,25 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
           receiverName: _managerName.text,
         ),
       );
+      // Seized: the product is taken, so the inspection ends here — only
+      // its photographs are still asked for (Ethan, 2026-09-30).
+      if (mounted) await _save(reference, completed: true);
+    }
+  }
+
+  /// The findings no longer call for a seizure — a row was marked back
+  /// compliant — so the answer given to them lapses and the question is put
+  /// again should a finding return (Ethan, 2026-09-29). A seizure actually
+  /// recorded stands: its sheet has been drawn up.
+  void _forgetSeizureQuestion() {
+    if (_seizureDecision == SeizureDecision.seize) return;
+    if (!_seizureAsked && _seizureDecision == null) return;
+    _seizureAsked = false;
+    _answeredFindings = null;
+    if (mounted) {
+      setState(() => _seizureDecision = null);
+    } else {
+      _seizureDecision = null;
     }
   }
 
@@ -759,10 +944,9 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         'counted from the inspection date.';
   }
 
-  /// The seizure decision, once taken, stated on the form.
+  /// A seizure, once recorded, stated on the form.
   Widget _seizureNotice() {
-    final seized = _seizureDecision == SeizureDecision.seize;
-    final colour = seized ? AppColors.brandRed : AppColors.inkSoft;
+    const colour = AppColors.brandRed;
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
@@ -771,12 +955,9 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         border: Border.all(color: colour.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Text(
-        seized
-            ? 'Seizure under section 8 of the APS Act recorded for this '
-                'consignment (FSA-SOP-APS-001 Annexure B).'
-            : 'Seizure declined on the premises; the rejection stands and is '
-                'to be put right immediately.',
+      child: const Text(
+        'Seizure under section 8 of the APS Act recorded for this '
+        'consignment (FSA-SOP-APS-001 Annexure B).',
         style: TextStyle(color: colour, fontSize: 13, height: 1.4),
       ),
     );
@@ -825,7 +1006,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
         clientName: Value(_contactPerson.text.trim()),
         clientEmail: Value(_clientEmail.text.trim()),
         remarkTypeId: Value(_remarkTypeId),
-        remarks: Value(_directionRemarks.text.trim()),
+        remarks: Value(_addedRemarks.join('\n')),
         comments: Value(_nonConformanceComments.text.trim()),
         nonConformanceIds: Value(positions.join(',')),
         producerName: Value(_producerName.text.trim()),
@@ -883,8 +1064,34 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
   List<PoultryDesignationRef> _asRefs(List<PmpRef> items) =>
       [for (final i in items) PoultryDesignationRef(id: i.id, name: i.name)];
 
+  /// Back out of the form: the work waits as a draft. A record already
+  /// finished is left as it was finished; only Complete changes it.
+  Future<void> _leave() async {
+    if (!_wasCompleted) {
+      setState(() => _saving = true);
+      await _persist(completed: false);
+      if (!mounted) return;
+      setState(() => _saving = false);
+    }
+    if (mounted) Navigator.of(context).pop(false);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // The back arrow and the phone's own back gesture keep the work: a
+    // record stepped out of mid-way waits as a draft, which is why there is
+    // no Save draft button (Ethan, 2026-09-30).
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop || _saving) return;
+        await _leave();
+      },
+      child: _page(),
+    );
+  }
+
+  Widget _page() {
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(
@@ -1053,7 +1260,7 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
           const DirectoryField(label: 'Trading name', key: 'tradingName'),
           const DirectoryField(label: 'Address', key: 'address'),
           const DirectoryField(
-              label: 'Telephone / cellphone',
+              label: 'Telephone/cellphone',
               key: 'telephone',
               keyboardType: TextInputType.phone),
         ]);
@@ -1242,31 +1449,60 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
           ],
 
           poultrySection('Product'),
-          // Named once on the visit (Ethan, 2026-09-25); asked here only
-          // when the visit did not name one.
-          if (!_producerFromVisit)
-            SearchPickerField<PmpRef>(
-              label: 'Producer',
-              controller: _producerName,
-              options: reference.producers,
-              optionLabel: (p) => p.name,
-              minQueryLength: 1,
-              onSelected: (p) => setState(() => _producerName.text = p.name),
-              emptyHint: 'No producers on this device yet. Sync to download '
-                  'the directory, or add one here.',
-              addNewLabel: 'Add new producer',
-              onAddNew: _addProducer,
-            ),
+          // Named once on the visit (Ethan, 2026-09-25) and filled in here,
+          // so it is never typed twice — but shown, because one visit may
+          // cover products from different producers. See the note on the
+          // raw form: hiding it stamped the visit's producer on every
+          // commodity (Maders Slaghuis, group 4152, Cinga 2026-10-26).
           SearchPickerField<PmpRef>(
-            label: 'Processed Meat Product Name',
-            controller: _productItem,
-            options: reference.products,
+            label: 'Producer',
+            controller: _producerName,
+            options: reference.producers,
             optionLabel: (p) => p.name,
             minQueryLength: 1,
-            onSelected: (p) => setState(() => _productItem.text = p.name),
-            emptyHint: 'No product directory on this device yet.',
-            addNewLabel: 'Add new product',
-            onAddNew: _addProduct,
+            onSelected: (p) => setState(() => _producerName.text = p.name),
+            emptyHint: 'No producers on this device yet. Sync to download '
+                'the directory, or add one here.',
+            addNewLabel: 'Add new producer',
+            onAddNew: _addProducer,
+          ),
+          if (_producerFromVisit)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 10),
+              child: Text(
+                'Filled in from the visit. Change it here if this product '
+                'came from a different producer.',
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+              ),
+            ),
+          _anchor(
+            'productName',
+            listenable: Listenable.merge([_productItem, _newProductItem]),
+            SearchPickerField<PmpRef>(
+              label: 'Processed Meat Product Name',
+              controller: _productItem,
+              options: reference.products,
+              optionLabel: (p) => p.name,
+              minQueryLength: 1,
+              onSelected: (p) => setState(() => _productItem.text = p.name),
+              emptyHint: 'No product directory on this device yet.',
+              addNewLabel: 'Add new product',
+              onAddNew: _addProduct,
+            ),
+          ),
+          // The class APS files the product under (Ethan, 2026-10-04): the
+          // office's own PMP list, so the record lands in its dropdown.
+          PickerMenuField<String>(
+            label: 'Product Class',
+            value: _productClass,
+            hint: 'Select a class',
+            options: [
+              for (final c in pmpProductClasses) (value: c, text: c),
+            ],
+            onChanged: (v) {
+              setState(() => _productClass = v);
+              unawaited(_persist(completed: false));
+            },
           ),
           _anchor(
             'batchNumber',
@@ -1276,7 +1512,8 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
               'Batch Number',
               required: true,
               focusNode: _batchFocus,
-              helper: 'The number off the pack, or N/A if it has none.',
+              helper: 'The batch number or code off the pack, or N/A if it '
+                  'has none.',
             ),
           ),
           // Was a typed box, the only date on any form without a calendar.
@@ -1498,11 +1735,18 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
                 ),
             ],
             poultrySection('Laboratory Details'),
-            poultryDropdown(
-              label: 'Laboratory',
-              value: _laboratoryId,
-              items: _asRefs(reference.laboratories),
-              onChanged: (v) => setState(() => _laboratoryId = v),
+            // Required once the record says a sample was taken: a sample
+            // that reaches the office without a laboratory cannot be traced
+            // to where it went (Chrisna, 2026-10-20).
+            _anchor(
+              'laboratory',
+              poultryDropdown(
+                label: 'Laboratory',
+                value: _laboratoryId,
+                items: _asRefs(reference.laboratories),
+                onChanged: (v) => setState(() => _laboratoryId = v),
+                required: true,
+              ),
             ),
             // Made up by the app, not typed (Ethan, 2026-09-25): one
             // number per sample this inspector takes today, for the bag
@@ -1521,19 +1765,49 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
                   keyboard:
                       const TextInputType.numberWithOptions(decimal: true)),
             ),
-            poultrySwitch(
-              // The original's field is named IsCouriered but captioned
-              // "Hand Delivered". The caption is what the inspector reads,
-              // so it stays; the Pending Courier screen filters the field.
-              label: 'Hand Delivered',
-              value: _isCouriered,
-              onChanged: (v) => setState(() => _isCouriered = v),
+            // What the sample is being tested for (Ethan, 2026-10-06): an
+            // in-place dropdown like the raw category picker. At least one on.
+            _anchor(
+              'testTypes',
+              PoultryTestDropdown(
+                label: 'What are you testing for?',
+                options: [
+                  (
+                    label: 'Fat',
+                    selected: _testFat,
+                    onToggle: () => setState(() => _testFat = !_testFat),
+                  ),
+                  (
+                    label: 'Protein',
+                    selected: _testProtein,
+                    onToggle: () => setState(() => _testProtein = !_testProtein),
+                  ),
+                  (
+                    label: 'Calcium',
+                    selected: _testCalcium,
+                    onToggle: () => setState(() => _testCalcium = !_testCalcium),
+                  ),
+                  (
+                    label: 'Dna',
+                    selected: _testDna,
+                    onToggle: () => setState(() => _testDna = !_testDna),
+                  ),
+                ],
+              ),
             ),
-            poultrySwitch(
-              label: 'Lab info is complete',
-              value: _labInfoComplete,
-              onChanged: (v) => setState(() => _labInfoComplete = v),
+            // The same two-way choice the raw form asks (Ethan, 2026-10-02):
+            // the sample either goes by hand or by courier, and the Pending
+            // Courier screen lists the couriered ones until their waybill
+            // is in. The old "Hand Delivered" switch wrote the field the
+            // other way round.
+            poultryChoice(
+              label: 'Delivery Method - Toggle the option below',
+              options: const ['Hand Delivered', 'Couriered'],
+              selectedIndex: _isCouriered ? 1 : 0,
+              onChanged: (i) => setState(() => _isCouriered = i == 1),
             ),
+            // No "Lab info is complete" switch, as on the raw form (Ethan,
+            // 2026-10-02): the inspector just goes on.
           ],
 
           _anchor(
@@ -1548,6 +1822,10 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             guidance: 'Photograph the product as it is offered for sale. '
                 'Show the label square-on, with the product name, the '
                 'manufacturer or packer and the batch code readable.',
+            // Two required, three at most (Ethan, 2026-09-30); it had no
+            // limit and asked for one.
+            minPhotos: _minProductPhotos,
+            maxPhotos: _maxProductPhotos,
             // In a grouped inspection the manager and inspector sign once,
             // at the end, and those signatures fan out to every member.
             showSignatures: widget.visit == null,
@@ -1557,13 +1835,93 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
 
           if (_directionPresent(reference)) ...[
             poultrySection('Rejection Form'),
-            poultryDropdown(
+            // Remarks are chosen from the Agency's own list and added, not
+            // typed: the original opens a "Direction Remark" dialog, adds
+            // the chosen line to the direction, and offers Clear Remarks to
+            // start the list again. PMP offered the list but no way to add
+            // from it, so a chosen remark went nowhere (Ethan, 2026-10-26).
+            LabelledField(
               label: 'Label/Pack Rejection Remarks',
-              value: _remarkTypeId,
-              items: _asRefs(reference.remarks),
-              onChanged: (v) => setState(() => _remarkTypeId = v),
+              child: InkWell(
+                onTap: () => _pickDirectionRemark(reference),
+                borderRadius: BorderRadius.circular(4),
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  child: Text(
+                    _remarkName(reference) ?? 'Select a rejection remark',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: _remarkTypeId == null
+                          ? AppColors.muted
+                          : AppColors.ink,
+                    ),
+                  ),
+                ),
+              ),
             ),
-            poultryField(_directionRemarks, 'List of Added Remarks', lines: 2),
+            _anchor(
+                'rejectionRemarks',
+                framed: true,
+                LabelledField(
+                  label: 'Added Remarks',
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceAlt,
+                      border: Border.all(color: AppColors.border),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: _addedRemarks.isEmpty
+                        ? Text(
+                            'None added yet.',
+                            style:
+                                TextStyle(fontSize: 13, color: AppColors.muted),
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final remark in _addedRemarks)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text('• $remark',
+                                      style: const TextStyle(
+                                          fontSize: 13.5, height: 1.35)),
+                                ),
+                            ],
+                          ),
+                  ),
+                )),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _remarkTypeId == null
+                        ? null
+                        : () => _addRemark(reference),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('ADD REMARK', maxLines: 1),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _addedRemarks.isEmpty ? null : _clearRemarks,
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('CLEAR REMARKS', maxLines: 1),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
             // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
             // later, never into the past (see CorrectByDateField).
             CorrectByDateField(
@@ -1572,7 +1930,9 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
               helperText: _periodHelper(reference),
               onChanged: _correctByChanged,
             ),
-            if (_seizureDecision != null) _seizureNotice(),
+            // A seizure declined says nothing here: the rejection above stands
+            // as it is (Ethan, 2026-09-30).
+            if (_seizureDecision == SeizureDecision.seize) _seizureNotice(),
             poultryField(
               _nonConformanceComments,
               'Non-Conformance Comments',
@@ -1616,32 +1976,16 @@ class _PmpInspectionFormState extends State<PmpInspectionForm> {
             ),
 
           const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: OutlinedButton(
-                    onPressed: _saving
-                        ? null
-                        : () => _save(reference, completed: false),
-                    child: const Text('Save draft'),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: FilledButton(
-                    onPressed: _saving
-                        ? null
-                        : () => _save(reference, completed: true),
-                    child: Text(_saving ? 'Saving…' : 'Complete'),
-                  ),
-                ),
-              ),
-            ],
+          // No Save draft: going back keeps the work as a draft, and the
+          // visit shows it in progress (Ethan, 2026-09-30).
+          SizedBox(
+            height: 48,
+            child: FilledButton(
+              onPressed: _saving
+                  ? null
+                  : () => _save(reference, completed: true),
+              child: Text(_saving ? 'Saving…' : 'Complete'),
+            ),
           ),
         ],
       ),

@@ -102,6 +102,15 @@ class EggRequirements extends Table {
   /// The original's own list order, which is not alphabetical.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   TextColumn get regulation => text().withDefault(const Constant(''))();
+
+  /// Minimum vertical height of the smallest letter or figure, in
+  /// millimetres, as the sheet's STD column prints it. Table 1 of the
+  /// Annexure to R.345 of 20 March 2020 (gazette 43108, page 28): column 2
+  /// for the container rows, column 3 for the outer-container rows. Text,
+  /// not a number — a row the table says nothing about has no requirement,
+  /// and 0 would read as "must be at least nothing". Asked for by Neo Noe,
+  /// 2026-10-19; every row used to print "-".
+  TextColumn get minLetteringHeight => text().withDefault(const Constant(''))();
   BoolColumn get isActive => boolean().withDefault(const Constant(true))();
   TextColumn get updatedAt => text().withDefault(const Constant(''))();
 
@@ -283,6 +292,15 @@ class EggInspections extends Table {
       boolean().withDefault(const Constant(false))();
   BoolColumn get haughNotRequired =>
       boolean().withDefault(const Constant(false))();
+
+  /// Which eggs of the set carry the Haugh reading, as a comma-separated
+  /// list of egg numbers, drawn by the app rather than chosen by the
+  /// inspector (Ethan, 2026-10-23).
+  ///
+  /// Stored, not re-drawn: reopening a record must ask for the same eggs,
+  /// and the sheet has to say which six were measured.
+  TextColumn get haughSampleNumbers =>
+      text().withDefault(const Constant(''))();
 
   /// The original's `switchEggWeighingInspectionNotRequired`. Eggs cannot be
   /// broken open on a retailer's premises, so at a retailer the inspector may

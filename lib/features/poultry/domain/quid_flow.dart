@@ -30,7 +30,9 @@ const double quidMaxWaterPickupPercent = 7.0;
 const int quidMaxIterations = 2;
 
 /// The regulated QUID an injector is held to when the plant has no
-/// dispensation: 10% on whole carcasses, 15% on cuts.
+/// dispensation: 10% on whole carcasses, 15% on portions. AFSQ reported the
+/// two crossed over and Ethan confirmed this way round (2026-10-08) — a cut
+/// absorbs more, so portions carry the larger allowance.
 double quidRegulatedPercent({required bool isWholeCarcass}) =>
     isWholeCarcass ? quidWholeCarcassMaximum : quidCutPortionMaximum;
 
@@ -64,15 +66,16 @@ typedef QuidStageSample = ({
 });
 
 /// What stops the chilling stage closing, or null when it may.
+///
+/// Water or air, the stage is the weight before chilling (Ethan,
+/// 2026-10-04): the weight off the water chiller is the weight going onto
+/// the injector, which the injector stage asks.
 String? quidChillingBlocked(List<QuidStageSample> samples,
     {required bool isWaterChilled}) {
-  final done = samples
-      .where(
-          (s) => quidNumber(isWaterChilled ? s.waterFinal : s.initial) != null)
-      .length;
+  final done = samples.where((s) => quidNumber(s.initial) != null).length;
   if (done < quidMinimumSampleSet) {
-    return 'A minimum of five (5) samples is required, before an average '
-        'Pickup percentage can calculated.';
+    return 'Weigh at least five carcasses first: the average is worked '
+        'out over five.';
   }
   return null;
 }
@@ -86,8 +89,8 @@ String? quidInjectorBlocked(
             s.injector == position && quidNumber(s.injectorAfter) != null)
         .length;
     if (count < quidMinimumSampleSet) {
-      return 'At least one or more of the Injectors has not all the min. of '
-          'samples captured. Please address.';
+      return 'Every injector needs at least five carcasses weighed on and '
+          'off it.';
     }
   }
   return null;
@@ -102,8 +105,8 @@ String? quidDeterminationBlocked(
             (s) => s.injector == position && quidNumber(s.quidPercent) != null)
         .length;
     if (count < quidMinimumSampleSet) {
-      return 'An insufficient number of samples for QUID calculation has been '
-          'completed for each Injector.';
+      return 'Every injector needs at least five carcasses with a final '
+          'weight.';
     }
   }
   return null;

@@ -419,10 +419,10 @@ class _PoultryDirectionFormState extends State<PoultryDirectionForm> {
                   items: reference.remarks,
                   onChanged: (v) => setState(() => _remarkTypeId = v),
                 ),
-                poultryField(_remarks, 'List of Added Remarks', lines: 2),
+                poultryField(_remarks, 'Added Remarks', lines: 2),
                 poultryField(_comments, 'Comments/Remarks on Rejection',
                     lines: 3),
-                poultryField(_action, 'Batch No. and/or Quantity Removed'),
+                poultryField(_action, 'Batch No. and/or Quantity Rejected'),
 
                 const SizedBox(height: 20),
                 SizedBox(

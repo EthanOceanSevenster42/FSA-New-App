@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/address_search_field.dart';
 import '../../../core/widgets/responsive.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/data/local_database.dart';
+import '../../../core/data/sqlite_connection.dart';
 import '../../../core/services/in_app_camera.dart';
 import '../../../core/services/photo_storage.dart';
 import '../../../core/theme/app_theme.dart';
@@ -50,6 +52,46 @@ class PoultryLabelCarryOver {
   final String productDetails;
 }
 
+/// What the grading takes from the Label/Container Checklist it sits under,
+/// read each time it is written, so a correction made up there reaches the
+/// grading record too.
+typedef PoultryGradingHost = ({
+  int? reasonId,
+  int? locationId,
+  String facilityName,
+  String tradingName,
+  String facilityAddress,
+  String facilityTelephone,
+  String registrationNumber,
+  String contactPerson,
+  String contactEmail,
+  String productName,
+  String managerName,
+  String managerEmail,
+  String clientEmail,
+  String clientEmail2,
+});
+
+/// Lets the label checklist the grading sits under finish or save it with
+/// its own buttons.
+class PoultryGradingController {
+  Future<bool> Function({bool hostSeized})? _finish;
+  Future<void> Function()? _save;
+
+  /// Whether the grading is on the form to be asked.
+  bool get attached => _finish != null;
+
+  /// Checks the grading is complete, marking what is not, and records it
+  /// as finished. False while something is still to do.
+  /// [hostSeized]: the label checklist it sits under was seized, so the
+  /// grading closes with it and asks nothing more.
+  Future<bool> finish({bool hostSeized = false}) =>
+      _finish?.call(hostSeized: hostSeized) ?? Future.value(false);
+
+  /// Keeps the grading as it stands, as a draft.
+  Future<void> save() => _save?.call() ?? Future.value();
+}
+
 class PoultryInspectionForm extends StatefulWidget {
   const PoultryInspectionForm({
     super.key,
@@ -59,6 +101,12 @@ class PoultryInspectionForm extends StatefulWidget {
     this.existingUuid,
     this.visit,
     this.carriedOver,
+    this.embedded = false,
+    this.controller,
+    this.host,
+    this.onNoGrade,
+    this.onSeized,
+    this.hostSeized = false,
   });
 
   final PoultryRepository repository;
@@ -76,6 +124,30 @@ class PoultryInspectionForm extends StatefulWidget {
   /// arrive filled and the signatures are taken once, at the end of the
   /// visit.
   final VisitPrefill? visit;
+
+  /// Drawn underneath the labelling on the Label/Container Checklist rather
+  /// than on a screen of its own: what that form already asks — the reason,
+  /// the facility, the registration number, the product name, signatures
+  /// and its buttons — is not asked again (Ethan, 2026-09-29).
+  final bool embedded;
+
+  /// How the label checklist finishes or saves it.
+  final PoultryGradingController? controller;
+
+  /// What the label checklist has captured.
+  final PoultryGradingHost Function()? host;
+
+  /// "No Grade" chosen on the label checklist: grading is answered NO there
+  /// instead of leaving the form.
+  final VoidCallback? onNoGrade;
+
+  /// Under the label checklist, a seizure raised here: that form finishes
+  /// both, since it holds the Complete (Ethan, 2026-09-30).
+  final VoidCallback? onSeized;
+
+  /// The label checklist this sits under has been seized: the product is
+  /// taken, so no grade or sample is asked here (Ethan, 2026-09-30).
+  final bool hostSeized;
 
   @override
   State<PoultryInspectionForm> createState() => _PoultryInspectionFormState();
@@ -114,8 +186,14 @@ class _Reference {
   final List<EggFacility> facilities;
 }
 
-class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
+class _PoultryInspectionFormState extends State<PoultryInspectionForm>
+    with AutomaticKeepAliveClientMixin {
   late Future<_Reference> _reference;
+
+  /// Under the labelling the grading is one entry of a long list: kept while
+  /// scrolled out of sight, or its ticks would go with it.
+  @override
+  bool get wantKeepAlive => widget.embedded;
 
   final _formKey = GlobalKey<FormState>();
 
@@ -174,6 +252,10 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   /// Whether the seizure question has been put on this visit to the form,
   /// and what the inspector answered.
   bool _seizureAsked = false;
+
+  /// The findings the last answer to the seizure question covered; null
+  /// until known (a resumed record takes what stands when first checked).
+  Set<String>? _answeredFindings;
   SeizureDecision? _seizureDecision;
 
   /// The original has five whole-carcass samples, each with its own grading
@@ -211,17 +293,99 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
 
   bool _saving = false;
 
+  /// On the Poultry Type list in the reference data, but not poultry types.
+  static const _notPoultryTypes = {'portions', 'other'};
+
+  /// The record was already finished when it was opened: going back
+  /// leaves it so, rather than turning it into a draft.
+  bool _wasCompleted = false;
+
   @override
   void initState() {
     super.initState();
     _applyVisitPrefill();
-    _reference = _load();
+    _reference = _loadReference();
     if (widget.existingUuid != null) _restore(widget.existingUuid!);
     unawaited(_carryRegistrationNumber());
     // Where the inspection is happening is not a decision, so it is not a
     // question: taken in the background as the form opens, and silent
     // whether it succeeds or not.
     unawaited(_captureLocation(silent: true));
+    widget.controller
+      ?.._finish = _finishEmbedded
+      .._save = _saveEmbedded;
+    // Typing keeps the draft too. Only this form's own boxes: the facility
+    // ones are refilled from the label checklist on every keep.
+    for (final c in [
+      _directionRemarks,
+      _directionComments,
+      _inspectionComments
+    ]) {
+      c.addListener(_autosave);
+    }
+  }
+
+  /// Kept as it is filled in (Ethan, 2026-09-30), so an app closed mid-way
+  /// — by the phone, a flat battery, an update — loses nothing.
+  Timer? _autosaveTimer;
+
+  /// Set once the grading is being finished, so a pending keep cannot turn
+  /// the finished record back into a draft.
+  bool _finishing = false;
+
+  void _autosave() {
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(milliseconds: 700), () {
+      // A finished record is only changed by Complete, as on leaving.
+      if (!mounted || _finishing || _wasCompleted) return;
+      unawaited(_persist(completed: false));
+    });
+  }
+
+  /// Every answer that redraws the form — a slider, a picker, a sample —
+  /// is kept as well.
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _autosave();
+  }
+
+  /// The label checklist's Complete: the same checks as this form's own.
+  Future<bool> _finishEmbedded({bool hostSeized = false}) async {
+    final reference = await _reference;
+    if (!mounted) return false;
+    return _complete(reference, hostSeized: hostSeized);
+  }
+
+  /// The label checklist's Save draft.
+  Future<void> _saveEmbedded() async {
+    if (mounted) await _persist(completed: false);
+  }
+
+  /// Takes what the label checklist holds: its answers are this record's.
+  /// Only what it has filled in — a blank there leaves this record's own
+  /// value, the visit's facility among them, where it is.
+  void _takeFromHost() {
+    final host = widget.host?.call();
+    if (host == null) return;
+    _reasonId = host.reasonId ?? _reasonId;
+    _locationId = host.locationId ?? _locationId;
+    void take(TextEditingController field, String value) {
+      if (value.trim().isNotEmpty) field.text = value;
+    }
+
+    take(_facilityName, host.facilityName);
+    take(_producerTradingName, host.tradingName);
+    take(_facilityAddress, host.facilityAddress);
+    take(_facilityTelephone, host.facilityTelephone);
+    take(_companyReg, host.registrationNumber);
+    take(_contactPerson, host.contactPerson);
+    take(_contactEmail, host.contactEmail);
+    take(_productDetails, host.productName);
+    take(_managerName, host.managerName);
+    take(_managerEmail, host.managerEmail);
+    take(_clientEmail, host.clientEmail);
+    take(_clientEmail2, host.clientEmail2);
   }
 
   /// Takes the registration number from whichever poultry record in this
@@ -290,6 +454,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     if (saved == null || !mounted) return;
     setState(() {
       _inspectedAt = saved.inspectedAt;
+      _wasCompleted = saved.status != 'draft';
       _locationId = saved.locationId;
       _reasonId = saved.reasonId;
       _meatTypeId = saved.meatTypeId;
@@ -331,22 +496,33 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
 
   /// Marks every checklist row Compliant, for a record nobody has answered
   /// yet.
-    // Every requirement starts Compliant, so the inspector marks only what
-    // is wrong.
-    //
-    // The rows used to start as deviations, on the reasoning that the app
-    // must not claim a requirement was met before anyone had looked. In the
-    // field that inverts the work: a compliant consignment means moving
-    // every row one at a time, and any row missed in that sweep becomes a
-    // deviation the inspector never intended. A deviation is the exception,
-    // so it is the exception that gets marked (FSA, 2026-09-07 for eggs;
-    // carried to every commodity 2026-09-23).
-    //
-    // Seeded before any saved draft is restored, so a resumed record keeps
-    // the answers it was saved with.
+  // Every requirement starts Compliant, so the inspector marks only what
+  // is wrong.
+  //
+  // The rows used to start as deviations, on the reasoning that the app
+  // must not claim a requirement was met before anyone had looked. In the
+  // field that inverts the work: a compliant consignment means moving
+  // every row one at a time, and any row missed in that sweep becomes a
+  // deviation the inspector never intended. A deviation is the exception,
+  // so it is the exception that gets marked (FSA, 2026-09-07 for eggs;
+  // carried to every commodity 2026-09-23).
+  //
+  // Seeded before any saved draft is restored, so a resumed record keeps
+  // the answers it was saved with.
   void _startCompliant(List<PoultryChecklistItemRef> checklist) {
     if (_compliant.isNotEmpty) return;
     _compliant.addAll([for (final item in checklist) item.id]);
+  }
+
+  /// The reference read, capped so a stuck or locked local database surfaces
+  /// a retry instead of an endless spinner. A local read is near-instant;
+  /// twenty seconds means something is wrong, not slow (Ethan, 2026-10-14).
+  Future<_Reference> _loadReference() =>
+      _load().timeout(const Duration(seconds: 20));
+
+  void _retryReference() {
+    if (!mounted) return;
+    setState(() => _reference = _loadReference());
   }
 
   Future<_Reference> _load() async {
@@ -371,6 +547,13 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
 
   @override
   void dispose() {
+    _autosaveTimer?.cancel();
+    final controller = widget.controller;
+    if (controller != null && controller._finish == _finishEmbedded) {
+      controller
+        .._finish = null
+        .._save = null;
+    }
     for (final c in [
       _facilityName,
       _facilityAddress,
@@ -512,23 +695,35 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   }
 
   Future<void> _askAboutSeizureIfNeeded(_Reference reference) async {
-    if (_seizureAsked) return;
     final rows = PoultryRules.seizureFindings(
       deviations: _deviations(reference),
       classOmitted: false,
       gradeOmitted: false,
     );
-    if (rows.isEmpty || !mounted) return;
+    if (rows.isEmpty) {
+      _forgetSeizureQuestion();
+      return;
+    }
+    // A finding the last answer did not cover is asked about afresh: a
+    // second omission is a second reason to seize. A seizure already
+    // recorded covers the consignment, whatever else is found.
+    final findings = {for (final r in rows) '${r.id}'};
+    if (_seizureDecision == SeizureDecision.seize || !mounted) return;
+    if (_seizureAsked &&
+        (_answeredFindings ??= findings).containsAll(findings)) {
+      return;
+    }
     _seizureAsked = true;
-    final answer =
-        await askAboutSeizure(context, reason: _seizureReason(rows));
+    final answer = await askAboutSeizure(context, reason: _seizureReason(rows));
     if (answer == null || !mounted) {
       _seizureAsked = false;
       return;
     }
+    _answeredFindings = findings;
     setState(() => _seizureDecision = answer);
     // Seized: the Annexure E sheet is drawn up here, on the premises.
     if (answer == SeizureDecision.seize) {
+      _takeFromHost();
       await recordSeizure(
         context,
         database: widget.repository.database,
@@ -551,6 +746,31 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           receiverName: _managerName.text,
         ),
       );
+      if (!mounted) return;
+      // Seized: the product is taken, so the inspection ends here — only
+      // its photographs are still asked for (Ethan, 2026-09-30). Under the
+      // label checklist, that form finishes both.
+      if (widget.embedded) {
+        widget.onSeized?.call();
+      } else {
+        await _save(reference, completed: true);
+      }
+    }
+  }
+
+  /// The findings no longer call for a seizure — a row was marked back
+  /// compliant — so the answer given to them lapses and the question is put
+  /// again should a finding return (Ethan, 2026-09-29). A seizure actually
+  /// recorded stands: its sheet has been drawn up.
+  void _forgetSeizureQuestion() {
+    if (_seizureDecision == SeizureDecision.seize) return;
+    if (!_seizureAsked && _seizureDecision == null) return;
+    _seizureAsked = false;
+    _answeredFindings = null;
+    if (mounted) {
+      setState(() => _seizureDecision = null);
+    } else {
+      _seizureDecision = null;
     }
   }
 
@@ -588,10 +808,9 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
         'Annexure C, counted from the inspection date.';
   }
 
-  /// The seizure decision, once taken, stated on the form.
+  /// A seizure, once recorded, stated on the form.
   Widget _seizureNotice() {
-    final seized = _seizureDecision == SeizureDecision.seize;
-    final colour = seized ? AppColors.brandRed : AppColors.inkSoft;
+    const colour = AppColors.brandRed;
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
@@ -600,12 +819,9 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
         border: Border.all(color: colour.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Text(
-        seized
-            ? 'Seizure under section 8 of the APS Act recorded for this '
-                'consignment (FSA-SOP-APS-001 Annexure C).'
-            : 'Seizure declined on the premises; the rejection stands and is '
-                'to be put right immediately.',
+      child: const Text(
+        'Seizure under section 8 of the APS Act recorded for this '
+        'consignment (FSA-SOP-APS-001 Annexure C).',
         style: TextStyle(color: colour, fontSize: 13, height: 1.4),
       ),
     );
@@ -655,9 +871,14 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   /// product. And a retail outlet was walked straight into carcass grading
   /// as though it were an abattoir. Grading now needs both a whole carcass
   /// and a place that grades (FSA, 2026-09-07).
+  ///
+  /// Under the labelling the inspector has already said YES to grading, so
+  /// it applies wherever they are, and always to a whole carcass (Ethan,
+  /// 2026-09-30).
   bool _gradingApplies(_Reference reference) =>
-      _isWholeCarcass(reference.portionTypes) &&
-      _isGradingLocation(reference.locations);
+      widget.embedded ||
+      (_isWholeCarcass(reference.portionTypes) &&
+          _isGradingLocation(reference.locations));
 
   /// Whether the carcasses are being sampled as a set of five.
   ///
@@ -669,6 +890,22 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
 
   /// Five carcasses when a sample is drawn, otherwise the one in hand.
   /// Anything that is not graded is a single sample either way.
+  /// Seized, here or on the label checklist above: nothing is graded.
+  bool get _seizedAll =>
+      _seizureDecision == SeizureDecision.seize || widget.hostSeized;
+
+  /// Said where the grade and the sample walk would be.
+  Widget _seizedNote() => const Padding(
+        padding: EdgeInsets.only(top: 4, bottom: 10),
+        child: Text(
+          'Seized — no grade or sample of carcasses is needed.',
+          style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+              color: AppColors.brandRed),
+        ),
+      );
+
   int _sampleCount(_Reference reference) =>
       _gradingApplies(reference) && _sampleCarcasses ? 5 : 1;
 
@@ -696,6 +933,65 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
         photos.where((photo) => photo.kind == 'grading').toList());
   }
 
+  /// The photograph taken for [sample], with a cross to remove it — the
+  /// same x the other photo blocks carry (Ethan, 2026-09-30).
+  Widget _sampleThumb(int sample) {
+    final photo =
+        _gradingPhotos.lastWhere((p) => p.caption == _sampleCaption(sample));
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.file(
+            File(photo.filePath),
+            width: 64,
+            height: 64,
+            fit: BoxFit.cover,
+            // A file Android has cleared is a missing photo, not a crash.
+            errorBuilder: (_, __, ___) => Container(
+              width: 64,
+              height: 64,
+              color: AppColors.surfaceAlt,
+              child: const Icon(Icons.broken_image_outlined),
+            ),
+          ),
+        ),
+        Positioned(
+          top: -6,
+          right: -6,
+          child: InkWell(
+            onTap: _capturingSample
+                ? null
+                : () => unawaited(_removeSamplePhoto(sample)),
+            child: Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: AppColors.brandRed,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.close, size: 15, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Takes [sample]'s photograph off the record; its chip loses its tick
+  /// and the sample asks for one again.
+  Future<void> _removeSamplePhoto(int sample) async {
+    for (final photo in [
+      for (final p in _gradingPhotos)
+        if (p.caption == _sampleCaption(sample)) p,
+    ]) {
+      await widget.captureRepository.deletePhoto(photo.id);
+    }
+    await _reloadGradingPhotos();
+    unawaited(_persist(completed: false));
+  }
+
   /// One photograph of the carcass this sample was graded on.
   Future<void> _captureSamplePhoto() async {
     if (_capturingSample) return;
@@ -708,6 +1004,10 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     }
     if (shot == null || !mounted) return;
     setState(() => _capturingSample = true);
+    final replaced = [
+      for (final p in _gradingPhotos)
+        if (p.caption == _sampleCaption(_currentSample)) p,
+    ];
     try {
       final storage = await PhotoStorage.instance();
       final stamp = DateTime.now().millisecondsSinceEpoch;
@@ -724,6 +1024,11 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           caption: Value(_sampleCaption(_currentSample)),
         ),
       );
+      // A retake replaces the sample's photograph rather than sitting
+      // beside it (Ethan, 2026-09-30).
+      for (final old in replaced) {
+        await widget.captureRepository.deletePhoto(old.id);
+      }
       await _reloadGradingPhotos();
       // A photograph is evidence the moment it is taken, so the record it
       // belongs to has to exist.
@@ -731,7 +1036,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
       // And the sample is finished, so the next one comes up on its own.
       if (mounted) unawaited(_advanceAfterPhoto());
     } on Object catch (e) {
-      if (mounted) _toast('The photo could not be saved. $e');
+      if (mounted) _toast(photoSaveFailure(e));
     } finally {
       if (mounted) setState(() => _capturingSample = false);
     }
@@ -746,7 +1051,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   Future<void> _advanceAfterPhoto() async {
     final count = _lastSampleCount;
     if (_currentSample >= count) return;
-    await Future<void>.delayed(const Duration(milliseconds: 450));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
     if (!mounted) return;
     await _nextSample(count);
   }
@@ -840,6 +1145,30 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
       setState(() => _gradeId = value);
       return;
     }
+    if (widget.embedded) {
+      final off = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('No Grade'),
+          content: const Text(
+            'No Grade does not create a grading inspection. Answer NO to '
+            'grading and classification for this product?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Continue grading'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Answer NO'),
+            ),
+          ],
+        ),
+      );
+      if (off == true && mounted) widget.onNoGrade?.call();
+      return;
+    }
     final abandon = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -869,6 +1198,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     final signatures =
         await widget.captureRepository.signaturesFor(_clientUuid);
     final declined = signatures.any((s) => s.role == 'no_client' && s.declined);
+    _takeFromHost();
 
     final row = PoultryInspectionsCompanion.insert(
       clientUuid: _clientUuid,
@@ -928,8 +1258,9 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   ///
   /// In page order, as ids for [_missing] with the caption each is shown by.
   List<({String id, String label})> _missingRequired(_Reference reference) => [
-        if (_reasonId == null) (id: 'reason', label: 'Reason for Inspection'),
-        if (_locationId == null)
+        if (_reasonId == null && !widget.embedded)
+          (id: 'reason', label: 'Reason for Inspection'),
+        if (_locationId == null && !widget.embedded)
           (id: 'location', label: 'Inspection Facility Type'),
         if (_meatTypeId == null) (id: 'meatType', label: 'Poultry Type'),
         if (_gradingApplies(reference)) ...[
@@ -957,74 +1288,24 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
 
   Future<void> _save(_Reference reference, {required bool completed}) async {
     if (completed) {
-      // Marks whatever is on screen red; the list below finds the rest.
-      final formValid = _formKey.currentState?.validate() ?? false;
-      final missing = _missingRequired(reference);
-      if (missing.isNotEmpty) {
-        _toast('Answer ${missing.map((m) => m.label).join(', ')} before '
-            'completing this inspection.');
-        await _missing.flag(
-          context,
-          [for (final m in missing) m.id],
-          stillMissing: (id) =>
-              _missingRequired(reference).any((m) => m.id == id),
-        );
-        return;
-      }
-      if (!formValid) return;
+      if (!await _complete(reference)) return;
+    } else {
+      setState(() => _saving = true);
+      await _persist(completed: false);
+      if (!mounted) return;
+      setState(() => _saving = false);
     }
-    final sampleCount = _sampleCount(reference);
-    if (completed) {
-      final photos = await widget.captureRepository.photosFor(_clientUuid);
-      final requiredPhotos = sampleCount < 1 ? 1 : sampleCount;
-      if (photos.length < requiredPhotos) {
-        _toast(
-            'Take $requiredPhotos grading ${requiredPhotos == 1 ? 'photo' : 'photos'} before completing this inspection.');
-        if (mounted) await _missing.flag(context, const ['photos']);
-        return;
-      }
-      _missing.clear();
-    }
-    setState(() => _saving = true);
-
-    await _persist(completed: completed);
-    if (!mounted) return;
-    setState(() => _saving = false);
-
     final findings = _findings(reference);
-
-    if (completed && findings.isNotEmpty) {
-      await widget.captureRepository.saveDirection(
-        PoultryDirectionsCompanion.insert(
-          clientUuid: _clientUuid,
-          issuedAt: DateTime.now(),
-          updatedAt: DateTime.now(),
-          inspectorUsername: Value(widget.inspectorName),
-          status: const Value('completed'),
-          facilityName: Value(_facilityName.text.trim()),
-          clientName: Value(_managerName.text.trim()),
-          clientEmail: Value(_clientEmail.text.trim()),
-          remarkTypeId: Value(_remarkTypeId),
-          remarks: Value(_directionRemarks.text.trim()),
-          comments: Value(_directionComments.text.trim()),
-          actionTaken: Value(_seizureDecision == SeizureDecision.seize
-              ? 'Seizure under section 8 of the APS Act '
-                  '(FSA-SOP-APS-001 Annexure C).'
-              : 'Generated from poultry grading findings.'),
-          nonConformanceIds:
-              Value(findings.map((f) => f.item.id).toSet().join(',')),
-          // FSA-SOP-APS-001 Annexure C's date from the deviations, or the
-          // later one the inspector chose.
-          correctByDate: Value(_correctBy),
-          latitude: Value(_position?.latitude),
-          longitude: Value(_position?.longitude),
-        ),
-      );
-    }
 
     // Inside a grouped inspection there is nothing to announce — the record
     // waits for the group's one sign-off, so go straight back to the visit.
     if (!mounted) return;
+    // Seized: said so, and back to where the inspection was opened from.
+    if (completed && _seizureDecision == SeizureDecision.seize) {
+      announceSeizureDone(context);
+      Navigator.of(context).pop(true);
+      return;
+    }
     if (widget.visit != null) {
       Navigator.of(context).pop(true);
       return;
@@ -1056,8 +1337,173 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
     if (mounted) Navigator.of(context).pop(true);
   }
 
+  /// Checks the record is complete, marking what is not, then writes it as
+  /// finished with the rejection its findings raise. False while something
+  /// is still missing.
+  Future<bool> _complete(_Reference reference,
+      {bool hostSeized = false}) async {
+    // Seized — this grading, or the label checklist it sits under — the
+    // product is taken, so the rest is not asked for: this grading's
+    // photographs only when it was the one seized (Ethan, 2026-09-30).
+    final seized = _seizureDecision == SeizureDecision.seize;
+    hostSeized = hostSeized || widget.hostSeized;
+    if (!seized && !hostSeized) {
+      // Marks whatever is on screen red; the list below finds the rest.
+      final formValid = _formKey.currentState?.validate() ?? false;
+      final missing = _missingRequired(reference);
+      if (missing.isNotEmpty) {
+        _toast('Answer ${missing.map((m) => m.label).join(', ')} before '
+            'completing this inspection.');
+        await _missing.flag(
+          context,
+          [for (final m in missing) m.id],
+          stillMissing: (id) =>
+              _missingRequired(reference).any((m) => m.id == id),
+        );
+        return false;
+      }
+      if (!formValid) return false;
+    }
+    if (!seized && !hostSeized) {
+      final sampleCount = _sampleCount(reference);
+      if (_gradingApplies(reference)) {
+        // One photograph for each sample, no more and no fewer (Ethan,
+        // 2026-09-30): five taken of two carcasses is not a set.
+        await _reloadGradingPhotos();
+        if (!mounted) return false;
+        final owed = [
+          for (var sample = 1; sample <= sampleCount; sample++)
+            if (_photosForSample(sample) == 0) sample,
+        ];
+        if (owed.isNotEmpty) {
+          final which = sampleCount == 1
+              ? 'the carcass'
+              : owed.length == 1
+                  ? 'sample ${owed.first}'
+                  : 'samples ${owed.join(', ')}';
+          _toast(seized
+              ? seizurePhotosOwed('the photo of $which')
+              : 'Take the photo of $which before completing this '
+                  'inspection.');
+          // Opened on the first sample still without one.
+          setState(() {
+            _currentSample = owed.first;
+            _sampleNumber.text = '${owed.first}';
+          });
+          await _missing.flag(context, const ['photos']);
+          return false;
+        }
+      } else {
+        final photos = await widget.captureRepository.photosFor(_clientUuid);
+        if (photos.isEmpty) {
+          const owed = '1 photo';
+          _toast(seized
+              ? seizurePhotosOwed(owed)
+              : 'Take $owed before completing this inspection.');
+          if (mounted) await _missing.flag(context, const ['photos']);
+          return false;
+        }
+      }
+    } else if (seized && !widget.embedded) {
+      // Seized on its own form: one photograph of the product. Under the
+      // label checklist, that form's photographs stand for it.
+      final photos = await widget.captureRepository.photosFor(_clientUuid);
+      if (photos.isEmpty) {
+        _toast(seizurePhotosOwed('a photo of the product'));
+        if (mounted) await _missing.flag(context, const ['photos']);
+        return false;
+      }
+    }
+    _missing.clear();
+    _autosaveTimer?.cancel();
+    _finishing = true;
+    setState(() => _saving = true);
+
+    await _persist(completed: true);
+    if (!mounted) return false;
+    setState(() => _saving = false);
+
+    final findings = _findings(reference);
+
+    if (findings.isNotEmpty) {
+      await widget.captureRepository.saveDirection(
+        PoultryDirectionsCompanion.insert(
+          clientUuid: _clientUuid,
+          issuedAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+          inspectorUsername: Value(widget.inspectorName),
+          status: const Value('completed'),
+          facilityName: Value(_facilityName.text.trim()),
+          clientName: Value(_managerName.text.trim()),
+          clientEmail: Value(_clientEmail.text.trim()),
+          remarkTypeId: Value(_remarkTypeId),
+          remarks: Value(_directionRemarks.text.trim()),
+          comments: Value(_directionComments.text.trim()),
+          actionTaken: Value(_seizureDecision == SeizureDecision.seize
+              ? 'Seizure under section 8 of the APS Act '
+                  '(FSA-SOP-APS-001 Annexure C).'
+              : 'Generated from poultry grading findings.'),
+          nonConformanceIds:
+              Value(findings.map((f) => f.item.id).toSet().join(',')),
+          // FSA-SOP-APS-001 Annexure C's date from the deviations, or the
+          // later one the inspector chose.
+          correctByDate: Value(_correctBy),
+          latitude: Value(_position?.latitude),
+          longitude: Value(_position?.longitude),
+        ),
+      );
+    }
+    return true;
+  }
+
+  /// Back out of the form: the work waits as a draft. A record already
+  /// finished is left as it was finished; only Complete changes it.
+  Future<void> _leave() async {
+    if (!_wasCompleted) {
+      setState(() => _saving = true);
+      await _persist(completed: false);
+      if (!mounted) return;
+      setState(() => _saving = false);
+    }
+    if (mounted) Navigator.of(context).pop(false);
+  }
+
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+    // Under the labelling: the grading alone, in the label checklist's list.
+    if (widget.embedded) {
+      return FutureBuilder<_Reference>(
+        future: _reference,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final reference = snap.data;
+          if (reference == null || reference.checklist.isEmpty) {
+            return PoultryNoRules(onRetry: _retryReference);
+          }
+          return _form(reference);
+        },
+      );
+    }
+    // The back arrow and the phone's own back gesture keep the work: a
+    // record stepped out of mid-way waits as a draft, which is why there is
+    // no Save draft button (Ethan, 2026-09-30).
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop || _saving) return;
+        await _leave();
+      },
+      child: _page(),
+    );
+  }
+
+  Widget _page() {
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(
@@ -1079,7 +1525,7 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
           }
           final reference = snap.data;
           if (reference == null || reference.checklist.isEmpty) {
-            return _NoRules();
+            return PoultryNoRules(onRetry: _retryReference);
           }
           return _form(reference);
         },
@@ -1088,11 +1534,25 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
   }
 
   Widget _form(_Reference reference) {
+    // Under the labelling, the label checklist's reason and facility type are
+    // this record's: grading follows the facility chosen up there.
+    final host = widget.host?.call();
+    if (host != null) {
+      _reasonId = host.reasonId ?? _reasonId;
+      _locationId = host.locationId ?? _locationId;
+      _reasonFromVisit = true;
+      _locationFromVisit = true;
+    }
     // Chosen once at the door: find this commodity's row for it. Runs
-    // on every build but settles on the first; no setState, the value
-    // is read by the widgets built right below.
-    final doorType = widget.visit?.facilityType ?? '';
-    if (_locationId == null && doorType.isNotEmpty) {
+    // on every build; no setState, the value is read by the widgets built
+    // right below. Under the labelling, the label checklist has done it.
+    //
+    // Every time, a reopened draft included: the draft keeps the facility
+    // type it was saved with, and matching only while it was empty left the
+    // question on the form again each time the draft was reopened. The
+    // visit's answer is the one that stands (Ethan, 2026-09-30).
+    final doorType = host == null ? (widget.visit?.facilityType ?? '') : '';
+    if (doorType.isNotEmpty) {
       final i = FacilityTypeMatch.indexOf(
           doorType, reference.locations.map((l) => l.name).toList());
       if (i != null) {
@@ -1100,14 +1560,23 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
         _locationFromVisit = true;
       }
     }
-    final doorReason = widget.visit?.inspectionReason ?? '';
-    if (_reasonId == null && doorReason.isNotEmpty) {
+    final doorReason =
+        host == null ? (widget.visit?.inspectionReason ?? '') : '';
+    if (doorReason.isNotEmpty) {
       final i = InspectionReasonMatch.indexOf(
           doorReason, reference.reasons.map((r) => r.name).toList());
       if (i != null) {
         _reasonId = reference.reasons[i].id;
         _reasonFromVisit = true;
       }
+    }
+    // Grading is of whole carcasses only: under the labelling the portion
+    // type is set, not asked.
+    if (widget.embedded) {
+      final whole = reference.portionTypes
+          .where((p) => p.name.toLowerCase().contains('whole carcass'))
+          .firstOrNull;
+      if (whole != null) _portionTypeId = whole.id;
     }
     // Only the designations this meat type can actually carry a grade for.
     // Offering the rest would strand the inspector on the grade field.
@@ -1128,88 +1597,101 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
             if (item.kind == kind) item,
         ];
 
-    return Form(
-      key: _formKey,
-      child: ListView(
-        // Clear the system navigation bar: the submit button is the last
-        // thing on the page, and the bar was drawing over it and taking the
-        // tap — which dropped the inspector out of the app mid-save.
-        padding: EdgeInsets.fromLTRB(
-          16,
-          16,
-          16,
-          32 + MediaQuery.paddingOf(context).bottom,
-        ),
-        children: [
-          // Section headings and field captions are the original's, verbatim
-          // — including "Classifcation". An inspector working from the paper
-          // form should be reading the same words in the same order.
-          poultrySection('Inspection Details'),
-          if (!_reasonFromVisit)
-            _anchor('reason', poultryDropdown(
-              label: 'Reason for Inspection',
-              value: _reasonId,
-              items: reference.reasons,
-              onChanged: (v) => setState(() => _reasonId = v),
-            )),
-          if (!_locationFromVisit)
-            _anchor('location', poultryDropdown(
-              label: 'Inspection Facility Type',
-              value: _locationId,
-              items: reference.locations,
-              onChanged: (v) => setState(() => _locationId = v),
-            )),
-          // Pulls from the synced premises directory the way the egg form
-          // does — pick a known facility and its details fill themselves, or
-          // type a name that is not on the list and carry on.
-          // The facility is captured once, at the top of the grouped
-          // inspection, so it is not asked for again on every record inside
-          // it. The name and address still travel with the record.
-          if (widget.visit == null) ...[
-            SearchPickerField<EggFacility>(
-              label: 'Inspection Facility Name',
-              controller: _facilityName,
-              options: reference.facilities,
-              optionLabel: (f) => f.name,
-              optionSubtitle: (f) => f.physicalAddress,
-              isRequired: true,
-              onSelected: (f) => setState(() {
-                _facilityName.text = f.name;
-                if (f.physicalAddress.trim().isNotEmpty) {
-                  _facilityAddress.text = f.physicalAddress;
-                }
-                if (f.telephone.trim().isNotEmpty) {
-                  _facilityTelephone.text = f.telephone;
-                }
-              }),
-              emptyHint: 'No facilities on this device yet. Open Server Sync '
-                  'with a network connection to download the directory.',
-            ),
-            poultryField(_newFacilityName, 'New Facility Name'),
-            poultryField(
-                _producerTradingName, 'Name or Trading Name of New Facility'),
-            poultryField(_facilityAddress, 'Facility Address', lines: 2),
-            poultryField(
-                _facilityTelephone, 'Facility Primary Contact Telephone / Cellphone Number',
-                keyboard: TextInputType.phone),
-            poultryField(_contactPerson, 'Representative Name'),
-            poultryField(_contactEmail, 'Representative Email Address',
-                keyboard: TextInputType.emailAddress),
-          ],
-          // Asked here rather than inside the block above: the visit does not
-          // capture it, so it is needed either way — and asking it in both
-          // places put the same question on the screen twice, bound to the
-          // one controller.
+    final children = <Widget>[
+      // Asked once, on the label checklist above, when the grading sits
+      // under the labelling.
+      if (!widget.embedded) ...[
+        // Section headings and field captions are the original's, in the
+        // same words and order as the paper form — spelt correctly, so
+        // "Classification" rather than the original's "Classifcation"
+        // (Ethan, 2026-09-29).
+        poultrySection('Inspection Details'),
+        if (!_reasonFromVisit)
+          _anchor(
+              'reason',
+              poultryDropdown(
+                label: 'Reason for Inspection',
+                value: _reasonId,
+                items: reference.reasons,
+                onChanged: (v) => setState(() => _reasonId = v),
+              )),
+        if (!_locationFromVisit)
+          _anchor(
+              'location',
+              poultryDropdown(
+                label: 'Inspection Facility Type',
+                value: _locationId,
+                items: reference.locations,
+                onChanged: (v) => setState(() => _locationId = v),
+              )),
+        // Pulls from the synced premises directory the way the egg form
+        // does — pick a known facility and its details fill themselves, or
+        // type a name that is not on the list and carry on.
+        // The facility is captured once, at the top of the grouped
+        // inspection, so it is not asked for again on every record inside
+        // it. The name and address still travel with the record.
+        if (widget.visit == null) ...[
+          SearchPickerField<EggFacility>(
+            label: 'Inspection Facility Name',
+            controller: _facilityName,
+            options: reference.facilities,
+            optionLabel: (f) => f.name,
+            optionSubtitle: (f) => f.physicalAddress,
+            isRequired: true,
+            onSelected: (f) => setState(() {
+              _facilityName.text = f.name;
+              if (f.physicalAddress.trim().isNotEmpty) {
+                _facilityAddress.text = f.physicalAddress;
+              }
+              if (f.telephone.trim().isNotEmpty) {
+                _facilityTelephone.text = f.telephone;
+              }
+            }),
+            emptyHint: 'No facilities on this device yet. Open Server Sync '
+                'with a network connection to download the directory.',
+          ),
+          poultryField(_newFacilityName, 'New Facility Name'),
           poultryField(
-              _companyReg, 'Company Registration Number (optional)'),
+              _producerTradingName, 'Name or Trading Name of New Facility'),
+          // Searchable by name — "Pick n Pay Lynnwood" rather than the
+          // street address — biased to where the inspector is standing.
+          // Still an ordinary typed box with no signal (Ethan, 2026-10-08).
+          AddressSearchField(
+            controller: _facilityAddress,
+            tokenProvider: widget.repository.storedToken,
+            nearLatitude: _position?.latitude,
+            nearLongitude: _position?.longitude,
+            child:
+                poultryField(_facilityAddress, 'Facility Address', lines: 2),
+          ),
+          poultryField(_facilityTelephone,
+              'Facility Primary Contact Telephone/Cellphone Number',
+              keyboard: TextInputType.phone),
+          poultryField(_contactPerson, 'Representative Name'),
+          poultryField(_contactEmail, 'Representative Email Address',
+              keyboard: TextInputType.emailAddress),
+        ],
+        // Asked here rather than inside the block above: the visit does not
+        // capture it, so it is needed either way — and asking it in both
+        // places put the same question on the screen twice, bound to the
+        // one controller.
+        poultryField(_companyReg, 'Company Registration Number (optional)'),
+      ],
 
-          poultrySection('Classifcation and Grading Checklist'),
-          _anchor('meatType', poultryDropdown(
+      poultrySection('Classification and Grading Checklist'),
+      _anchor(
+          'meatType',
+          poultryDropdown(
             label: 'Poultry Type',
             value: _meatTypeId,
+            // Portions and Other are not kinds of bird: a portion is said
+            // under Portion Type (Ethan, 2026-09-30). One already on a
+            // saved record still shows, so it can be seen and changed.
             items: [
               for (final m in reference.meatTypes)
-                PoultryDesignationRef(id: m.id, name: m.name),
+                if (!_notPoultryTypes.contains(m.name.trim().toLowerCase()) ||
+                    m.id == _meatTypeId)
+                  PoultryDesignationRef(id: m.id, name: m.name),
             ],
             required: true,
             onChanged: (v) => setState(() {
@@ -1221,13 +1703,16 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
               _gradeId = null;
             }),
           )),
+      if (!widget.embedded)
+        poultryDropdown(
+          label: 'Portion Type',
+          value: _portionTypeId,
+          items: reference.portionTypes,
+          onChanged: (v) => setState(() => _portionTypeId = v),
+        ),
+      _anchor(
+          'designation',
           poultryDropdown(
-            label: 'Portion Type',
-            value: _portionTypeId,
-            items: reference.portionTypes,
-            onChanged: (v) => setState(() => _portionTypeId = v),
-          ),
-          _anchor('designation', poultryDropdown(
             label: 'Class Designation Type',
             value: _designationId,
             items: designations,
@@ -1240,28 +1725,19 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
               _gradeId = null;
             }),
           )),
-          poultryDropdown(
-            label: 'Alternative Class Designation',
-            value: _altDesignationId,
-            items: reference.altDesignations,
-            onChanged: (v) => setState(() => _altDesignationId = v),
-          ),
-          poultryField(_productDetails, 'Product Name'),
+      // No Alternative Class Designation (Ethan, 2026-09-30).
+      if (!widget.embedded) poultryField(_productDetails, 'Product Name'),
 
-          if (_gradingApplies(reference)) ...[
-            poultrySection('Quality Std for Carcasses'),
-            // Only means anything while a set is being walked; on a single
-            // carcass it is a field reading "1" and nothing else.
-            if (_sampleCarcasses)
-              poultryField(
-                _sampleNumber,
-                'Sample #',
-                // Which sample of the set is being graded. The original shows
-                // it read-only and fills it from the sample the inspector is
-                // on, so it cannot drift from the readings captured under it.
-                readOnly: true,
-              ),
-            _anchor('grade', poultryDropdown(
+      // Seized, the product is not graded (Ethan, 2026-09-30).
+      if (_seizedAll)
+        _seizedNote()
+      else if (_gradingApplies(reference)) ...[
+        poultrySection('Quality Std for Carcasses'),
+        // No "Sample #" box: the sample heading and its numbered chips
+        // below already say which one is in hand (Ethan, 2026-09-30).
+        _anchor(
+            'grade',
+            poultryDropdown(
               label: 'Grade',
               value: _gradeId,
               items: [
@@ -1274,36 +1750,40 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                   : 'No grades permitted for this combination',
               onChanged: (v) => unawaited(_selectGrade(v, grades)),
             )),
-          ] else
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                _gradingNotApplicable(reference),
-                style: TextStyle(
-                    fontSize: 12.5, height: 1.35, color: AppColors.muted),
-              ),
-            ),
+      ] else
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            _gradingNotApplicable(reference),
+            style:
+                TextStyle(fontSize: 12.5, height: 1.35, color: AppColors.muted),
+          ),
+        ),
 
-          Builder(builder: (context) {
-            final sampleCount = _sampleCount(reference);
-            _gradingRowIds
-              ..clear()
-              ..addAll([
-                for (final item in of(PoultryChecklistKind.grading)) item.id
-              ]);
-            if (_currentSample > sampleCount) _currentSample = sampleCount;
-            // Said once, up where the grading block would have been.
-            if (!_gradingApplies(reference)) return const SizedBox.shrink();
-            _lastSampleCount = sampleCount;
-            final shot = _photosForSample(_currentSample) > 0;
-            final last = _currentSample >= sampleCount;
-            final subject =
-                _sampleCarcasses ? 'sample $_currentSample' : 'the carcass';
-            final photoPrompt = shot
-                ? 'Photograph taken for $subject.'
-                : 'Photograph $subject — the carcass whole, with its '
-                    'class and grade mark legible.';
-            return _anchor('photos', framed: true, Column(
+      Builder(builder: (context) {
+        final sampleCount = _sampleCount(reference);
+        _gradingRowIds
+          ..clear()
+          ..addAll(
+              [for (final item in of(PoultryChecklistKind.grading)) item.id]);
+        if (_currentSample > sampleCount) _currentSample = sampleCount;
+        // Said once, up where the grading block would have been.
+        if (!_gradingApplies(reference) || _seizedAll) {
+          return const SizedBox.shrink();
+        }
+        _lastSampleCount = sampleCount;
+        final shot = _photosForSample(_currentSample) > 0;
+        final last = _currentSample >= sampleCount;
+        final subject =
+            _sampleCarcasses ? 'sample $_currentSample' : 'the carcass';
+        final photoPrompt = shot
+            ? 'Photograph taken for $subject.'
+            : 'Photograph $subject — the carcass whole, with its '
+                'class and grade mark legible.';
+        return _anchor(
+            'photos',
+            framed: true,
+            Column(
               key: _sampleAnchor,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1380,14 +1860,12 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                   padding: const EdgeInsets.only(top: 4, bottom: 4),
                   child: Row(
                     children: [
-                      Icon(
-                        shot
-                            ? Icons.check_circle
-                            : Icons.photo_camera_outlined,
-                        size: 20,
-                        color: shot ? AppColors.brandPrimary : AppColors.muted,
-                      ),
-                      const SizedBox(width: 8),
+                      if (shot)
+                        _sampleThumb(_currentSample)
+                      else
+                        Icon(Icons.photo_camera_outlined,
+                            size: 20, color: AppColors.muted),
+                      SizedBox(width: shot ? 14 : 8),
                       Expanded(
                         child: Text(
                           photoPrompt,
@@ -1397,18 +1875,46 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                               color: AppColors.inkSoft),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      TextButton.icon(
-                        onPressed: _capturingSample
-                            ? null
-                            : () => unawaited(_captureSamplePhoto()),
-                        icon:
-                            const Icon(Icons.photo_camera_outlined, size: 18),
-                        label: Text(shot ? 'Retake' : 'Take photograph'),
-                      ),
+                      if (shot)
+                        TextButton.icon(
+                          onPressed: _capturingSample
+                              ? null
+                              : () => unawaited(_captureSamplePhoto()),
+                          icon:
+                              const Icon(Icons.photo_camera_outlined, size: 18),
+                          label: const Text('Retake photo'),
+                        ),
                     ],
                   ),
                 ),
+                // Under the deviation rows, the one thing to press: the
+                // photograph finishes this sample, and the form goes back
+                // up to start the next (Ethan, 2026-09-30). A sample already
+                // photographed just moves on.
+                if (!shot || !last)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: FilledButton.icon(
+                        onPressed: _capturingSample
+                            ? null
+                            : shot
+                                ? () => unawaited(_nextSample(sampleCount))
+                                : () => unawaited(_captureSamplePhoto()),
+                        icon: Icon(shot
+                            ? Icons.arrow_upward
+                            : Icons.photo_camera_outlined),
+                        label: Text(shot
+                            ? 'Go to sample ${_currentSample + 1}'
+                            : last
+                                ? 'Take photo'
+                                : 'Take photo and go to sample '
+                                    '${_currentSample + 1}'),
+                      ),
+                    ),
+                  ),
                 if (last && shot)
                   Padding(
                     padding: const EdgeInsets.only(top: 4, bottom: 8),
@@ -1424,182 +1930,176 @@ class _PoultryInspectionFormState extends State<PoultryInspectionForm> {
                   ),
               ],
             ));
-          }),
-          // Portions (Reg. 5) belongs to portions, so it is asked wherever a
-          // portion is inspected. It used to sit inside the grading block,
-          // which put it out of reach exactly where it applies.
-          if (_isPortions(reference.portionTypes))
-            poultryChecklist(
-              title: 'Portions (Reg. 5)',
-              items: of(PoultryChecklistKind.portion),
-              compliant: _compliant,
-              onToggle: _toggleCompliant,
-            ),
-          poultryChecklist(
-            title: 'Packing (Reg. 7)',
-            items: of(PoultryChecklistKind.pack),
-            compliant: _compliant,
-            onToggle: _toggleCompliant,
-          ),
-
-          _anchor(
-            'photos',
-            framed: true,
-            // Up in the sample block instead while grading applies.
-            enabled: !_gradingApplies(reference),
-            PoultryEvidenceSection(
-            repository: widget.captureRepository,
-            recordUuid: _clientUuid,
-            kind: 'grading',
-            // Grading photographs are taken sample by sample up in the
-            // sample block, so this block only carries them where there is
-            // no sample walk to hang them on.
-            showPhotos: !_gradingApplies(reference),
-            minPhotos: _sampleCount(reference),
-            // One spare, as the label and QUID checklists have: with the
-            // ceiling set to the minimum there was no room for the shot the
-            // required ones could not fit — a second face of the carcass, a
-            // mark the first frame caught at an angle.
-            maxPhotos: _sampleCount(reference) + 1,
-            guidance: _gradingApplies(reference)
-                ? 'One photograph per graded carcass — five in all. Show the '
-                    'carcass whole, with its class and grade mark legible.'
-                : 'One photograph of the product as it is offered for sale. '
-                    'Show the label square-on, with the class or grade '
-                    'designation, the packer and the production lot code '
-                    'readable.',
-            captureLabel: _gradingApplies(reference)
-                ? 'Take carcass photograph'
-                : 'Take product photograph',
-            // One photograph per graded carcass where grading applies;
-            // otherwise a single photograph of the product and its label,
-            // which is what the inspection actually looked at.
-            captureNotes: _gradingApplies(reference)
-                ? [
-                    for (var sample = 1;
-                        sample <= _sampleCount(reference);
-                        sample++)
-                      (
-                        title: 'Sample $sample photograph',
-                        message: 'Take the grading evidence photograph for '
-                            'sample $sample.',
-                      ),
-                  ]
-                : const [
-                    (
-                      title: 'Product photograph',
-                      message: 'Take one photograph of the product and its '
-                          'label.',
-                    ),
-                  ],
-            // In a grouped inspection the manager and inspector sign once,
-            // at the end, and those signatures fan out to every member.
-            showSignatures: widget.visit == null,
-            // A draft is persisted the moment evidence lands, so a photograph
-            // never points at a record that was never saved.
-            onChanged: () => unawaited(_persist(completed: false)),
-          ),
-          ),
-
-          poultrySection('Rejection Form'),
-          poultryDropdown(
-            label: 'Grading Non-Conformance Remarks',
-            value: _remarkTypeId,
-            items: reference.remarks,
-            onChanged: (v) => setState(() => _remarkTypeId = v),
-          ),
-          poultryField(_directionRemarks, 'Added Remarks', lines: 2),
-          poultryField(_directionComments, 'Comments/Remarks on Rejection',
-              lines: 3),
-          // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
-          // later, never into the past (see CorrectByDateField).
-          CorrectByDateField(
-            value: _correctBy,
-            sopDate: _sopCorrectBy,
-            helperText: _periodHelper(reference),
-            onChanged: _correctByChanged,
-          ),
-          if (_seizureDecision != null) _seizureNotice(),
-
-          if (widget.visit == null) ...[
-            poultrySection('Signatures Control'),
-            poultryField(_managerName, 'Authorised Representative name'),
-            poultryField(_managerEmail, 'Representative Email address',
-                keyboard: TextInputType.emailAddress),
-            poultryField(_clientEmail, 'Email address #1',
-                keyboard: TextInputType.emailAddress),
-            poultryField(_clientEmail2, 'Email address #2',
-                keyboard: TextInputType.emailAddress),
-            poultryField(_inspectionComments, 'General Comments', lines: 3),
-          ],
-          // Inside a grouped inspection the manager and inspector sign
-          // once, at the end, and those signatures are stamped onto every
-          // record in the group — so this record does not ask again.
-          if (widget.visit != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'This record is part of a grouped inspection. The manager '
-                'and inspector sign once, at the end, and those signatures '
-                'are applied to every record in it.',
-                style: TextStyle(
-                    fontSize: 12.5, color: AppColors.muted, height: 1.4),
-              ),
-            ),
-          // The "No Client Signature is available" control lives in the
-          // Signatures block above — one tick-box, not two that can disagree.
-
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: OutlinedButton(
-                    onPressed: _saving
-                        ? null
-                        : () => _save(reference, completed: false),
-                    child: const Text('Save draft'),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: FilledButton(
-                    onPressed: _saving
-                        ? null
-                        : () => _save(reference, completed: true),
-                    child: Text(_saving ? 'Saving…' : 'Complete'),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
+      }),
+      // Portions (Reg. 5) belongs to portions, so it is asked wherever a
+      // portion is inspected. It used to sit inside the grading block,
+      // which put it out of reach exactly where it applies.
+      if (_isPortions(reference.portionTypes))
+        poultryChecklist(
+          title: 'Portions (Reg. 5)',
+          items: of(PoultryChecklistKind.portion),
+          compliant: _compliant,
+          onToggle: _toggleCompliant,
+        ),
+      poultryChecklist(
+        title: 'Packing (Reg. 7)',
+        items: of(PoultryChecklistKind.pack),
+        compliant: _compliant,
+        onToggle: _toggleCompliant,
       ),
+
+      _anchor(
+        'photos',
+        framed: true,
+        // Up in the sample block instead while grading applies; a
+        // seized product on its own form is photographed here.
+        enabled:
+            !_gradingApplies(reference) || (_seizedAll && !widget.embedded),
+        PoultryEvidenceSection(
+          repository: widget.captureRepository,
+          recordUuid: _clientUuid,
+          kind: 'grading',
+          // Grading photographs are taken sample by sample up in the
+          // sample block, so this block only carries them where there is
+          // no sample walk to hang them on.
+          showPhotos:
+              !_gradingApplies(reference) || (_seizedAll && !widget.embedded),
+          minPhotos: _seizedAll ? 1 : _sampleCount(reference),
+          // One spare, as the label and QUID checklists have: with the
+          // ceiling set to the minimum there was no room for the shot the
+          // required ones could not fit — a second face of the carcass, a
+          // mark the first frame caught at an angle.
+          maxPhotos: _sampleCount(reference) + 1,
+          guidance: _gradingApplies(reference) && !_seizedAll
+              ? 'One photograph per graded carcass — five in all. Show the '
+                  'carcass whole, with its class and grade mark legible.'
+              : 'One photograph of the product as it is offered for sale. '
+                  'Show the label square-on, with the class or grade '
+                  'designation, the packer and the production lot code '
+                  'readable.',
+          captureLabel: _gradingApplies(reference) && !_seizedAll
+              ? 'Take carcass photograph'
+              : 'Take product photograph',
+          // One photograph per graded carcass where grading applies;
+          // otherwise a single photograph of the product and its label,
+          // which is what the inspection actually looked at.
+          captureNotes: _gradingApplies(reference) && !_seizedAll
+              ? [
+                  for (var sample = 1;
+                      sample <= _sampleCount(reference);
+                      sample++)
+                    (
+                      title: 'Sample $sample photograph',
+                      message: 'Take the grading evidence photograph for '
+                          'sample $sample.',
+                    ),
+                ]
+              : const [
+                  (
+                    title: 'Product photograph',
+                    message: 'Take one photograph of the product and its '
+                        'label.',
+                  ),
+                ],
+          // In a grouped inspection the manager and inspector sign once,
+          // at the end, and those signatures fan out to every member.
+          // Under the labelling, the label checklist's signatures stand.
+          showSignatures: widget.visit == null && !widget.embedded,
+          // A draft is persisted the moment evidence lands, so a photograph
+          // never points at a record that was never saved.
+          onChanged: () => unawaited(_persist(completed: false)),
+        ),
+      ),
+
+      // Named for the grading under the labelling, where the label's own
+      // rejection form sits just above it.
+      poultrySection(
+          widget.embedded ? 'Grading Rejection Form' : 'Rejection Form'),
+      poultryDropdown(
+        label: 'Grading Non-Conformance Remarks',
+        value: _remarkTypeId,
+        items: reference.remarks,
+        onChanged: (v) => setState(() => _remarkTypeId = v),
+      ),
+      poultryField(_directionRemarks, 'Added Remarks', lines: 2),
+      poultryField(_directionComments, 'Comments/Remarks on Rejection',
+          lines: 3),
+      // Opens on FSA-SOP-APS-001 Annexure C's date; the inspector may move it
+      // later, never into the past (see CorrectByDateField).
+      CorrectByDateField(
+        value: _correctBy,
+        sopDate: _sopCorrectBy,
+        helperText: _periodHelper(reference),
+        onChanged: _correctByChanged,
+      ),
+      // A seizure declined says nothing here: the rejection above stands
+      // as it is (Ethan, 2026-09-30).
+      if (_seizureDecision == SeizureDecision.seize) _seizureNotice(),
+
+      // Under the labelling, the label checklist signs and saves it.
+      if (!widget.embedded) ...[
+        if (widget.visit == null) ...[
+          poultrySection('Signatures Control'),
+          poultryField(_managerName, 'Authorised Representative name'),
+          poultryField(_managerEmail, 'Representative Email address',
+              keyboard: TextInputType.emailAddress),
+          poultryField(_clientEmail, 'Email address #1',
+              keyboard: TextInputType.emailAddress),
+          poultryField(_clientEmail2, 'Email address #2',
+              keyboard: TextInputType.emailAddress),
+          poultryField(_inspectionComments, 'General Comments', lines: 3),
+        ],
+        // Inside a grouped inspection the manager and inspector sign
+        // once, at the end, and those signatures are stamped onto every
+        // record in the group — so this record does not ask again.
+        if (widget.visit != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'This record is part of a grouped inspection. The manager '
+              'and inspector sign once, at the end, and those signatures '
+              'are applied to every record in it.',
+              style: TextStyle(
+                  fontSize: 12.5, color: AppColors.muted, height: 1.4),
+            ),
+          ),
+        // The "No Client Signature is available" control lives in the
+        // Signatures block above — one tick-box, not two that can disagree.
+
+        const SizedBox(height: 20),
+        // No Save draft: going back keeps the work as a draft, and the
+        // visit shows it in progress (Ethan, 2026-09-30).
+        SizedBox(
+          height: 48,
+          child: FilledButton(
+            onPressed: _saving ? null : () => _save(reference, completed: true),
+            child: Text(_saving ? 'Saving…' : 'Complete'),
+          ),
+        ),
+      ],
+    ];
+    return Form(
+      key: _formKey,
+      child: widget.embedded
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            )
+          : ListView(
+              // Clear the system navigation bar: the submit button is the
+              // last thing on the page, and the bar was drawing over it and
+              // taking the tap — which dropped the inspector out of the app
+              // mid-save.
+              padding: EdgeInsets.fromLTRB(
+                16,
+                16,
+                16,
+                32 + MediaQuery.paddingOf(context).bottom,
+              ),
+              children: children,
+            ),
     );
   }
 }
 
 /// Shown when the device holds no poultry rules at all.
-class _NoRules extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.cloud_off, size: 40, color: AppColors.muted),
-            const SizedBox(height: 12),
-            Text(
-              'This device has no poultry rules yet.\n'
-              'Connect once and sync, then the form works offline.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.muted, height: 1.4),
-            ),
-          ],
-        ),
-      );
-}

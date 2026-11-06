@@ -153,15 +153,32 @@ class AppUpdateService {
 
   /// Downloads the build, reporting progress from 0 to 1.
   ///
-  /// Written to the app's own cache: Android clears it, and the installer
-  /// can be handed the file from there without any storage permission.
+  /// Kept in the app's own files directory, not its cache. The cache is
+  /// the first thing Android reclaims when a handset is short of space,
+  /// and a 32 MB APK is exactly what it takes: inspectors on 2234 pulled
+  /// the whole file down — the server log shows 200 and every byte sent —
+  /// and were then told "Cannot retrieve length of file ... No such file
+  /// or directory", because the download had been swept away underneath
+  /// them (Ethan, 2026-10-26). The installer reads it from here through
+  /// the files-path entry in file_paths.xml.
   Future<File> download(
     AppUpdate update, {
     void Function(double progress)? onProgress,
   }) async {
-    final folder = Directory(
-        '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}updates');
+    final folder = Directory('${(await getApplicationSupportDirectory()).path}'
+        '${Platform.pathSeparator}updates');
     if (!folder.existsSync()) folder.createSync(recursive: true);
+    // Whatever a previous attempt left behind. A half-written file of the
+    // right name would otherwise be handed to the installer.
+    for (final stale in folder.listSync()) {
+      if (stale is File && stale.path.endsWith('.apk')) {
+        try {
+          stale.deleteSync();
+        } on FileSystemException {
+          // Someone else's to clean up; not worth failing the update over.
+        }
+      }
+    }
     final out = File('${folder.path}${Platform.pathSeparator}'
         'fsa-inspector-${update.build}.apk');
 
@@ -184,10 +201,19 @@ class AppUpdateService {
       await sink.close();
     }
 
-    // A truncated download would fail to install with nothing to explain it.
-    if (total > 0 && out.lengthSync() != total) {
-      out.deleteSync();
+    // A truncated download would fail to install with nothing to explain
+    // it. Judged on the bytes actually read, not by re-reading the file:
+    // asking the file system how big it is fails outright when the file is
+    // no longer there, and reports that as PathNotFoundException rather
+    // than as a download that did not finish.
+    if (total > 0 && received != total) {
+      if (out.existsSync()) out.deleteSync();
       throw const HttpException('The download did not finish.');
+    }
+    if (!out.existsSync()) {
+      throw const HttpException(
+          'The download could not be saved — the handset may be out of '
+          'space. Free some up and try again.');
     }
     return out;
   }

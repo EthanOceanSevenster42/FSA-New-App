@@ -196,6 +196,10 @@ class RawRmpInspections extends Table {
       text().withDefault(const Constant(''))();
   IntColumn get storageTypeId => integer().nullable()();
 
+  /// The product's class as APS files it — one of [rawProductClasses]
+  /// (Ethan, 2026-10-04). Empty on a record from before the dropdown.
+  TextColumn get productClass => text().withDefault(const Constant(''))();
+
   BoolColumn get markingLabelsPresent =>
       boolean().withDefault(const Constant(false))();
   BoolColumn get scaleLabelsPresent =>
@@ -237,13 +241,28 @@ class RawRmpInspections extends Table {
   /// permanently hidden. Carried so nothing is lost if that ever changes.
   TextColumn get dnaSpeciesText => text().withDefault(const Constant(''))();
 
-  /// "Request Calcuim Content Test (for MRM only)" — the original's caption,
+  /// "Request Calcium Content Test (for MRM only)" — the original's caption,
   /// typo and all.
   /// The inspector's answer when the product-name row is unticked: was the
   /// name absent altogether (a seizure) or merely deficient (a deviation)?
   BoolColumn get productNameAbsent =>
       boolean().withDefault(const Constant(false))();
   BoolColumn get calciumTestRequired =>
+      boolean().withDefault(const Constant(false))();
+  // What the sample is tested for, as the office's web app asks it (Ethan,
+  // 2026-10-06). Calcium reuses calciumTestRequired above. These drive the
+  // fat/protein/calcium/dna the office record shows for a sampled product.
+  BoolColumn get testFat => boolean().withDefault(const Constant(false))();
+  BoolColumn get testProtein => boolean().withDefault(const Constant(false))();
+  BoolColumn get testDna => boolean().withDefault(const Constant(false))();
+
+  /// Soya and starch, which used to be reachable only by picking
+  /// "Category B - Soya Protein & Starch Content" (Ethan, 2026-10-23). The
+  /// testing-category question asked the same thing a second time and
+  /// disagreed with this one, so it came off the form and these two moved
+  /// here with the rest.
+  BoolColumn get testSoya => boolean().withDefault(const Constant(false))();
+  BoolColumn get testStarch =>
       boolean().withDefault(const Constant(false))();
 
   /// The original's field is named IsCouriered but captioned "Hand

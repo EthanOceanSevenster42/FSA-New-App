@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/responsive.dart';
@@ -21,6 +22,7 @@ import '../../pmp/presentation/pmp_inspection_form.dart';
 import '../../poultry/data/poultry_capture_repository.dart';
 import '../../poultry/data/poultry_repository.dart';
 import '../../poultry/presentation/poultry_inspection_form.dart';
+import '../../poultry/presentation/poultry_label_checklist_form.dart';
 import '../../poultry/presentation/poultry_quid_continue_page.dart';
 import '../../rawrmp/data/rawrmp_repository.dart';
 import '../../rawrmp/presentation/rawrmp_inspection_form.dart';
@@ -45,12 +47,16 @@ class InspectionManagementPage extends StatefulWidget {
     required this.eggs,
     required this.invoices,
     required this.database,
+    required this.inspectorName,
   });
 
   final VisitRepository visits;
   final EggsRepository eggs;
   final InvoiceRepository invoices;
   final LocalDatabase database;
+
+  /// Who is signed in: only their visits are listed (Ethan, 2026-10-02).
+  final String inspectorName;
 
   @override
   State<InspectionManagementPage> createState() =>
@@ -69,6 +75,10 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
   /// Visits brought down from the server rather than captured here.
   Set<String> _fromServer = const {};
   bool _loading = true;
+
+  /// Guards the background tidy-up so overlapping sync passes cannot start
+  /// several at once (Ethan, 2026-10-08).
+  bool _purging = false;
 
   @override
   void initState() {
@@ -93,23 +103,27 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
     // been signed off and checking it reached the server. An inspection
     // still being captured lives under the Inspection tile, where it can be
     // carried on with.
-    await widget.visits.purgeUploadedVisits();
-    final visits = (await widget.visits.allVisits())
+    //
+    // Newest sign-off at the top, the oldest at the bottom (Ethan,
+    // 2026-10-04): the inspection just finished on this device is the one
+    // being looked for, whenever its visit was started.
+    final visits = (await widget.visits.allVisits(owner: widget.inspectorName))
         .where((v) => v.completedAt != null)
-        .toList();
-    final membersByVisit = <String, List<VisitMember>>{};
-    final seizuresByVisit = <String, int>{};
-    final fromServer = <String>{};
+        .toList()
+      ..sort((a, b) => b.completedAt!.compareTo(a.completedAt!));
+    final uuids = [for (final v in visits) v.uuid];
+    // Three queries for the whole list, not three per visit: this used to
+    // loop, and a tablet holding a few dozen visits sat on a spinner for
+    // seconds before anything could be opened (Ethan, 2026-10-08).
     final seizures = SeizureRepository(database: widget.database);
-    for (final visit in visits) {
-      final members = await widget.visits.members(visit.uuid);
-      membersByVisit[visit.uuid] = members;
-      seizuresByVisit[visit.uuid] =
-          (await seizures.seizedAmong(members.map((m) => m.uuid))).length;
-      if (await widget.visits.isFromServer(visit.uuid)) {
-        fromServer.add(visit.uuid);
-      }
-    }
+    final membersByVisit = await widget.visits.membersForVisits(uuids);
+    final fromServer = await widget.visits.fromServerAmong(uuids);
+    final seized = await seizures.seizedAmong(
+        [for (final list in membersByVisit.values) ...list.map((m) => m.uuid)]);
+    final seizuresByVisit = {
+      for (final entry in membersByVisit.entries)
+        entry.key: entry.value.where((m) => seized.contains(m.uuid)).length,
+    };
     if (!mounted) return;
     setState(() {
       _visits = visits;
@@ -118,6 +132,22 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
       _fromServer = fromServer;
       _loading = false;
     });
+    // The tidy-up is housekeeping, not something to wait for. It runs after
+    // every sync pass anyway; here it happens once the list is already on
+    // screen, and only refreshes if it actually cleared something.
+    unawaited(_purgeInBackground());
+  }
+
+  /// Clears visits the server has confirmed, after the list is showing.
+  Future<void> _purgeInBackground() async {
+    if (_purging) return;
+    _purging = true;
+    try {
+      final cleared = await widget.visits.purgeUploadedVisits();
+      if (cleared > 0 && mounted) await _load();
+    } finally {
+      _purging = false;
+    }
   }
 
   static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
@@ -149,44 +179,6 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
                             fontSize: 12.5,
                             height: 1.4),
                       ),
-                    ),
-                    // Why the last sync did not get everything up — said on
-                    // screen, not swallowed.
-                    ValueListenableBuilder<List<String>>(
-                      valueListenable: AutoSync.instance.lastFailures,
-                      builder: (context, failures, _) => failures.isEmpty
-                          ? const SizedBox.shrink()
-                          : Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color:
-                                    AppColors.brandRed.withValues(alpha: 0.08),
-                                border: Border.all(
-                                    color: AppColors.brandRed
-                                        .withValues(alpha: 0.5)),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Last sync did not get everything up',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.w800,
-                                        color: AppColors.brandRed),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  for (final f in failures)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(f,
-                                          style: const TextStyle(
-                                              fontSize: 12.5, height: 1.35)),
-                                    ),
-                                ],
-                              ),
-                            ),
                     ),
                     if (_visits.isEmpty)
                       Text(
@@ -312,6 +304,7 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
               },
             ),
             // Approved or not, beside synced or not (Ethan, 2026-09-24).
+            // An occurrence report is approved too (Ethan, 2026-10-02).
             if (signedOff) ...[
               const SizedBox(height: 2),
               Row(
@@ -334,25 +327,6 @@ class _InspectionManagementPageState extends State<InspectionManagementPage> {
                       color: visit.approvedAt != null
                           ? const Color(0xFF2E7D32)
                           : AppColors.muted,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            // Held on the server, not captured on this tablet.
-            if (_fromServer.contains(visit.uuid)) ...[
-              const SizedBox(height: 2),
-              Row(
-                children: [
-                  Icon(Icons.cloud_download_outlined,
-                      size: 14, color: AppColors.muted),
-                  const SizedBox(width: 6),
-                  Text(
-                    'From the server',
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.muted,
                     ),
                   ),
                 ],
@@ -430,6 +404,112 @@ class GroupedInspectionViewPage extends StatelessWidget {
 
   static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
       '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  /// The red "delete this inspection" button, shown in the body so it is
+  /// easy to find and plainly destructive, with a line saying what it does.
+  Widget _deleteBlock(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: double.infinity,
+            height: 46,
+            child: FilledButton.icon(
+              style:
+                  FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
+              onPressed: () => _confirmAndDelete(context),
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('DELETE INSPECTION'),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Removes this inspection from the tablet and from the office '
+            "system. It cannot be undone.",
+            style: TextStyle(
+                fontSize: 12.5, color: AppColors.muted, height: 1.35),
+          ),
+        ],
+      );
+
+  /// Deletes this inspection from the device and from the office's system
+  /// (APS) together. The office's copy goes first: the handset's is cleared
+  /// only once the server has confirmed the record is gone, so a visit is
+  /// never left on the office's screens after it has left the tablet.
+  Future<void> _confirmAndDelete(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete this inspection?'),
+        content: const Text(
+          'This removes the inspection from this device and from the '
+          "office's system. Every reading, deviation, photograph and "
+          'signature in it goes with it, and it cannot be brought back.',
+          style: TextStyle(height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style:
+                FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    // A barrier while the office is told, so the record is not tapped twice.
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    ));
+
+    final repository = VisitRepository(database, baseUrl: eggs.baseUrl);
+    final token = await eggs.storedToken();
+    final result = token == null
+        ? VisitDeleteResult.offline
+        : await repository.deleteOnServer(visit.uuid, token: token);
+
+    // The office has let go of it (or never held it): clear the local copy.
+    if (result == VisitDeleteResult.removed ||
+        result == VisitDeleteResult.notOnServer) {
+      await repository.deleteWithMembers(visit.uuid);
+    }
+
+    navigator.pop(); // the progress barrier
+
+    switch (result) {
+      case VisitDeleteResult.removed:
+      case VisitDeleteResult.notOnServer:
+        navigator.pop(); // leave the now-deleted inspection's page
+        messenger
+          ..clearSnackBars()
+          ..showSnackBar(
+              const SnackBar(content: Text('Inspection deleted.')));
+        unawaited(AutoSync.instance.kick());
+      case VisitDeleteResult.offline:
+        messenger
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(
+              content: Text(
+                  'You are offline. Connect to the internet to delete this '
+                  'from the office too — nothing was removed.')));
+      case VisitDeleteResult.failed:
+        messenger
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(
+              content: Text(
+                  'The office system could not be reached, so nothing was '
+                  'deleted. Please try again.')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -629,6 +709,11 @@ class GroupedInspectionViewPage extends StatelessWidget {
               ],
             ),
           ),
+          // Re-sync just this one inspection (Ethan, 2026-10-16): send this
+          // visit to the office again on its own, instead of syncing them all —
+          // useful when a single record has an issue.
+          const SizedBox(height: 14),
+          _SyncInspectionButton(visitUuid: visit.uuid, database: database),
           if (visit.isOccurrenceReport) ...[
             const SizedBox(height: 16),
             const Text(
@@ -696,29 +781,13 @@ class GroupedInspectionViewPage extends StatelessWidget {
           // inspections, so it is only offered when there are some.
           if (fromServer) ...[
             const SizedBox(height: 16),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.cloud_download_outlined,
-                    size: 18, color: AppColors.muted),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Brought down from the server. The full checklists and '
-                    'the Request for Invoice are held there; this tablet '
-                    'shows what was inspected and served, and cannot edit '
-                    'it.',
-                    style: TextStyle(
-                        fontSize: 12.5, color: AppColors.muted, height: 1.35),
-                  ),
-                ),
-              ],
-            ),
             _VisitDocumentDownloads(
               database: database,
               visit: visit,
               members: members,
             ),
+            // An occurrence report is approved the same way once its
+            // document has been looked over (Ethan, 2026-10-02).
             if (signedOff) ...[
               const SizedBox(height: 14),
               _VisitApproval(visit: visit, database: database, eggs: eggs),
@@ -735,106 +804,347 @@ class GroupedInspectionViewPage extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             ..._numberedMemberCards(context),
-          ] else if (!visit.isOccurrenceReport || members.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: OutlinedButton.icon(
-                onPressed: () => _editVisitDetails(context),
-                icon: const Icon(Icons.storefront_outlined, size: 18),
-                label: const Text('EDIT VISIT DETAILS'),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'The facility, its address and contacts, the e-mail addresses '
-              'the documents go to, and the kilometres billed. These belong '
-              'to the whole visit, so a change here reaches every inspection '
-              'in it.',
-              style: TextStyle(
-                  fontSize: 12.5, color: AppColors.muted, height: 1.35),
-            ),
-            const SizedBox(height: 18),
-            Text(
-              'DOCUMENTS',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.2,
-                color: AppColors.muted,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Everything this visit produced. The compliance checklists come '
-              'down as one file, in the order the office files them.',
-              style: TextStyle(
-                  fontSize: 12.5, color: AppColors.muted, height: 1.35),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 46,
-                    child: OutlinedButton(
-                      onPressed: () => _openInvoice(context, download: false),
-                      child: const FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text('VIEW RFI',
-                            maxLines: 1, style: TextStyle(fontSize: 13)),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: SizedBox(
-                    height: 46,
-                    child: FilledButton(
-                      onPressed: () => _openInvoice(context, download: true),
-                      child: const FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text('DOWNLOAD RFI',
-                            maxLines: 1, style: TextStyle(fontSize: 13)),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            _VisitDocumentDownloads(
-              database: database,
-              visit: visit,
-              members: members,
-            ),
-            // Approved once the documents above have been looked over.
             if (signedOff) ...[
-              const SizedBox(height: 14),
-              _VisitApproval(visit: visit, database: database, eggs: eggs),
+              const SizedBox(height: 18),
+              _deleteBlock(context),
             ],
-            const SizedBox(height: 18),
-            Text(
-              'INSPECTIONS IN THIS GROUP',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1.2,
-                color: AppColors.muted,
+          ] else ...[
+            // An occurrence report is corrected the same way an inspection
+            // is (Ethan, 2026-10-20): the same visit screen in details-only
+            // mode, which already carries the occurrence's own fields — the
+            // time of visit, the registration code and the description of
+            // events. This block was skipped entirely for an occurrence with
+            // nothing else under it, so a report with the wrong time or a
+            // typo in the findings could not be put right at all: the
+            // inspector had to delete it and capture the whole thing again.
+            // The Occurrence Document is built from the visit at upload, so
+            // the office receives the corrected sheet, not the first one.
+            if (visit.isOccurrenceReport && members.isEmpty) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: OutlinedButton.icon(
+                  // Orange, as everything belonging to an occurrence report
+                  // is on this page.
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.brandOrange,
+                    side: BorderSide(
+                        color: AppColors.brandOrange.withValues(alpha: 0.5)),
+                  ),
+                  onPressed: () => _editVisitDetails(context),
+                  icon: const Icon(Icons.edit_note_outlined, size: 18),
+                  label: const Text('EDIT OCCURRENCE REPORT'),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            ..._numberedMemberCards(context),
-            if (members.isEmpty)
+              const SizedBox(height: 4),
               Text(
-                'Nothing captured under this group yet.',
-                style: TextStyle(color: AppColors.muted),
+                'The facility and its contacts, the time of visit, the '
+                'registration code and the description of events. The '
+                'Occurrence Document is written again from what you save and '
+                'the corrected copy is sent to the office.',
+                style: TextStyle(
+                    fontSize: 12.5, color: AppColors.muted, height: 1.35),
               ),
+              if (signedOff) ...[
+                const SizedBox(height: 12),
+                _deleteBlock(context),
+              ],
+            ],
+            // An occurrence report with nothing else captured has no visit
+            // details to edit, no RFI and no inspections to list — but it is
+            // approved like any other visit (Ethan, 2026-10-02). It used to
+            // fall through here and get no approval block at all.
+            if (!(visit.isOccurrenceReport && members.isEmpty)) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: OutlinedButton.icon(
+                  onPressed: () => _editVisitDetails(context),
+                  icon: const Icon(Icons.storefront_outlined, size: 18),
+                  label: const Text('EDIT VISIT DETAILS'),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'The facility, its address and contacts, the e-mail addresses '
+                'the documents go to, and the kilometres billed. These belong '
+                'to the whole visit, so a change here reaches every inspection '
+                'in it.',
+                style: TextStyle(
+                    fontSize: 12.5, color: AppColors.muted, height: 1.35),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: OutlinedButton.icon(
+                  onPressed: () => _editInspectionTimes(context),
+                  icon: const Icon(Icons.schedule, size: 18),
+                  label: const Text('EDIT INSPECTION TIMES'),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'The start and finish that the Request for Invoice bills on. '
+                'A minimum of one hour is charged, then half hour segments, '
+                'so a wrong start costs the facility money.',
+                style: TextStyle(
+                    fontSize: 12.5, color: AppColors.muted, height: 1.35),
+              ),
+              if (signedOff) ...[
+                const SizedBox(height: 12),
+                _deleteBlock(context),
+              ],
+              const SizedBox(height: 18),
+              Text(
+                'DOCUMENTS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.2,
+                  color: AppColors.muted,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Everything this visit produced. The compliance checklists come '
+                'down as one file, in the order the office files them.',
+                style: TextStyle(
+                    fontSize: 12.5, color: AppColors.muted, height: 1.35),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 46,
+                      child: OutlinedButton(
+                        onPressed: () => _openInvoice(context, download: false),
+                        child: const FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text('VIEW RFI',
+                              maxLines: 1, style: TextStyle(fontSize: 13)),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: SizedBox(
+                      height: 46,
+                      child: FilledButton(
+                        onPressed: () => _openInvoice(context, download: true),
+                        child: const FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text('DOWNLOAD RFI',
+                              maxLines: 1, style: TextStyle(fontSize: 13)),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              _VisitDocumentDownloads(
+                database: database,
+                visit: visit,
+                members: members,
+              ),
+            ],
+            // Approved once the documents above have been looked over,
+            // occurrence reports included (Ethan, 2026-10-02).
+            if (signedOff) ...[
+              const SizedBox(height: 14),
+              _VisitApproval(visit: visit, database: database, eggs: eggs),
+            ],
+            if (!(visit.isOccurrenceReport && members.isEmpty)) ...[
+              const SizedBox(height: 18),
+              Text(
+                'INSPECTIONS IN THIS GROUP',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.2,
+                  color: AppColors.muted,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ..._numberedMemberCards(context),
+              if (members.isEmpty)
+                Text(
+                  'Nothing captured under this group yet.',
+                  style: TextStyle(color: AppColors.muted),
+                ),
+            ],
           ],
         ],
       )),
     );
+  }
+
+  /// Corrects the start and finish the Request for Invoice bills on.
+  ///
+  /// Only these two are editable. The times the handset measured —
+  /// `startedAt` and `completedAt` — are left exactly as recorded and are
+  /// shown beside the billed ones here, so the inspector can see what the
+  /// system observed and the office keeps an unedited record to compare
+  /// against. A mistyped start is expensive: an 08:10 entered as 00:10
+  /// billed eight hours of overtime (Nelisa, 2026-10-23).
+  Future<void> _editInspectionTimes(BuildContext context) async {
+    final visits = VisitRepository(database);
+
+    TimeOfDay? parse(String value) {
+      final parts = value.split(':');
+      if (parts.length != 2) return null;
+      final h = int.tryParse(parts[0]);
+      final m = int.tryParse(parts[1]);
+      if (h == null || m == null || h > 23 || m > 59) return null;
+      return TimeOfDay(hour: h, minute: m);
+    }
+
+    String text(TimeOfDay t) => '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+
+    final measuredStart = TimeOfDay.fromDateTime(visit.startedAt);
+    final measuredEnd = visit.completedAt == null
+        ? null
+        : TimeOfDay.fromDateTime(visit.completedAt!);
+
+    var start = parse(visit.inspectionStart) ?? measuredStart;
+    var end = parse(visit.inspectionEnd) ?? measuredEnd ?? measuredStart;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          Future<void> pick(bool isStart) async {
+            final picked = await showTimePicker(
+              context: dialogContext,
+              initialTime: isStart ? start : end,
+            );
+            if (picked == null) return;
+            setDialogState(() {
+              if (isStart) {
+                start = picked;
+              } else {
+                end = picked;
+              }
+            });
+          }
+
+          Widget row(String label, TimeOfDay value, bool isStart) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    SizedBox(
+                        width: 170,
+                        child: Text(label,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600))),
+                    OutlinedButton.icon(
+                      onPressed: () => pick(isStart),
+                      icon: const Icon(Icons.schedule, size: 18),
+                      label: Text(text(value),
+                          style: const TextStyle(fontSize: 16)),
+                    ),
+                  ],
+                ),
+              );
+
+          final billed = (end.hour * 60 + end.minute) -
+              (start.hour * 60 + start.minute);
+          final overnight = billed < 0;
+          final hours = (overnight ? billed + 24 * 60 : billed) / 60.0;
+
+          return AlertDialog(
+            constraints: const BoxConstraints(maxWidth: 520),
+            title: const Text('Edit inspection times'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('These are the times the Request for Invoice '
+                      'bills on. Correct them if they are wrong.'),
+                  const SizedBox(height: 14),
+                  row('Inspection started:', start, true),
+                  row('Inspection ended:', end, false),
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.noticeBackground,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'The handset recorded ${text(measuredStart)}'
+                          '${measuredEnd == null ? '' : ' to ${text(measuredEnd)}'}'
+                          '. That is kept as it is and is not changed by '
+                          'anything you do here.',
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          hours >= 4
+                              ? 'That is ${hours.toStringAsFixed(1)} hours — '
+                                  'check the start time, this will bill '
+                                  'overtime.'
+                              : 'That bills ${hours <= 1 ? "the one hour minimum" : "${hours.toStringAsFixed(1)} hours"}.',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight:
+                                hours >= 4 ? FontWeight.w700 : FontWeight.w400,
+                            color: hours >= 4
+                                ? AppColors.brandRed
+                                : AppColors.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Save times'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (saved != true) return;
+
+    await visits.updateDetails(
+      visit.uuid,
+      StoreVisitsCompanion(
+        uuid: Value(visit.uuid),
+        inspectionStart: Value(text(start)),
+        inspectionEnd: Value(text(end)),
+      ),
+    );
+    // The RFI is rebuilt from these, so the office gets the corrected form
+    // now rather than whenever the app is next opened.
+    await visits.markChanged(visit.uuid);
+    unawaited(AutoSync.instance.kick());
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Times saved — ${text(start)} to ${text(end)}. '
+            'The Request for Invoice is being re-sent.')),
+      );
+    }
   }
 
   /// Reopens the visit itself — the facility, its contacts, the addresses
@@ -866,6 +1176,9 @@ class GroupedInspectionViewPage extends StatelessWidget {
       ),
     ));
     await VisitRepository(database).markChanged(visit.uuid);
+    // Sent now, with the RFI and documents rebuilt from the corrected
+    // details, not whenever the app is next opened.
+    unawaited(AutoSync.instance.kick());
   }
 
   /// Reopens a record in its own commodity form so the inspector can
@@ -924,6 +1237,13 @@ class GroupedInspectionViewPage extends StatelessWidget {
           existingUuid: member.uuid,
           visit: prefill,
         ),
+      'poultry_label' => PoultryLabelChecklistForm(
+          repository: PoultryRepository(database: database, baseUrl: ''),
+          captureRepository: capture,
+          inspectorName: inspector,
+          existingUuid: member.uuid,
+          visit: prefill,
+        ),
       'quid' when quid != null => PoultryQuidWeighingForm(
           repository: PoultryRepository(database: database, baseUrl: ''),
           captureRepository: capture,
@@ -951,6 +1271,7 @@ class GroupedInspectionViewPage extends StatelessWidget {
     // has been opened for correction: telling the office again costs a
     // sync, and not telling them costs the record.
     await visits.markChanged(visit.uuid);
+    unawaited(AutoSync.instance.kick());
     return true;
   }
 
@@ -1120,6 +1441,11 @@ class GroupedInspectionViewPage extends StatelessWidget {
   /// own directions table, and only the meat ones record which inspection
   /// they came from — the others are keyed on the record itself.
   Future<bool> _raisedDirection(VisitMember member) async {
+    // A seized record says SEIZURE SERVED alone, not a rejection too.
+    if (await SeizureRepository(database: database).forRecord(member.uuid) !=
+        null) {
+      return false;
+    }
     switch (member.kind) {
       case 'egg':
         return await eggs.directionForInspection(member.uuid) != null;
@@ -1324,6 +1650,11 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
   Seizure? _seizure;
   bool _loading = true;
 
+  /// Set when reading the record back threw. Without this the page kept its
+  /// spinner turning for ever on any such failure; now it shows the reason and
+  /// a way to try again, and logs the failure.
+  String? _error;
+
   @override
   void initState() {
     super.initState();
@@ -1345,8 +1676,8 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(const SnackBar(
-          content: Text('Correction saved. Run Server Sync to send it to '
-              'the office.'),
+          content: Text('Correction saved. It goes to the office now, or '
+              'as soon as there is signal.'),
           duration: Duration(seconds: 6),
         ));
     } finally {
@@ -1354,7 +1685,22 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
     }
   }
 
+  /// Reads the record back, never throwing: any failure stops the spinner and
+  /// records the reason instead of leaving the page loading for ever.
   Future<void> _load() async {
+    try {
+      await _loadInner();
+    } catch (e, st) {
+      debugPrint('EggInspectionView load failed (${widget.uuid}): $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = '$e';
+      });
+    }
+  }
+
+  Future<void> _loadInner() async {
     final eggs = widget.eggs;
     final inspection = await eggs.inspectionByUuid(widget.uuid);
     final samples = await eggs.samplesFor(widget.uuid);
@@ -1369,9 +1715,8 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
     final directionRemarks = direction == null
         ? const <String>[]
         : await eggs.directionRemarkNames(direction.remarkIds);
-    final seizure =
-        await SeizureRepository(database: eggs.database)
-            .currentForRecord(widget.uuid);
+    final seizure = await SeizureRepository(database: eggs.database)
+        .currentForRecord(widget.uuid);
     if (!mounted) return;
     setState(() {
       _seizure = seizure;
@@ -1388,6 +1733,7 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
       _direction = direction;
       _directionRemarks = directionRemarks;
       _loading = false;
+      _error = null;
     });
   }
 
@@ -1448,11 +1794,50 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
       body: ContentWidth(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
-              : i == null
-                  ? const Center(child: Text('This record no longer exists.'))
-                  : _body(i)),
+              : _error != null
+                  ? _errorRetry(_error!)
+                  : i == null
+                      ? const Center(
+                          child: Text('This record no longer exists.'))
+                      : _body(i)),
     );
   }
+
+  Widget _errorRetry(String message) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, size: 44, color: AppColors.muted),
+              const SizedBox(height: 14),
+              const Text(
+                'This inspection could not be opened.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _loading = true;
+                    _error = null;
+                  });
+                  _load();
+                },
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Try again'),
+              ),
+            ],
+          ),
+        ),
+      );
 
   Widget _body(EggInspection i) {
     final weighed = _samples.where((s) => (s.massG ?? 0) > 0).length;
@@ -1647,7 +2032,8 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
   /// What was served on the client off the back of this inspection.
   List<Widget> _directionSection() {
     final d = _direction;
-    if (d == null) return const [];
+    // A seized record shows the seizure alone, not a rejection too.
+    if (d == null || _seizure != null) return const [];
     final parts = [
       if (d.labellingPart) 'Labelling',
       if (d.qualityPart) 'Quality',
@@ -1664,7 +2050,7 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
       if (d.qualityCorrectBy != null)
         _row('Quality correct by', _dmy(d.qualityCorrectBy!)),
       if (d.quantityRemoved != null)
-        _row('Quantity removed', '${d.quantityRemoved}'),
+        _row('Quantity rejected', '${d.quantityRemoved}'),
       // A list runs the width of the page rather than wrapping in the
       // narrow value column beside a label.
       _list('Remarks served', _directionRemarks),
@@ -1707,7 +2093,7 @@ class _EggInspectionViewPageState extends State<EggInspectionViewPage> {
   Widget _signatureCard(EggSignature signature) {
     final file = File(signature.filePath);
     final role = signature.role == 'manager'
-        ? 'Store / Client'
+        ? 'Store/Client'
         : signature.role == 'inspector'
             ? 'Inspector'
             : signature.role;
@@ -1778,6 +2164,11 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
   List<RecordDocument> _composition = const [];
   List<RecordDocument> _compliance = const [];
 
+  /// The QUID determination, one document per injector (Ethan, 2026-10-05),
+  /// each on its own like the RFI — not folded into the merged compliance
+  /// document.
+  List<RecordDocument> _quid = const [];
+
   /// The rejections served in this visit, offered on their own like the RFI
   /// (Ethan, 2026-09-24), not folded into the compliance documents.
   List<RecordDocument> _rejections = const [];
@@ -1796,6 +2187,7 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
   Future<void> _load() async {
     final composition = <RecordDocument>[];
     final compliance = <RecordDocument>[];
+    final quid = <RecordDocument>[];
     final rejections = <RecordDocument>[];
     final seizures = <RecordDocument>[];
     for (final member in widget.members) {
@@ -1805,7 +2197,11 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
         // compliance checklist as far as the office is concerned.
         if (document.title.startsWith('Compositional')) {
           composition.add(document);
-        } else if (document.title == 'Rejection') {
+        } else if (document.title.startsWith('QUID Determination')) {
+          // Each injector's QUID is its own compliance document (Ethan,
+          // 2026-10-05), not merged into the main compliance bundle.
+          quid.add(document);
+        } else if (document.title.contains('Rejection')) {
           rejections.add(document);
         } else if (document.title == 'Seizure') {
           seizures.add(document);
@@ -1818,6 +2214,7 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
     setState(() {
       _composition = composition;
       _compliance = compliance;
+      _quid = quid;
       _rejections = rejections;
       _seizures = seizures;
     });
@@ -1894,6 +2291,23 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
     }
   }
 
+  /// The injector a QUID document is for, read from its title.
+  String _quidInjector(String title) {
+    const sep = '— ';
+    final at = title.indexOf(sep);
+    return at < 0 ? title : title.substring(at + sep.length).trim();
+  }
+
+  String _quidLabel(String title) => 'QUID — ${_quidInjector(title)}';
+
+  String _quidSlug(String title) {
+    final slug = _quidInjector(title)
+        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    return 'Poultry-QUID-${slug.isEmpty ? 'injector' : slug}';
+  }
+
   /// A view/download pair on one row, the same shape as the RFI's.
   Widget _pair({
     required String label,
@@ -1960,6 +2374,15 @@ class _VisitDocumentDownloadsState extends State<_VisitDocumentDownloads> {
             slug: 'Compliance-Documents',
             documents: _compliance,
           ),
+        // Each injector's QUID determination, its own document (Ethan,
+        // 2026-10-05).
+        for (final doc in _quid)
+          _pair(
+            label: _quidLabel(doc.title),
+            title: doc.title,
+            slug: _quidSlug(doc.title),
+            documents: [doc],
+          ),
         if (_rejections.isNotEmpty)
           _pair(
             label: _rejections.length == 1 ? 'REJECTION' : 'REJECTIONS',
@@ -2006,6 +2429,11 @@ class _VisitApprovalState extends State<_VisitApproval> {
   late StoreVisit _visit = widget.visit;
   bool _busy = false;
 
+  /// A retraction, rather than an approval, is on its way: the card has
+  /// already gone back to not approved, and its button must not read
+  /// "APPROVING…" meanwhile (Ethan, 2026-09-29).
+  bool _retracting = false;
+
   static const _green = Color(0xFF2E7D32);
 
   late final _repository =
@@ -2028,14 +2456,14 @@ class _VisitApprovalState extends State<_VisitApproval> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(
-            approve ? 'Approve this inspection?' : 'Take the approval back?'),
+            approve ? 'Approve this inspection?' : 'Retract the approval?'),
         content: Text(
           approve
               ? 'Approve it once you have looked over its documents. The '
                   'approval is sent to the server, where the inspection '
                   'shows as approved.'
-              : 'The inspection goes back to not approved, on this device '
-                  'and on the server.',
+              : 'The approval is retracted: the inspection goes back to '
+                  'not approved, on this device and on the server.',
           style: const TextStyle(height: 1.4),
         ),
         actions: [
@@ -2048,13 +2476,16 @@ class _VisitApprovalState extends State<_VisitApproval> {
                 ? null
                 : FilledButton.styleFrom(backgroundColor: AppColors.brandRed),
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text(approve ? 'Approve' : 'Unapprove'),
+            child: Text(approve ? 'Approve' : 'Retract'),
           ),
         ],
       ),
     );
     if (ok != true || !mounted) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _retracting = !approve;
+    });
     if (approve) {
       await _repository.approve(_visit.uuid);
     } else {
@@ -2074,8 +2505,11 @@ class _VisitApprovalState extends State<_VisitApproval> {
     }
     await _reload();
     if (!mounted) return;
-    setState(() => _busy = false);
-    final word = approve ? 'Approved' : 'Approval taken back';
+    setState(() {
+      _busy = false;
+      _retracting = false;
+    });
+    final word = approve ? 'Approved' : 'Approval retracted';
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
@@ -2127,7 +2561,8 @@ class _VisitApprovalState extends State<_VisitApproval> {
             ),
             TextButton(
               onPressed: _busy ? null : _unapprove,
-              child: const Text('UNAPPROVE'),
+              // Called a retraction (Ethan, 2026-09-29).
+              child: const Text('RETRACTION'),
             ),
           ],
         ),
@@ -2142,7 +2577,9 @@ class _VisitApprovalState extends State<_VisitApproval> {
             style: FilledButton.styleFrom(backgroundColor: _green),
             onPressed: _busy ? null : _approve,
             icon: const Icon(Icons.check, size: 20),
-            label: Text(_busy ? 'APPROVING…' : 'APPROVE'),
+            label: Text(_busy
+                ? (_retracting ? 'RETRACTING…' : 'APPROVING…')
+                : 'APPROVE'),
           ),
         ),
         const SizedBox(height: 4),
@@ -2155,6 +2592,125 @@ class _VisitApprovalState extends State<_VisitApproval> {
               TextStyle(fontSize: 12.5, color: AppColors.muted, height: 1.35),
         ),
       ],
+    );
+  }
+}
+
+/// Re-sends just this one inspection to the office and reports the result.
+///
+/// Tapping it clears the visit's uploaded flag (`markChanged`) and kicks a
+/// single sync pass, so the bridge re-applies THIS visit to its existing APS
+/// group (`update_visit` — keyed on the visit uuid, so it edits in place and
+/// never creates a duplicate) and re-sends its documents. The button turns
+/// green ("SYNCED") once the pass finishes cleanly, then settles back so it can
+/// be used again. Added 2026-10-16 at Ethan's request.
+class _SyncInspectionButton extends StatefulWidget {
+  const _SyncInspectionButton({required this.visitUuid, required this.database});
+
+  final String visitUuid;
+  final LocalDatabase database;
+
+  @override
+  State<_SyncInspectionButton> createState() => _SyncInspectionButtonState();
+}
+
+class _SyncInspectionButtonState extends State<_SyncInspectionButton> {
+  // 0 idle, 1 syncing, 2 done (green), 3 failed.
+  int _state = 0;
+
+  Future<void> _run() async {
+    if (_state == 1) return;
+    setState(() => _state = 1);
+    final messenger = ScaffoldMessenger.of(context);
+
+    await VisitRepository(widget.database).markChanged(widget.visitUuid);
+
+    // Wait for the kicked pass to finish so we can confirm, rather than saying
+    // "syncing" and leaving the inspector guessing.
+    final sync = AutoSync.instance;
+    final before = sync.completedPasses.value;
+    final done = Completer<bool>();
+    void listener() {
+      if (sync.completedPasses.value != before && !done.isCompleted) {
+        done.complete(true);
+      }
+    }
+
+    sync.completedPasses.addListener(listener);
+    await sync.kick();
+    if (sync.completedPasses.value != before && !done.isCompleted) {
+      done.complete(true);
+    }
+    final passed = await done.future
+        .timeout(const Duration(seconds: 45), onTimeout: () => false);
+    sync.completedPasses.removeListener(listener);
+    if (!mounted) return;
+
+    final failures = sync.lastFailures.value;
+    final ok = passed && failures.isEmpty;
+    setState(() => _state = ok ? 2 : 3);
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(!passed
+            ? 'Could not sync — check the connection, or sign in again with '
+                'signal, then try again.'
+            : failures.isEmpty
+                ? 'Sync complete — this inspection is up to date with the '
+                    'office.'
+                : 'Sync finished with a problem: ${failures.first}'),
+      ));
+
+    // Settle back to idle after a few seconds so it can be re-run.
+    Future.delayed(const Duration(seconds: 4), () {
+      if (mounted && _state != 1) setState(() => _state = 0);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_state == 2) {
+      return SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: _run,
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF2E7D32),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          icon: const Icon(Icons.check_circle, size: 20),
+          label: const Text('SYNCED'),
+        ),
+      );
+    }
+    final syncing = _state == 1;
+    final failed = _state == 3;
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: syncing ? null : _run,
+        style: OutlinedButton.styleFrom(
+          foregroundColor:
+              failed ? const Color(0xFFB00020) : AppColors.brandPrimary,
+          side: BorderSide(
+              color: failed ? const Color(0xFFB00020) : AppColors.brandPrimary,
+              width: 1.4),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+        ),
+        icon: syncing
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(failed ? Icons.refresh : Icons.sync, size: 20),
+        label: Text(syncing
+            ? 'Syncing…'
+            : failed
+                ? 'TRY AGAIN'
+                : 'SYNC THIS INSPECTION'),
+      ),
     );
   }
 }

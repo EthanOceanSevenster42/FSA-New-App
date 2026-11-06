@@ -56,9 +56,11 @@ class _CameraPageState extends State<_CameraPage> with WidgetsBindingObserver {
   /// common denominator, step down until one is accepted — [max] is in the
   /// list because a basic camera guarantees the combination only when the
   /// still capture is at its largest size, not a middling one.
+  // 1080p first (Ethan, 2026-10-01): the record keeps 1600 px on the long
+  // side, so a larger frame only made the shot slower to take and to save.
   static const _presets = [
-    ResolutionPreset.veryHigh,
     ResolutionPreset.high,
+    ResolutionPreset.veryHigh,
     ResolutionPreset.max,
     ResolutionPreset.medium,
     ResolutionPreset.low,

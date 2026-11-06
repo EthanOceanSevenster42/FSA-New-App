@@ -53,6 +53,22 @@ class PoultryCaptureRepository {
           .into(database.poultryLabelInspections)
           .insertOnConflictUpdate(row);
 
+  /// Every label checklist on this handset, for the upload pass alone.
+  ///
+  /// Scoping an upload to the signed-in name hid finished work captured
+  /// under another spelling of it: never sent, never reported as failed
+  /// (Ethan, 2026-10-28). What a screen shows stays scoped; what goes up
+  /// does not.
+  Future<List<PoultryLabelInspection>> labelInspectionsForUpload() =>
+      (database.select(database.poultryLabelInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<List<PoultryLabelInspection>> labelInspections(String username) async {
     final rows = await (database.select(database.poultryLabelInspections)
           ..orderBy([
@@ -165,6 +181,18 @@ class PoultryCaptureRepository {
       database
           .into(database.poultryQuidInspections)
           .insertOnConflictUpdate(row);
+
+  /// Every QUID verification on this handset, for the upload pass alone.
+  /// As [labelInspectionsForUpload].
+  Future<List<PoultryQuidInspection>> quidInspectionsForUpload() =>
+      (database.select(database.poultryQuidInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
 
   Future<List<PoultryQuidInspection>> quidInspections(String username) async {
     final rows = await (database.select(database.poultryQuidInspections)
@@ -345,6 +373,18 @@ class PoultryCaptureRepository {
   Future<void> saveDirection(PoultryDirectionsCompanion row) =>
       database.into(database.poultryDirections).insertOnConflictUpdate(row);
 
+  /// Every poultry direction on this handset, for the upload pass alone.
+  /// As [labelInspectionsForUpload].
+  Future<List<PoultryDirection>> directionsForUpload() =>
+      (database.select(database.poultryDirections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.issuedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<List<PoultryDirection>> directions(String username) async {
     final rows = await (database.select(database.poultryDirections)
           ..orderBy([
@@ -437,6 +477,43 @@ class PoultryCaptureRepository {
     });
     // The files go after the rows: a row that outlives its file is a
     // photograph lost, a file that outlives its row is only space.
+    for (final path in [
+      for (final p in photos) p.filePath,
+      for (final s in signatures) s.filePath,
+    ]) {
+      if (path.trim().isEmpty) continue;
+      try {
+        final file = File(path);
+        if (file.existsSync()) file.deleteSync();
+      } on FileSystemException {
+        // Left behind; nothing refers to it any more.
+      }
+    }
+  }
+
+  /// Removes a grading record graded on a label checklist and everything
+  /// captured under it — its photographs, signatures, the rejection raised
+  /// off it and any seizure — for grading answered NO after all.
+  Future<void> deleteGradingInspection(String uuid) async {
+    final photos = await photosFor(uuid);
+    final signatures = await signaturesFor(uuid);
+    await database.transaction(() async {
+      await (database.delete(database.poultryPhotos)
+            ..where((t) => t.recordUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultrySignatures)
+            ..where((t) => t.recordUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultryDirections)
+            ..where((t) => t.clientUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.seizures)
+            ..where((t) => t.recordUuid.equals(uuid)))
+          .go();
+      await (database.delete(database.poultryInspections)
+            ..where((t) => t.clientUuid.equals(uuid)))
+          .go();
+    });
     for (final path in [
       for (final p in photos) p.filePath,
       for (final s in signatures) s.filePath,

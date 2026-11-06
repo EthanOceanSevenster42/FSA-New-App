@@ -52,17 +52,22 @@ Future<bool> editSeizureParticulars(
   required LocalDatabase database,
   required Seizure seizure,
 }) async {
+  // Opened on what the sheet prints now — filled from the inspection where
+  // the inspector has not given it — rather than on blanks.
+  final shown =
+      await SeizureRepository(database: database).current(seizure);
+  if (!context.mounted) return false;
   final answer = await askSeizureParticulars(
     context,
     editing: true,
     initial: SeizureParticulars(
-      productName: seizure.productName,
-      productClass: seizure.productClass,
-      quantity: seizure.quantity,
-      remarks: seizure.remarks,
-      receiverName: seizure.receiverName,
-      receiverIdNumber: seizure.receiverIdNumber,
-      receiverDesignation: seizure.receiverDesignation,
+      productName: shown.productName,
+      productClass: shown.productClass,
+      quantity: shown.quantity,
+      remarks: shown.remarks,
+      receiverName: shown.receiverName,
+      receiverIdNumber: shown.receiverIdNumber,
+      receiverDesignation: shown.receiverDesignation,
     ),
   );
   if (answer == null) return false;
@@ -82,12 +87,22 @@ Future<bool> editSeizureParticulars(
   return true;
 }
 
-/// Puts the seizure particulars to the inspector and writes the seizure.
+/// Writes the seizure the moment "Proceed with seizure" is chosen.
 ///
-/// Called the moment "Proceed with seizure" is chosen, on the premises:
-/// FSA-SOP-APS-001 wants every immediate seizure on the Annexure E sheet,
-/// and the sheet needs what only the inspector standing at the shelf can
-/// give — how much was seized and who took receipt of it.
+/// FSA-SOP-APS-001 wants every immediate seizure on the Annexure E sheet.
+/// Its particulars used to be asked for there and then, in a form that
+/// stopped the inspection halfway (Ethan, 2026-09-29). The sheet now fills
+/// itself from the inspection as it stands at the end — the receiver from
+/// the person who signs — see [SeizureRepository.current]. Anything still
+/// missing is added with "Edit seizure particulars" in Inspection
+/// Management.
+///
+/// The quantity is the exception, and is asked here: it is counted off the
+/// shelf and stops being knowable once the inspector leaves, and the client
+/// signs the Acknowledgement of receipt on the same page, so it must be on
+/// the page before they sign. Only eggs and QUID record one anywhere else,
+/// which is why every seizure sheet the Agency has issued had the column
+/// empty (Cinga, 2026-10-26).
 ///
 /// Returns true when a seizure was recorded.
 Future<bool> recordSeizure(
@@ -95,19 +110,11 @@ Future<bool> recordSeizure(
   required LocalDatabase database,
   required SeizureDraft draft,
 }) async {
-  final particulars = await askSeizureParticulars(
-    context,
-    initial: SeizureParticulars(
-      productName: draft.productName,
-      productClass: draft.productClass,
-      quantity: '',
-      remarks: '',
-      receiverName: draft.receiverName,
-      receiverIdNumber: '',
-      receiverDesignation: '',
-    ),
-  );
-  if (particulars == null) return false;
+  final quantity =
+      await askSeizedQuantity(context, productName: draft.productName);
+  // Backed out of the question: nothing is seized, so the inspection is
+  // left as it was rather than a sheet raised with no amount on it.
+  if (quantity == null) return false;
   final now = DateTime.now();
   await SeizureRepository(database: database).record(SeizuresCompanion.insert(
     clientUuid: const Uuid().v4(),
@@ -122,15 +129,21 @@ Future<bool> recordSeizure(
     clientTelephone: Value(draft.clientTelephone.trim()),
     clientEmail: Value(draft.clientEmail.trim()),
     inspectionPoint: Value(draft.inspectionPoint.trim()),
-    productName: Value(particulars.productName.trim()),
-    productClass: Value(particulars.productClass.trim()),
-    quantity: Value(particulars.quantity.trim()),
+    productName: Value(draft.productName.trim()),
+    productClass: Value(draft.productClass.trim()),
     regulation: Value(draft.regulation),
     natureOfDeviation: Value(draft.natureOfDeviation),
-    remarks: Value(particulars.remarks.trim()),
-    receiverName: Value(particulars.receiverName.trim()),
-    receiverIdNumber: Value(particulars.receiverIdNumber.trim()),
-    receiverDesignation: Value(particulars.receiverDesignation.trim()),
+    quantity: Value(quantity),
+    // The receiver is left for the end of the inspection to fill: it is the
+    // person who signs, and who that is is not known yet.
   ));
+  if (context.mounted) {
+    ScaffoldMessenger.maybeOf(context)
+      ?..clearSnackBars()
+      ..showSnackBar(const SnackBar(
+        content: Text('Seizure recorded. The seizure document is filled in '
+            'from this inspection when it is finished.'),
+      ));
+  }
   return true;
 }

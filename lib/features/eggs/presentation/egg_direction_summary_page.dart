@@ -152,10 +152,10 @@ class _EggDirectionSummaryPageState extends State<EggDirectionSummaryPage> {
                 note: labelOverdue ? 'The correction date has passed.' : null,
               ),
             SummaryField(
-              label: 'Quantity removed',
-              // Null means nothing was removed; zero would be a measurement.
+              label: 'Quantity rejected',
+              // Null means none was recorded; zero would be a measurement.
               value: direction.quantityRemoved == null
-                  ? 'None removed'
+                  ? 'None recorded'
                   : direction.quantityRemoved!.toStringAsFixed(0),
             ),
           ],

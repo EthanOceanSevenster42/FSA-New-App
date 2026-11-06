@@ -244,6 +244,35 @@ abstract final class InvoiceRules {
   /// (FSA, 2026-09-08). Kilometres are unaffected: the drive is one drive.
   static const chargeableKinds = {'rawrmp', 'pmp'};
 
+  /// The stretch an inspection is reckoned to have taken: from the first
+  /// inspection the inspector actually opened, to the moment they signed.
+  ///
+  /// *Not* from when the visit record was created. The facility details are
+  /// routinely captured well ahead of the visit — of the records signed off
+  /// on 2026-10-12, one had been opened on 7 October and another on
+  /// 22 September — so the record's own start is the day the paperwork was
+  /// begun, not the day the inspection happened. A handset offered "12:00"
+  /// as the start of an inspection worked at 11:20 that morning, which is
+  /// how a visit reaches the office at 98 hours (Ethan, 2026-10-12).
+  ///
+  /// The first commodity form opened is the first moment the inspector was
+  /// on the job, and the signature is the last; [captures] are those forms'
+  /// own start times. [visitStarted] is the fallback for a visit that holds
+  /// no inspection at all — an occurrence report — where nothing else marks
+  /// a beginning.
+  static ({DateTime start, DateTime end}) workedWindow({
+    required Iterable<DateTime?> captures,
+    required DateTime visitStarted,
+    required DateTime signedAt,
+  }) {
+    final dated = [
+      for (final c in captures)
+        if (c != null) c,
+    ]..sort();
+    final start = dated.isEmpty ? visitStarted : dated.first;
+    return (start: start, end: signedAt.isAfter(start) ? signedAt : start);
+  }
+
   /// The stretch of a visit the hour is charged for.
   ///
   /// A visit works through its commodities one after the next and each
@@ -327,6 +356,24 @@ abstract final class InvoiceRules {
     return hour * 60 + minute;
   }
 
+  /// When the inspector reached the facility, read off the "travel end"
+  /// the visit recorded -- the time they stopped driving.
+  ///
+  /// The form used to start its clock at the visit's `startedAt`, which is
+  /// only when the visit was first opened on the handset: in the car, at
+  /// the office, the night before. The office complained that the start
+  /// time on the RFI did not match when the inspection actually began, and
+  /// what sat in between was always the travelling (Ethan, 2026-10-09).
+  ///
+  /// Returns null when no travel end was captured, leaving the old
+  /// behaviour for a visit that never recorded one.
+  static DateTime? arrivedAt(DateTime visitStarted, String travelEnd) {
+    final minutes = _minutes(travelEnd);
+    if (minutes == null) return null;
+    return DateTime(visitStarted.year, visitStarted.month, visitStarted.day,
+        minutes ~/ 60, minutes % 60);
+  }
+
   /// "HH:mm", as the form writes a time.
   static String clock(DateTime at) => '${at.hour.toString().padLeft(2, '0')}:'
       '${at.minute.toString().padLeft(2, '0')}';
@@ -356,6 +403,29 @@ abstract final class InvoiceRules {
         ? overlapTo.difference(overlapFrom).inMinutes / 60
         : 0.0;
     return (normal: normal, overtime: total - normal, sunday: 0);
+  }
+
+  /// The window the inspector confirmed at sign-off, or null if they were
+  /// never asked.
+  ///
+  /// The handset's own reading comes from when the record was opened and
+  /// closed, which is why visits reached the office at 0.03 hours and at
+  /// 98. The sign-off now shows its working and asks; this is the answer
+  /// (Ethan, 2026-10-12). A finish before the start is read as running past
+  /// midnight, as the rest of the form does.
+  static ({DateTime start, DateTime end, bool billable})? confirmedWindow(
+    String started,
+    String ended, {
+    required DateTime on,
+  }) {
+    final from = _minutes(started);
+    final to = _minutes(ended);
+    if (from == null || to == null) return null;
+    final day = DateTime(on.year, on.month, on.day);
+    final start = day.add(Duration(minutes: from));
+    var end = day.add(Duration(minutes: to));
+    if (!end.isAfter(start)) end = end.add(const Duration(days: 1));
+    return (start: start, end: end, billable: true);
   }
 
   /// Whether the journey is billed.

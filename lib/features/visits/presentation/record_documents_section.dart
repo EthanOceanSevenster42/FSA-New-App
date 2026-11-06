@@ -86,8 +86,8 @@ class RecordDocumentsSection extends StatelessWidget {
                       child: SizedBox(
                         height: 46,
                         child: OutlinedButton(
-                          onPressed: () =>
-                              _open(context, document, download: false),
+                          onPressed: () => openRecordDocument(context, document,
+                              download: false),
                           child: const FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text('VIEW',
@@ -101,8 +101,8 @@ class RecordDocumentsSection extends StatelessWidget {
                       child: SizedBox(
                         height: 46,
                         child: FilledButton(
-                          onPressed: () =>
-                              _open(context, document, download: true),
+                          onPressed: () => openRecordDocument(context, document,
+                              download: true),
                           child: const FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text('DOWNLOAD',
@@ -120,55 +120,55 @@ class RecordDocumentsSection extends StatelessWidget {
       },
     );
   }
+}
 
-  /// Builds the document and shows it, or saves it to Downloads.
-  Future<void> _open(BuildContext context, RecordDocument document,
-      {required bool download}) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final navigator = Navigator.of(context);
-    try {
-      final file = await document.build();
-      if (file == null) {
-        messenger
-          ..clearSnackBars()
-          ..showSnackBar(SnackBar(
-              content: Text('${document.title} has nothing to show yet.')));
-        return;
-      }
-      final bytes = await file.readAsBytes();
-      if (download) {
-        final saved = await Downloads.save(document.downloadName, bytes);
-        messenger
-          ..clearSnackBars()
-          ..showSnackBar(SnackBar(
-            content: Text('Saved to ${saved.where}'),
-            duration: const Duration(seconds: 6),
-            action: saved.uri.isEmpty
-                ? null
-                : SnackBarAction(
-                    label: 'OPEN', onPressed: () => Downloads.open(saved)),
-          ));
-        return;
-      }
-      await navigator.push(MaterialPageRoute<void>(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: Text(document.title)),
-          body: ContentWidth(
-            child: PdfPreview(
-              build: (_) => bytes,
-              canChangePageFormat: false,
-              canChangeOrientation: false,
-              canDebug: false,
-              pdfFileName: document.downloadName,
-            ),
-          ),
-        ),
-      ));
-    } on Object catch (e) {
+/// Builds the document and shows it, or saves it to Downloads.
+Future<void> openRecordDocument(BuildContext context, RecordDocument document,
+    {required bool download}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final navigator = Navigator.of(context);
+  try {
+    final file = await document.build();
+    if (file == null) {
       messenger
         ..clearSnackBars()
         ..showSnackBar(SnackBar(
-            content: Text('${document.title} could not be built. $e')));
+            content: Text('${document.title} has nothing to show yet.')));
+      return;
     }
+    final bytes = await file.readAsBytes();
+    if (download) {
+      final saved = await Downloads.save(document.downloadName, bytes);
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text('Saved to ${saved.where}'),
+          duration: const Duration(seconds: 6),
+          action: saved.uri.isEmpty
+              ? null
+              : SnackBarAction(
+                  label: 'OPEN', onPressed: () => Downloads.open(saved)),
+        ));
+      return;
+    }
+    await navigator.push(MaterialPageRoute<void>(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: Text(document.title)),
+        body: ContentWidth(
+          child: PdfPreview(
+            build: (_) => bytes,
+            canChangePageFormat: false,
+            canChangeOrientation: false,
+            canDebug: false,
+            pdfFileName: document.downloadName,
+          ),
+        ),
+      ),
+    ));
+  } on Object catch (e) {
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+          SnackBar(content: Text('${document.title} could not be built. $e')));
   }
 }

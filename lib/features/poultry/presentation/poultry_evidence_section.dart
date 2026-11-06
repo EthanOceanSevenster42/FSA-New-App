@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 
 import '../../../core/data/local_database.dart';
+import '../../../core/data/sqlite_connection.dart';
 import '../../../core/services/in_app_camera.dart';
 import '../../../core/services/photo_storage.dart';
 import '../../../core/theme/app_theme.dart';
@@ -35,6 +36,7 @@ class PoultryEvidenceSection extends StatefulWidget {
     this.maxPhotos,
     this.minPhotos,
     this.captureNotes = const [],
+    this.shots = const [],
   });
 
   final PoultryCaptureRepository repository;
@@ -92,6 +94,12 @@ class PoultryEvidenceSection extends StatefulWidget {
   /// original stops and asks for a front view, then a rear view, so the two
   /// shots the checklist depends on are the two it gets.
   final List<({String title, String message})> captureNotes;
+
+  /// What each photograph is of, in the order they are taken — "Front of
+  /// the pack", "Back of the pack", "Extra". When given, the button names
+  /// the next one, the count line says which are taken and which are still
+  /// needed, and each thumbnail is labelled (Ethan, 2026-09-29).
+  final List<String> shots;
 
   @override
   State<PoultryEvidenceSection> createState() => _PoultryEvidenceSectionState();
@@ -184,7 +192,7 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
       );
       await _reload();
     } on Object catch (e) {
-      if (mounted) _toast('The photo could not be saved. $e');
+      if (mounted) _toast(photoSaveFailure(e));
     } finally {
       if (mounted) setState(() => _capturing = false);
     }
@@ -244,6 +252,13 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
   /// many the form needs, and how many more it will take.
   String get _countLine {
     final max = widget.maxPhotos;
+    if (widget.shots.isNotEmpty) {
+      final min = widget.minPhotos ?? 0;
+      return [
+        for (var i = 0; i < widget.shots.length; i++)
+          '${widget.shots[i]}: ${i < _photos.length ? 'taken' : i < min ? 'still needed' : 'optional'}',
+      ].join('   ·   ');
+    }
     if (_full) return 'All $max taken. Delete one to take another.';
     final min = widget.minPhotos;
     if (min != null) {
@@ -318,6 +333,7 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
                 separatorBuilder: (_, __) => const SizedBox(width: 8),
                 itemBuilder: (context, i) => _Thumb(
                   photo: _photos[i],
+                  label: i < widget.shots.length ? widget.shots[i] : null,
                   onDelete: () async {
                     await widget.repository.deletePhoto(_photos[i].id);
                     await _reload();
@@ -354,7 +370,10 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
                 icon: const Icon(Icons.photo_camera_outlined, size: 18),
                 label: Text(_capturing
                     ? 'Saving…'
-                    : (widget.captureLabel ?? 'Take photograph')),
+                    : _photos.length < widget.shots.length
+                        ? 'Take photo: ${widget.shots[_photos.length]}'
+                        // One wording on every form (Ethan, 2026-09-30).
+                        : 'Take photo'),
               ),
               if (widget.showClearPhotos)
                 TextButton.icon(
@@ -417,10 +436,13 @@ class _PoultryEvidenceSectionState extends State<PoultryEvidenceSection> {
 }
 
 class _Thumb extends StatelessWidget {
-  const _Thumb({required this.photo, required this.onDelete});
+  const _Thumb({required this.photo, required this.onDelete, this.label});
 
   final PoultryPhoto photo;
   final VoidCallback onDelete;
+
+  /// What the photograph is of, along its foot.
+  final String? label;
 
   @override
   Widget build(BuildContext context) => Stack(
@@ -443,6 +465,27 @@ class _Thumb extends StatelessWidget {
               ),
             ),
           ),
+          if (label != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                decoration: const BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius:
+                      BorderRadius.vertical(bottom: Radius.circular(10)),
+                ),
+                child: Text(
+                  label!,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ),
+            ),
           Positioned(
             top: 0,
             right: 0,

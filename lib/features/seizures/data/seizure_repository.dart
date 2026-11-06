@@ -54,23 +54,158 @@ class SeizureRepository {
             ..where((t) => t.uuid.equals(s.visitUuid)))
           .getSingleOrNull();
       if (v != null) {
-        return s.copyWith(
+        return _filled(s.copyWith(
           clientName: pick(v.facilityName, s.clientName),
           clientAddress: pick(v.facilityAddress, s.clientAddress),
           clientTelephone: pick(v.facilityPhone, s.clientTelephone),
           clientEmail: pick(v.contactEmail, s.clientEmail),
           inspectionPoint: pick(v.facilityType, s.inspectionPoint),
-        );
+        ));
       }
     }
     final live = await _recordFacility(s);
-    if (live == null) return s;
-    return s.copyWith(
+    if (live == null) return _filled(s);
+    return _filled(s.copyWith(
       clientName: pick(live.name, s.clientName),
       clientAddress: pick(live.address, s.clientAddress),
       clientTelephone: pick(live.phone, s.clientTelephone),
       clientEmail: pick(live.email, s.clientEmail),
+    ));
+  }
+
+  /// The seizure's particulars, filled from the inspection as it stands at
+  /// the end wherever the inspector has not given them (Ethan,
+  /// 2026-09-29): they are no longer asked for mid-inspection. What the
+  /// inspector typed through "Edit seizure particulars" stands.
+  Future<Seizure> _filled(Seizure s) async {
+    String keep(String own, String found) =>
+        own.trim().isNotEmpty ? own : found.trim();
+    final receiver = await _receiver(s);
+    final named = s.receiverName.trim().isNotEmpty;
+    return s.copyWith(
+      quantity: keep(s.quantity, await _quantity(s)),
+      productClass: keep(s.productClass, await _productClass(s)),
+      receiverName: keep(s.receiverName, receiver.name),
+      receiverDesignation: named
+          ? s.receiverDesignation
+          : keep(s.receiverDesignation, receiver.designation),
     );
+  }
+
+  /// Who took receipt: the person the visit names as signing for the
+  /// client, or the record's own manager outside a visit.
+  Future<({String name, String designation})> _receiver(Seizure s) async {
+    if (s.visitUuid.isNotEmpty) {
+      final v = await (database.select(database.storeVisits)
+            ..where((t) => t.uuid.equals(s.visitUuid)))
+          .getSingleOrNull();
+      if (v != null) {
+        for (final (name, designation) in [
+          (v.managerName, 'Manager'),
+          (v.representative, 'Representative'),
+          (v.contactPerson, 'Contact person'),
+        ]) {
+          if (name.trim().isNotEmpty) {
+            return (name: name.trim(), designation: designation);
+          }
+        }
+      }
+    }
+    final id = s.recordUuid;
+    final String? manager = switch (s.recordKind) {
+      'egg' => (await (database.select(database.eggInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      'pmp' => (await (database.select(database.pmpInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      'rawrmp' => (await (database.select(database.rawRmpInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      'poultry' => (await (database.select(database.poultryInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      'poultry_label' => (await (database.select(
+                  database.poultryLabelInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      'quid' => (await (database.select(database.poultryQuidInspections)
+                ..where((t) => t.clientUuid.equals(id)))
+              .getSingleOrNull())
+          ?.managerName,
+      _ => null,
+    };
+    final name = (manager ?? '').trim();
+    return (name: name, designation: name.isEmpty ? '' : 'Manager');
+  }
+
+  /// How much was seized: what the rejection at the end says was rejected
+  /// — the egg rejection's quantity, the QUID rejection's batch and
+  /// quantity. Empty where the record keeps no such figure.
+  Future<String> _quantity(Seizure s) async {
+    final id = s.recordUuid;
+    switch (s.recordKind) {
+      case 'egg':
+        final directions = await (database.select(database.eggDirections)
+              ..where((t) => t.inspectionUuid.equals(id)))
+            .get();
+        for (final d in directions) {
+          final q = d.quantityRemoved;
+          if (q != null && q > 0) {
+            return q == q.roundToDouble() ? '${q.toInt()}' : '$q';
+          }
+        }
+        return '';
+      case 'quid':
+        final q = await (database.select(database.poultryQuidInspections)
+              ..where((t) => t.clientUuid.equals(id)))
+            .getSingleOrNull();
+        return q?.directionAction.trim() ?? '';
+    }
+    // Nothing else keeps a figure of its own. Raw, processed meat and
+    // poultry never ask how much was seized: the meat forms ask for the
+    // sample size looked at, which is a different quantity, and printing
+    // it on a statutory notice would misstate what was taken. Those are
+    // typed through "Edit seizure particulars" (Cinga, 2026-10-26).
+    return '';
+  }
+
+  /// The class of what was seized, as the record states it.
+  ///
+  /// Only raw and processed meat products are sold against a class: each
+  /// has its own list and its own Product Class question on the form.
+  /// Eggs and poultry have none — they carry sizes, grades and
+  /// designations, which are a different thing — so their column reads
+  /// N/A rather than sitting empty, which looks like an omission on a
+  /// notice served under section 8.
+  ///
+  /// This used to answer for eggs alone, the one commodity that has no
+  /// class, and returned nothing for the two that do: every raw and
+  /// processed meat seizure went out with the column blank while the
+  /// record held the class the inspector had chosen and APS was already
+  /// showing it (Herti Deli, group 4573, Cinga 2026-10-26).
+  ///
+  /// A raw or processed meat record whose class was never chosen is left
+  /// blank, not N/A: the class applies, it is simply not stated.
+  Future<String> _productClass(Seizure s) async {
+    switch (s.recordKind) {
+      case 'rawrmp':
+        final row = await (database.select(database.rawRmpInspections)
+              ..where((t) => t.clientUuid.equals(s.recordUuid)))
+            .getSingleOrNull();
+        return row?.productClass.trim() ?? '';
+      case 'pmp':
+        final row = await (database.select(database.pmpInspections)
+              ..where((t) => t.clientUuid.equals(s.recordUuid)))
+            .getSingleOrNull();
+        return row?.productClass.trim() ?? '';
+    }
+    return 'N/A';
   }
 
   /// The facility as the record the seizure was raised off holds it.
@@ -334,10 +469,15 @@ class SeizureRepository {
               (r) => r.role == role && !r.declined && r.filePath.isNotEmpty)
           .map((r) => r.filePath)
           .firstWhere((_) => true, orElse: () => '');
-      final client = rows.where((r) => r.role == 'client').toList();
+      // The visit's sign-off files the client's signature on an egg record
+      // as "manager"; the egg form's own as "client".
+      final client = rows
+          .where((r) => r.role == 'client' || r.role == 'manager')
+          .toList();
+      final clientPath = pathOf('client');
       return (
         inspector: pathOf('inspector'),
-        client: pathOf('client'),
+        client: clientPath.isNotEmpty ? clientPath : pathOf('manager'),
         clientName: client.isEmpty ? '' : client.first.signedName,
         signedAt: client.isEmpty ? null : client.first.signedAt,
       );

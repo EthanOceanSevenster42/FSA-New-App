@@ -22,7 +22,9 @@ import 'saved_dialog.dart';
 ///
 /// Covers the "Poultry Egg Quality Direction" and "Egg Labelling
 /// Direction" forms: a direction number, a correct-by date, standard remarks
-/// picked from a list plus free text, and the quantity of product removed.
+/// picked from a list plus free text, and the quantity of product rejected.
+/// A rejection does not remove product (FSA-SOP-APS-001 s.7.2: it is not
+/// for sale until put right); only a seizure removes it.
 class EggDirectionForm extends StatefulWidget {
   const EggDirectionForm({
     super.key,
@@ -459,7 +461,7 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
               emptyHint:
                   'No clients on this device yet. Sync to download them.',
             )),
-          _field('Producer / supplier', _producer, readOnly: _producerLocked),
+          _field('Producer/supplier', _producer, readOnly: _producerLocked),
           _anchor('number', framed: true, listenable: _number,
               _field('Rejection number', _number,
                   isRequired: true, readOnly: true)),
@@ -506,7 +508,7 @@ class _EggDirectionFormState extends State<EggDirectionForm> {
               ),
             )),
           _field(
-            'Quantity of product removed',
+            'Quantity of product rejected',
             _quantity,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),

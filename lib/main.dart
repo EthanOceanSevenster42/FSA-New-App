@@ -11,6 +11,7 @@ import 'package:drift/drift.dart' hide Column, Table;
 
 import 'core/config/app_config.dart';
 import 'core/data/local_database.dart';
+import 'features/calendar/presentation/follow_up_calendar_page.dart';
 import 'core/services/connectivity_service.dart';
 import 'core/services/device_service.dart';
 import 'core/services/permission_service.dart';
@@ -33,6 +34,7 @@ import 'features/pmp/data/pmp_repository.dart';
 import 'features/pmp/presentation/pmp_pages.dart';
 import 'features/rawrmp/data/rawrmp_repository.dart';
 import 'features/rawrmp/presentation/rawrmp_pages.dart';
+import 'features/calendar/data/planned_visit_repository.dart';
 import 'features/sync/server_sync.dart';
 import 'features/invoicing/data/tariff_sync.dart';
 import 'features/invoicing/data/invoice_repository.dart';
@@ -110,6 +112,13 @@ Future<void> _bootstrap() async {
     baseUrl: config.apiBaseUrl,
     database: database,
   );
+  // The inspectors' own planned visits. Local first — planning has to work
+  // with no signal, like everything else here — and copied up to the
+  // office on sync so they can be seen.
+  final planner = PlannedVisitRepository(database, baseUrl: config.apiBaseUrl);
+  // The user-sync endpoints now require authentication (they return offline
+  // credentials), so hand the sync repository the refresh-aware token source.
+  syncRepository.tokenProvider = eggs.storedToken;
   final poultry = PoultryRepository(
     baseUrl: config.apiBaseUrl,
     database: database,
@@ -178,6 +187,7 @@ Future<void> _bootstrap() async {
       pmp: pmp,
       rawRmp: rawRmp,
       visits: VisitRepository(database, baseUrl: config.apiBaseUrl),
+      planner: planner,
       database: database,
       // Server-first, with a local fallback so an inspector with no signal is
       // never locked out. See OfflineCapableAuthService.
@@ -268,6 +278,7 @@ class FsaApp extends StatelessWidget {
     required this.pmp,
     required this.rawRmp,
     required this.visits,
+    required this.planner,
     required this.database,
     required this.sessionStore,
     required this.themeController,
@@ -286,6 +297,11 @@ class FsaApp extends StatelessWidget {
   final PmpRepository pmp;
   final RawRmpRepository rawRmp;
   final VisitRepository visits;
+
+  /// The inspectors' own planned visits, shared by the calendar that
+  /// writes them and the sync that sends them up.
+  final PlannedVisitRepository planner;
+
   final LocalDatabase database;
   final SessionStore sessionStore;
 
@@ -356,6 +372,7 @@ class FsaApp extends StatelessWidget {
       pmp: pmp,
       rawRmp: rawRmp,
       visits: visits,
+      planner: planner,
       invoices: InvoiceRepository(database, visits),
       versionReport: VersionReport(
         baseUrl: config.apiBaseUrl,
@@ -388,7 +405,9 @@ class FsaApp extends StatelessWidget {
         themeController: themeController,
         resumeAs: resumeAs,
         onSessionActive: (user) => AutoSync.instance.start(user.userName),
-        onSessionEnded: AutoSync.instance.stop,
+        // Push what is still waiting before the session closes, rather than
+        // leaving it on the device until the next sign-in (Ethan, 2026-10-08).
+        onSessionEnded: () => unawaited(AutoSync.instance.flushAndStop()),
         // Pull the whole directory while the inspector still has signal, so
         // every client and facility is on the device before they drive out.
         // Fire-and-forget: a failure here is surfaced by the module and by the
@@ -447,6 +466,20 @@ class FsaApp extends StatelessWidget {
               eggs: eggs,
               invoices: InvoiceRepository(database, visits),
               database: database,
+              inspectorName: user.userName,
+            ),
+          13 => FollowUpCalendarPage(
+              database: database,
+              planner: planner,
+              visits: visits,
+              eggs: eggs,
+              eggsSync: eggsSync,
+              poultry: poultry,
+              poultryCapture: poultryCapture,
+              rawRmp: rawRmp,
+              pmp: pmp,
+              inspectorName: user.userName,
+              canRemoveRecords: user.canRemoveRecords,
             ),
           1 => FruitVegMenuPage(
               repository: fruitVeg,

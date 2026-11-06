@@ -72,6 +72,12 @@ class _CommodityInspectionViewPageState
   bool _loading = true;
   bool _missing = false;
 
+  /// Set when reading the record back threw. The page used to leave its
+  /// spinner turning for ever on any such failure. Now the reason is shown
+  /// with a way to try again, so an inspection that will not open says why
+  /// instead of hanging — and the failure is printed to the log as well.
+  String? _error;
+
   /// True while the form is being opened, so the button cannot be pressed
   /// twice into two copies of the same record.
   bool _editing = false;
@@ -90,8 +96,8 @@ class _CommodityInspectionViewPageState
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(const SnackBar(
-          content: Text('Correction saved. Run Server Sync to send it to '
-              'the office.'),
+          content: Text('Correction saved. It goes to the office now, or '
+              'as soon as there is signal.'),
           duration: Duration(seconds: 6),
         ));
     } finally {
@@ -130,16 +136,25 @@ class _CommodityInspectionViewPageState
     Set<String> present,
     Set<int> ticked,
   ) async {
+    // Only the sectioned checklists (raw RMP, PMP) carry a `section` column,
+    // and only they populate [present]. Poultry's list has no sections and no
+    // such column — selecting `section` against it threw "no such column:
+    // section", which hung every poultry rejection on its spinner. So the
+    // column is read only when there are sections to filter by.
+    final hasSections = present.isNotEmpty;
+    final columns = hasSections ? 'id, section, description' : 'id, description';
     final rows = await widget.database
-        .customSelect('SELECT id, section, description FROM $checklistTable '
+        .customSelect('SELECT $columns FROM $checklistTable '
             'WHERE is_active = 1 ORDER BY sort_order')
         .get();
     final found = <String>[];
     for (final row in rows) {
       final id = row.data['id'] as int?;
-      final section = row.data['section'] as String? ?? '';
       if (id == null || ticked.contains(id)) continue;
-      if (present.isNotEmpty && !present.contains(section)) continue;
+      if (hasSections) {
+        final section = row.data['section'] as String? ?? '';
+        if (!present.contains(section)) continue;
+      }
       found.add(row.data['description'] as String? ?? 'Item $id');
     }
     return found;
@@ -153,7 +168,24 @@ class _CommodityInspectionViewPageState
     return rows.isEmpty ? '' : (rows.first.data['name'] as String? ?? '');
   }
 
+  /// Reads the record back, never throwing: any failure stops the spinner and
+  /// records the reason instead of leaving the page loading for ever.
   Future<void> _load() async {
+    try {
+      await _loadInner();
+    } catch (e, st) {
+      debugPrint(
+          'CommodityInspectionView load failed (${widget.kind}/${widget.uuid}): '
+          '$e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = '$e';
+      });
+    }
+  }
+
+  Future<void> _loadInner() async {
     final database = widget.database;
     final rows = <(String, String)>[];
 
@@ -167,7 +199,7 @@ class _CommodityInspectionViewPageState
         rows.addAll([
           ('Facility', r.facilityName),
           ('Address', r.facilityAddress),
-          ('Telephone / cellphone', r.facilityTelephone),
+          ('Telephone/cellphone', r.facilityTelephone),
           ('Contact person', r.contactPerson),
           ('Inspected', _dmy(r.inspectedAt)),
           (
@@ -205,7 +237,7 @@ class _CommodityInspectionViewPageState
         rows.addAll([
           ('Facility', r.facilityName),
           ('Address', r.facilityAddress),
-          ('Telephone / cellphone', r.facilityTelephone),
+          ('Telephone/cellphone', r.facilityTelephone),
           ('Contact person', r.contactPerson),
           ('Inspected', _dmy(r.inspectedAt)),
           ('Location', await _nameOf('pmp_inspection_locations', r.locationId)),
@@ -234,7 +266,7 @@ class _CommodityInspectionViewPageState
         rows.addAll([
           ('Facility', r.facilityName),
           ('Address', r.facilityAddress),
-          ('Telephone / cellphone', r.facilityTelephone),
+          ('Telephone/cellphone', r.facilityTelephone),
           ('Contact person', r.contactPerson),
           ('Inspected', _dmy(r.inspectedAt)),
           (
@@ -275,7 +307,7 @@ class _CommodityInspectionViewPageState
         rows.addAll([
           ('Facility', r.facilityName),
           ('Address', r.facilityAddress),
-          ('Telephone / cellphone', r.facilityTelephone),
+          ('Telephone/cellphone', r.facilityTelephone),
           ('Contact person', r.contactPerson),
           ('Inspected', _dmy(r.inspectedAt)),
           (
@@ -310,7 +342,7 @@ class _CommodityInspectionViewPageState
         rows.addAll([
           ('Facility', r.facilityName),
           ('Address', r.facilityAddress),
-          ('Telephone / cellphone', r.facilityTelephone),
+          ('Telephone/cellphone', r.facilityTelephone),
           ('Contact person', r.contactPerson),
           ('Inspected', _dmy(r.inspectedAt)),
           (
@@ -357,6 +389,7 @@ class _CommodityInspectionViewPageState
       _signatures = signatures;
       _missing = rows.isEmpty;
       _loading = false;
+      _error = null;
     });
   }
 
@@ -609,7 +642,7 @@ class _CommodityInspectionViewPageState
     String signatureCaption(PoultrySignature signature) {
       final name = signature.signedName.trim();
       final role = switch (signature.role) {
-        'client' => 'Store / Client',
+        'client' => 'Store/Client',
         'inspector' => 'Inspector',
         _ => signature.role,
       };
@@ -650,7 +683,8 @@ class _CommodityInspectionViewPageState
             title: 'Inspection details',
             children: fields(_rows),
           ),
-          if (_hasDirection)
+          // A seized record shows the seizure alone, not a rejection too.
+          if (_hasDirection && _seizure == null)
             SummarySection(
               title: 'Rejection served',
               accent: AppColors.brandRed,
@@ -660,7 +694,7 @@ class _CommodityInspectionViewPageState
                 ...bullets('Deviations', _directionFindings, numbered: true),
               ],
             ),
-          // The seizure, beside the rejection it stands with.
+          // The seizure, in place of the rejection.
           if (_seizure != null)
             SummarySection(
               title: 'Seizure served',
@@ -752,13 +786,26 @@ class _CommodityInspectionViewPageState
 
   @override
   Widget build(BuildContext context) {
-    if (!_loading && !_missing) return _summaryScaffold(context);
+    if (!_loading && !_missing && _error == null) {
+      return _summaryScaffold(context);
+    }
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
       body: ContentWidth(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
-              : _missing
+              : _error != null
+                  ? _ErrorRetry(
+                      message: _error!,
+                      onRetry: () {
+                        setState(() {
+                          _loading = true;
+                          _error = null;
+                        });
+                        _load();
+                      },
+                    )
+                  : _missing
                   ? const Center(child: Text('This record no longer exists.'))
                   : ListView(
                       padding: EdgeInsets.fromLTRB(
@@ -770,7 +817,7 @@ class _CommodityInspectionViewPageState
                       children: [
                         _section('INSPECTION DETAILS'),
                         for (final (label, value) in _rows) _row(label, value),
-                        if (_hasDirection) ...[
+                        if (_hasDirection && _seizure == null) ...[
                           _section('REJECTION SERVED'),
                           for (final (label, value) in _directionRows)
                             _row(label, value),
@@ -808,7 +855,7 @@ class _CommodityInspectionViewPageState
                           _image(
                             signature.filePath,
                             signature.role == 'client'
-                                ? 'Store / Client'
+                                ? 'Store/Client'
                                     '${signature.signedName.isEmpty ? '' : ' — '
                                         '${signature.signedName}'}'
                                 : signature.role == 'inspector'
@@ -870,4 +917,46 @@ class _CommodityInspectionViewPageState
       ),
     );
   }
+}
+
+/// Shown when a record could not be read back, in place of a spinner that
+/// would otherwise turn for ever. Says what went wrong and offers to try
+/// again, since the usual cause — a reference table not yet synced — clears
+/// itself once the device has caught up.
+class _ErrorRetry extends StatelessWidget {
+  const _ErrorRetry({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, size: 44, color: AppColors.muted),
+              const SizedBox(height: 14),
+              const Text(
+                'This inspection could not be opened.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Try again'),
+              ),
+            ],
+          ),
+        ),
+      );
 }

@@ -1,3 +1,4 @@
+import '../../rawrmp/domain/raw_record_kind.dart';
 import 'dart:io';
 
 import '../../../core/data/local_database.dart';
@@ -39,8 +40,10 @@ Future<List<RecordDocument>> documentsForRecord(
   final seizures = SeizureRepository(database: database);
   final seizure = await seizures.forRecord(uuid);
   if (seizure == null) return documents;
+  // In the rejection's place: a record ends in one or the other, never
+  // both (Ethan, 2026-09-30).
   return [
-    ...documents,
+    ...documents.where((d) => !d.title.endsWith('Rejection')),
     (
       title: 'Seizure',
       note: 'FSA-SOP-APS-001 Annexure E — the seizure served on the client '
@@ -64,9 +67,11 @@ Future<List<RecordDocument>> _commodityDocuments(
             ..where((t) => t.clientUuid.equals(uuid)))
           .getSingleOrNull();
       if (r == null) return const [];
-      final composed = CompositionChecklist.isAnswered(
-              CompositionChecklist.decode(r.compositionChecklistJson)) ||
-          r.compositionComments.trim().isNotEmpty;
+      // Only where the record carries the checklist (Ethan, 2026-10-01).
+      final composed = RawRecordKind.of(r.recordKind).showsComposition &&
+          (CompositionChecklist.isAnswered(
+                  CompositionChecklist.decode(r.compositionChecklistJson)) ||
+              r.compositionComments.trim().isNotEmpty);
       final repository = RawRmpRepository(database: database, baseUrl: '');
       // A direction is raised by the save when the checklist leaves a
       // deviation standing, so the notice exists whenever that record does.
@@ -195,22 +200,28 @@ Future<List<RecordDocument>> _commodityDocuments(
             ..where((t) => t.clientUuid.equals(uuid)))
           .getSingleOrNull();
       if (q == null) return const [];
+      String slug(String s) => s
+          .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
+          .replaceAll(RegExp(r'-+'), '-')
+          .replaceAll(RegExp(r'^-|-$'), '');
+      final quidInjectors = await repository.quidReportInjectors(uuid);
       return [
-        (
-          title: 'QUID Determination Checklist',
-          note: 'SOP-APS-PM-001 — the declared chilling method, what it '
-              'permits, and the pick up the weighed carcasses actually show.',
-          downloadName: Downloads.documentName(
-              q.facilityName, 'Poultry-QUID-Checklist', q.inspectedAt),
-          // Null until carcasses have been weighed, so an untouched
-          // determination offers nothing.
-          build: () => repository.buildQuidChecklist(uuid),
-        ),
+        // One report per injector (Ethan, 2026-10-05).
+        for (final inj in quidInjectors)
+          (
+            title: 'QUID Determination — ${inj.name}',
+            note: 'SOP-APS-PM-001 — ${inj.name}: the declared chilling '
+                'method, what it permits, and the pick up its carcasses show.',
+            downloadName: Downloads.documentName(
+                q.facilityName, 'Poultry-QUID-${slug(inj.name)}', q.inspectedAt),
+            build: () => repository.buildQuidChecklist(uuid,
+                injectorPosition: inj.position, onlyThisInjector: true),
+          ),
         (
           title: 'QUID Rejection',
           note: 'The rejection the determination ended in — the injector '
               'over its limit, the remarks served, the date to correct by '
-              'and the batch removed. Null while there is none.',
+              'and the batch rejected. Null while there is none.',
           downloadName: Downloads.documentName(
               q.facilityName, 'Poultry-QUID-Rejection', q.inspectedAt),
           build: () => repository.buildQuidRejection(uuid),

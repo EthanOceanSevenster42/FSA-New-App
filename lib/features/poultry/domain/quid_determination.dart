@@ -17,12 +17,38 @@ const int quidMinimumSampleSet = 5;
 /// How far over the set percentage an injector may run before it is a
 /// non-conformance. The regulation allows more on portions than on whole
 /// carcasses, because a cut absorbs more.
+///
+/// Whole carcasses 1%, portions 2.5% — a 15% injector may run to 17.5%
+/// (Ethan, 2026-11-05, reversing the 1.5% set on Neo Noe's review of
+/// 2026-10-19).
 const double quidWholeCarcassTolerance = 1.0;
 const double quidCutPortionTolerance = 2.5;
 
-/// The regulated maxima, used where the plant has no dispensation of its own.
+/// The regulated maxima, used where the plant has no dispensation of its
+/// own: 10% on whole carcasses and 15% on portions (Ethan, confirmed
+/// 2026-10-08). Same as the legacy `Constants`, and consistent with the
+/// tolerances above giving portions the larger allowance (a cut absorbs more).
 const double quidWholeCarcassMaximum = 10.0;
 const double quidCutPortionMaximum = 15.0;
+
+/// What water chilling may add to a carcass: the regulation calls it
+/// absorbed moisture and allows less than 7% pick-up — Regulation 4(2) of
+/// the Poultry Consolidated Regulations, page 4 (Neo Noe, 2026-10-19).
+///
+/// A separate limit from QUID, and not the one the sheet used to be read
+/// against: it printed the allowable QUID (10% or 15%) over the pick-up
+/// column, so a chiller running at 12% passed on a portion line.
+const double quidWaterChillMaximumPickup = 7.0;
+
+/// Whether an average water-chilling pick-up is within Reg. 4(2).
+///
+/// Null while nothing has been weighed — "not measured" and "absorbed
+/// nothing" are different findings, as everywhere else on this sheet.
+bool? quidWaterChillWithinLimit(String averagePickupPercent) {
+  final average = quidNumber(averagePickupPercent);
+  if (average == null) return null;
+  return average < quidWaterChillMaximumPickup;
+}
 
 /// A percentage as the regulation takes it: the gain over the mass at the END
 /// of the step, not the start.

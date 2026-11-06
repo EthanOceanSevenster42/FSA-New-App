@@ -1,3 +1,4 @@
+import '../domain/raw_record_kind.dart';
 import 'dart:io';
 import 'dart:convert';
 
@@ -10,6 +11,7 @@ import '../../../core/data/local_database.dart';
 import '../../../core/documents/fsa_checklist_pdf.dart';
 import '../../../core/documents/direction_pdf.dart';
 import '../../../core/documents/fsa_documents.dart';
+import '../../../core/documents/fsa_form_pdf.dart';
 import '../domain/composition_checklist.dart';
 import '../domain/rawrmp_rules.dart';
 import 'composition_checklist_pdf.dart';
@@ -377,6 +379,23 @@ class RawRmpRepository {
   static bool _mine(String owner, String username) =>
       owner.isEmpty || owner.toLowerCase() == username.toLowerCase();
 
+  /// Every raw-product inspection on this handset, for the upload pass
+  /// alone.
+  ///
+  /// Scoping an upload to the signed-in name hid finished work captured
+  /// under another spelling of it: never sent, never reported as failed
+  /// (Ethan, 2026-10-28). What a screen shows stays scoped; what goes up
+  /// does not.
+  Future<List<RawRmpInspection>> inspectionsForUpload() =>
+      (database.select(database.rawRmpInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<List<RawRmpInspection>> savedInspections(String username) async {
     final rows = await (database.select(database.rawRmpInspections)
           ..orderBy([
@@ -442,14 +461,15 @@ class RawRmpRepository {
   }
 
   File _documentFile(
-      String facility, String kind, String uuid, Directory? into) {
+      String facility, String kind, String uuid, Directory? into,
+      {String product = ''}) {
     final dir = into ?? Directory.systemTemp;
-    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
-    final slug = facility
-        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
-        .replaceAll(RegExp(r'-+'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
-    return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
+    return File('${dir.path}/${FsaForm.documentFileName(
+      facility: facility,
+      kind: kind,
+      record: uuid,
+      product: product,
+    )}');
   }
 
   /// The direction served from [uuid], as the notice the client is handed.
@@ -489,14 +509,13 @@ class RawRmpRepository {
     );
     final product = i.productItem.isNotEmpty ? i.productItem : i.newProductItem;
 
-    String ymd(DateTime? d) {
-      if (d == null) return '';
-      String two(int v) => v.toString().padLeft(2, '0');
-      return '${two(d.day)}/${two(d.month)}/${d.year}';
-    }
+    String ymd(DateTime? d) => d == null ? '' : fsaDateLong(d);
 
     return DirectionPdf.write(
-      out: _documentFile(ctx.facilityName, 'Rejection', uuid, into),
+      out: _documentFile(ctx.facilityName, 'Rejection', uuid, into,
+          product: product),
+      // The evidence the notice rests on (Ethan, 2026-10-08).
+      photoPaths: ctx.photoPaths,
       control: FsaDocuments.rawDirection,
       natureOfInspection: 'Certain Raw Processed Meat Products',
       facilityName: ctx.facilityName,
@@ -532,7 +551,8 @@ class RawRmpRepository {
       inspectorSignaturePath: ctx.inspectorSignaturePath,
       authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
       pleaseNote: 'Failure to rectify by the date above may result in '
-          'further action under the Act.',
+          'further action under the Agricultural Product Standards Act, '
+          'No. 119 of 1990.',
     );
   }
 
@@ -612,7 +632,8 @@ class RawRmpRepository {
     if (sections.isEmpty) return null;
     return FsaChecklistPdf.write(
       out: _documentFile(
-          ctx.facilityName, 'Labelling-Verification-Checklist', uuid, into),
+          ctx.facilityName, 'Labelling-Verification-Checklist', uuid, into,
+          product: i.productItem.isNotEmpty ? i.productItem : i.newProductItem),
       control: FsaDocuments.rawLabelling,
       facilityName: ctx.facilityName,
       leftFields: [
@@ -683,7 +704,8 @@ class RawRmpRepository {
             .getSingleOrNull();
 
     return FsaChecklistPdf.write(
-      out: _documentFile(ctx.facilityName, 'Sampling-Checklist', uuid, into),
+      out: _documentFile(ctx.facilityName, 'Sampling-Checklist', uuid, into,
+          product: i.productItem.isNotEmpty ? i.productItem : i.newProductItem),
       control: FsaDocuments.rawSampling,
       facilityName: ctx.facilityName,
       leftFields: [
@@ -716,15 +738,24 @@ class RawRmpRepository {
           FsaChecklistRow(
               requirement: 'Laboratory testing category',
               value: category?.name ?? ''),
+          // What the sample is going to the laboratory for, as the form asks
+          // it. Calcium had a line of its own; it is one of these four, so
+          // it is listed here rather than asked twice (Ethan, 2026-10-08).
+          FsaChecklistRow(
+            requirement: 'Testing for',
+            value: [
+              if (i.testFat) 'Fat',
+              if (i.testProtein) 'Protein',
+              if (i.calciumTestRequired) 'Calcium (MRM only)',
+              if (i.testDna) 'DNA',
+            ].join(', '),
+          ),
           FsaChecklistRow(
               requirement: 'Storage method', value: storage?.name ?? ''),
           FsaChecklistRow(
-            requirement: 'Calcium content test requested (MRM only)',
-            value: i.calciumTestRequired ? 'Yes' : 'No',
-          ),
-          FsaChecklistRow(
             requirement: 'Delivery method',
-            value: i.isCouriered ? 'Hand delivered' : 'Courier',
+            // Couriered is what the field says (Ethan, 2026-10-02).
+            value: i.isCouriered ? 'Courier' : 'Hand delivered',
           ),
           FsaChecklistRow(requirement: 'Waybill number', value: i.waybill),
         ]),
@@ -749,6 +780,10 @@ class RawRmpRepository {
       {Directory? into}) async {
     final i = await inspectionByUuid(uuid);
     if (i == null) return null;
+    // Only where the record carries the checklist: switched off again on
+    // the inspection, what was typed into it is not filed (Ethan,
+    // 2026-10-01).
+    if (!RawRecordKind.of(i.recordKind).showsComposition) return null;
     final answers = CompositionChecklist.decode(i.compositionChecklistJson);
     if (!CompositionChecklist.isAnswered(answers) &&
         i.compositionComments.trim().isEmpty) {
@@ -776,26 +811,35 @@ class RawRmpRepository {
     final facilityName =
         i.facilityName.isNotEmpty ? i.facilityName : i.newFacilityName;
     final dir = into ?? Directory.systemTemp;
-    final slug = facilityName
-        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
-        .replaceAll(RegExp(r'-+'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
-    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
-    final out =
-        File('${dir.path}/FSA-$slug-Compositional-Checklist-$short.pdf');
+    final out = File('${dir.path}/${FsaForm.documentFileName(
+      facility: facilityName,
+      kind: 'Compositional-Checklist',
+      record: uuid,
+      product: productName,
+    )}');
     return CompositionChecklistPdf.write(
       out: out,
       facilityName: facilityName,
       facilityAddress: i.facilityAddress,
       dateOfSampling: _dmy(i.inspectedAt),
       siteRepresentative: i.contactPerson,
-      representativePosition: i.representativePosition,
+      // No longer asked on the checklist (Ethan, 2026-09-30): the group names
+      // the representative as its person in charge. A record that was asked
+      // keeps what was typed.
+      representativePosition: i.representativePosition.trim().isNotEmpty
+          ? i.representativePosition
+          : (i.contactPerson.trim().isEmpty ? '' : 'Person in charge'),
       facilityType: location?.name ?? '',
       productName: productName,
       batchNumber: i.batchNumber,
       manufacturedPackedDate: i.manufacturedPackedDate,
       answers: answers,
+      remarks: CompositionChecklist.remarksOf(i.compositionChecklistJson),
+      unit: CompositionChecklist.unitOf(i.compositionChecklistJson),
       comments: i.compositionComments,
+      // The rejection the checklist raised, with its remarks (Ethan,
+      // 2026-09-29).
+      rejectionRemarks: i.directionRemarks,
       inspectorName: inspectorName,
       authorisedPersonName:
           client.isNotEmpty && client.first.signedName.isNotEmpty
@@ -806,13 +850,9 @@ class RawRmpRepository {
     );
   }
 
-  static String _dmy(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
-      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+  static String _dmy(DateTime d) => fsaDateLong(d);
 
-  /// The sheets date themselves the office system's way round.
-  static String _ymd(DateTime d) => '${d.year}/'
-      '${d.month.toString().padLeft(2, '0')}/'
-      '${d.day.toString().padLeft(2, '0')}';
+  static String _ymd(DateTime d) => fsaDateLong(d);
 
   Future<RawRmpInspection?> inspectionByUuid(String uuid) =>
       (database.select(database.rawRmpInspections)
@@ -894,6 +934,18 @@ class RawRmpRepository {
             ..where((t) => t.sourceInspectionUuid.equals(inspectionUuid))
             ..limit(1))
           .getSingleOrNull();
+
+  /// Every raw-product direction on this handset, for the upload pass
+  /// alone. As [inspectionsForUpload].
+  Future<List<RawRmpDirection>> directionsForUpload() =>
+      (database.select(database.rawRmpDirections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.issuedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
 
   Future<List<RawRmpDirection>> directions(String username) async {
     final rows = await (database.select(database.rawRmpDirections)

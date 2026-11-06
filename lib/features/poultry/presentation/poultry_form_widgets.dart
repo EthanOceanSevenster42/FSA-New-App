@@ -2,9 +2,13 @@ import '../../../core/widgets/restricted_particulars_picker.dart';
 import '../../../core/widgets/missing_fields.dart';
 import '../../../core/widgets/required_label.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'dart:async';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/compliance_slider.dart';
+import '../../sync/auto_sync.dart';
 import '../domain/poultry_rules.dart';
 import '../../../core/widgets/picker_menu_field.dart';
 
@@ -48,6 +52,16 @@ Widget poultryField(
 
   /// Shown, but filled in by the form rather than by hand.
   bool readOnly = false,
+
+  /// Marked required, but checked by the form itself rather than by
+  /// `validate()` — for a box that is emptied again once its entry is added
+  /// to a list, such as the QUID injector name.
+  bool markRequired = false,
+
+  /// Caps how many characters may be typed. The weight fields use it so a
+  /// value can never exceed the server's limit and fail on sync (Ethan,
+  /// 2026-10-04).
+  int? maxLength,
 }) =>
     // Labelled above, as the egg form labels: several of these captions are
     // longer than a handset is wide, and Material's floating label rides up
@@ -55,7 +69,7 @@ Widget poultryField(
     // Ke…" — which reads as two things overlapping.
     LabelledField(
       label: label,
-      isRequired: required,
+      isRequired: required || markRequired,
       // Builder so the field can see whether its [MissingFieldAnchor] has
       // flagged it, and draw its own border red.
       child: Builder(
@@ -64,6 +78,9 @@ Widget poultryField(
         focusNode: focusNode,
         maxLines: lines,
         keyboardType: keyboard,
+        inputFormatters: maxLength == null
+            ? null
+            : [LengthLimitingTextInputFormatter(maxLength)],
         onChanged: onChanged,
         enabled: enabled,
         readOnly: readOnly,
@@ -240,8 +257,46 @@ Widget? _rowNote(PoultryChecklistItemRef item) {
 }
 
 /// Shown when the device holds no poultry rules at all.
-class PoultryNoRules extends StatelessWidget {
-  const PoultryNoRules({super.key});
+/// Shown when a form's reference data is not on the device yet, or a load
+/// stalled. It does not merely tell the inspector to go and sync: it starts a
+/// background sync itself the moment it appears, so on signal the data arrives
+/// with nothing pressed, and — when given [onRetry] — rebuilds the form the
+/// instant the sync lands. The button is a fallback, not the normal path
+/// (Ethan, 2026-10-14).
+class PoultryNoRules extends StatefulWidget {
+  const PoultryNoRules({super.key, this.onRetry});
+
+  final VoidCallback? onRetry;
+
+  @override
+  State<PoultryNoRules> createState() => _PoultryNoRulesState();
+}
+
+class _PoultryNoRulesState extends State<PoultryNoRules> {
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    AutoSync.instance.completedPasses.addListener(_onSynced);
+    unawaited(AutoSync.instance.kick());
+  }
+
+  void _onSynced() => widget.onRetry?.call();
+
+  @override
+  void dispose() {
+    AutoSync.instance.completedPasses.removeListener(_onSynced);
+    super.dispose();
+  }
+
+  Future<void> _tryNow() async {
+    setState(() => _busy = true);
+    await AutoSync.instance.kick();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    widget.onRetry?.call();
+  }
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -252,14 +307,109 @@ class PoultryNoRules extends StatelessWidget {
             Icon(Icons.cloud_off, size: 40, color: AppColors.muted),
             const SizedBox(height: 12),
             Text(
-              'This device has no poultry rules yet.\n'
-              'Connect once and sync, then the form works offline.',
+              'The rules for this form are still reaching this device.\n'
+              'They download on their own when you have signal, then the form '
+              'works offline — no need to sync by hand.',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppColors.muted, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _busy ? null : _tryNow,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh),
+              label: Text(_busy ? 'Downloading…' : 'Try again'),
             ),
           ],
         ),
       );
+}
+
+/// "What are you testing for?" as an in-place dropdown multi-select, built the
+/// same way as the Laboratory Testing Category picker (Ethan, 2026-10-06): a
+/// summary row that opens to tick Fat / Protein / Calcium / Dna. Stateful so
+/// each form need not carry the open/closed flag.
+class PoultryTestDropdown extends StatefulWidget {
+  const PoultryTestDropdown({
+    super.key,
+    required this.label,
+    required this.options,
+  });
+
+  final String label;
+  final List<({String label, bool selected, VoidCallback onToggle})> options;
+
+  @override
+  State<PoultryTestDropdown> createState() => _PoultryTestDropdownState();
+}
+
+class _PoultryTestDropdownState extends State<PoultryTestDropdown> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final picked = [
+      for (final o in widget.options)
+        if (o.selected) o.label,
+    ].join(', ');
+    return LabelledField(
+      label: widget.label,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _open = !_open),
+            borderRadius: BorderRadius.circular(4),
+            child: InputDecorator(
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                isDense: true,
+                suffixIcon: Icon(
+                    _open ? Icons.arrow_drop_up : Icons.arrow_drop_down),
+              ),
+              child: Text(
+                picked.isEmpty ? 'Select Tests' : picked,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.35,
+                  color: picked.isEmpty ? AppColors.muted : AppColors.ink,
+                ),
+              ),
+            ),
+          ),
+          if (_open)
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.border),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Column(
+                children: [
+                  for (final o in widget.options)
+                    CheckboxListTile(
+                      dense: true,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      activeColor: AppColors.brandPrimary,
+                      value: o.selected,
+                      // The flag lives in the form; toggling it rebuilds the
+                      // form, which rebuilds this list with the new value.
+                      onChanged: (_) => o.onToggle(),
+                      title: Text(o.label,
+                          style:
+                              const TextStyle(fontSize: 15, height: 1.35)),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// A named either/or, where a bare switch would leave the alternative

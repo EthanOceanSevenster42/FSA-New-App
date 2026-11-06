@@ -10,6 +10,7 @@ import '../../../core/data/local_database.dart';
 import '../../../core/documents/direction_pdf.dart';
 import '../../../core/documents/fsa_checklist_pdf.dart';
 import '../../../core/documents/fsa_documents.dart';
+import '../../../core/documents/fsa_form_pdf.dart';
 import '../domain/pmp_rules.dart';
 import '../../../core/data/regulation_reference.dart';
 
@@ -388,6 +389,23 @@ class PmpRepository {
   static bool _mine(String owner, String username) =>
       owner.isEmpty || owner.toLowerCase() == username.toLowerCase();
 
+  /// Every processed-meat inspection on this handset, for the upload pass
+  /// alone.
+  ///
+  /// Scoping an upload to the signed-in name hid finished work captured
+  /// under another spelling of it: never sent, never reported as failed
+  /// (Ethan, 2026-10-28). What a screen shows stays scoped; what goes up
+  /// does not.
+  Future<List<PmpInspection>> inspectionsForUpload() =>
+      (database.select(database.pmpInspections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.inspectedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
+
   Future<List<PmpInspection>> savedInspections(String username) async {
     final rows = await (database.select(database.pmpInspections)
           ..orderBy([
@@ -452,20 +470,19 @@ class PmpRepository {
   }
 
   File _documentFile(
-      String facility, String kind, String uuid, Directory? into) {
+      String facility, String kind, String uuid, Directory? into,
+      {String product = ''}) {
     final dir = into ?? Directory.systemTemp;
-    final short = uuid.length < 8 ? uuid : uuid.substring(0, 8);
-    final slug = facility
-        .replaceAll(RegExp(r'[^A-Za-z0-9]+'), '-')
-        .replaceAll(RegExp(r'-+'), '-')
-        .replaceAll(RegExp(r'^-|-$'), '');
-    return File('${dir.path}/FSA-$slug-$kind-$short.pdf');
+    return File('${dir.path}/${FsaForm.documentFileName(
+      facility: facility,
+      kind: kind,
+      record: uuid,
+      product: product,
+    )}');
   }
 
   /// The sheets date themselves the office system's way round.
-  static String _ymd(DateTime d) => '${d.year}/'
-      '${d.month.toString().padLeft(2, '0')}/'
-      '${d.day.toString().padLeft(2, '0')}';
+  static String _ymd(DateTime d) => fsaDateLong(d);
 
   /// The direction served off a processed meat inspection — SOP-APS-001.
   ///
@@ -500,14 +517,13 @@ class PmpRepository {
     );
     final product = i.productItem.isNotEmpty ? i.productItem : i.newProductItem;
 
-    String dmy(DateTime? d) {
-      if (d == null) return '';
-      String two(int v) => v.toString().padLeft(2, '0');
-      return '${two(d.day)}/${two(d.month)}/${d.year}';
-    }
+    String dmy(DateTime? d) => d == null ? '' : fsaDateLong(d);
 
     return DirectionPdf.write(
-      out: _documentFile(ctx.facilityName, 'Rejection', uuid, into),
+      out: _documentFile(ctx.facilityName, 'Rejection', uuid, into,
+          product: product),
+      // The evidence the notice rests on (Ethan, 2026-10-08).
+      photoPaths: ctx.photoPaths,
       control: FsaDocuments.pmpDirection,
       natureOfInspection: 'Processed Meat Products',
       facilityName: ctx.facilityName,
@@ -545,7 +561,8 @@ class PmpRepository {
       inspectorSignaturePath: ctx.inspectorSignaturePath,
       authorisedPersonSignaturePath: ctx.authorisedPersonSignaturePath,
       pleaseNote: 'Failure to rectify by the date above may result in '
-          'further action under the Act.',
+          'further action under the Agricultural Product Standards Act, '
+          'No. 119 of 1990.',
     );
   }
 
@@ -621,7 +638,8 @@ class PmpRepository {
     if (sections.isEmpty) return null;
     return FsaChecklistPdf.write(
       out: _documentFile(
-          ctx.facilityName, 'Labelling-Verification-Checklist', uuid, into),
+          ctx.facilityName, 'Labelling-Verification-Checklist', uuid, into,
+          product: i.productItem.isNotEmpty ? i.productItem : i.newProductItem),
       control: FsaDocuments.pmpLabelling,
       facilityName: ctx.facilityName,
       leftFields: [
@@ -641,7 +659,7 @@ class PmpRepository {
           value: i.productItem.isNotEmpty ? i.productItem : i.newProductItem
         ),
         (label: 'Batch Number', value: i.batchNumber),
-        (label: 'Primary Sample Size (g)', value: i.primarySampleSize),
+        (label: 'Sample Size (g)', value: i.primarySampleSize),
       ],
       sections: sections,
       inspectorName: ctx.inspectorName,
@@ -676,7 +694,8 @@ class PmpRepository {
             .getSingleOrNull();
 
     return FsaChecklistPdf.write(
-      out: _documentFile(ctx.facilityName, 'Sampling-Checklist', uuid, into),
+      out: _documentFile(ctx.facilityName, 'Sampling-Checklist', uuid, into,
+          product: i.productItem.isNotEmpty ? i.productItem : i.newProductItem),
       control: FsaDocuments.pmpSampling,
       facilityName: ctx.facilityName,
       leftFields: [
@@ -696,7 +715,7 @@ class PmpRepository {
           value: i.productItem.isNotEmpty ? i.productItem : i.newProductItem
         ),
         (label: 'Batch Number', value: i.batchNumber),
-        (label: 'Primary Sample Size (g)', value: i.primarySampleSize),
+        (label: 'Sample Size (g)', value: i.primarySampleSize),
       ],
       sections: [
         FsaChecklistSection(title: 'SAMPLE DETAILS', rows: [
@@ -704,11 +723,21 @@ class PmpRepository {
               requirement: 'Internal sample number',
               value: i.internalSampleNumber),
           FsaChecklistRow(
-              requirement: 'Primary sample size', value: i.primarySampleSize),
-          FsaChecklistRow(
               requirement: 'Sample size taken', value: i.testSampleSize),
           FsaChecklistRow(
               requirement: 'Laboratory', value: laboratory?.name ?? ''),
+          // What the sample is going to the laboratory for, as the form
+          // asks it — the sheet named the laboratory but never what it was
+          // being asked to test (Ethan, 2026-10-08).
+          FsaChecklistRow(
+            requirement: 'Testing for',
+            value: [
+              if (i.testFat) 'Fat',
+              if (i.testProtein) 'Protein',
+              if (i.testCalcium) 'Calcium',
+              if (i.testDna) 'DNA',
+            ].join(', '),
+          ),
           FsaChecklistRow(
               requirement: 'Storage method', value: storage?.name ?? ''),
           FsaChecklistRow(
@@ -717,7 +746,8 @@ class PmpRepository {
           ),
           FsaChecklistRow(
             requirement: 'Delivery method',
-            value: i.isCouriered ? 'Hand delivered' : 'Courier',
+            // Couriered is what the field says (Ethan, 2026-10-02).
+            value: i.isCouriered ? 'Courier' : 'Hand delivered',
           ),
           FsaChecklistRow(requirement: 'Waybill number', value: i.waybill),
         ]),
@@ -773,6 +803,18 @@ class PmpRepository {
             ..where((t) => t.sourceInspectionUuid.equals(inspectionUuid))
             ..limit(1))
           .getSingleOrNull();
+
+  /// Every processed-meat direction on this handset, for the upload pass
+  /// alone. As [inspectionsForUpload].
+  Future<List<PmpDirection>> directionsForUpload() =>
+      (database.select(database.pmpDirections)
+            ..orderBy([
+              (t) => OrderingTerm(
+                    expression: t.issuedAt,
+                    mode: OrderingMode.desc,
+                  ),
+            ]))
+          .get();
 
   Future<List<PmpDirection>> directions(String username) async {
     final rows = await (database.select(database.pmpDirections)

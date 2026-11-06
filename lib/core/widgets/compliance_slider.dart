@@ -48,6 +48,20 @@ class TwoWaySlider extends StatelessWidget {
 
   bool get _live => enabled && onChanged != null;
 
+  /// Answers [wantsLeft], letting go of any text box first.
+  ///
+  /// A box typed in earlier keeps the cursor after the keyboard is put away.
+  /// When the answer puts a question on screen — "Is the grade designation
+  /// shown on the label at all?", the seizure question — closing it handed
+  /// the cursor back to that box and the page scrolled to it: marking a
+  /// deviation dragged the inspector down the form for no reason (Ethan,
+  /// 2026-09-30).
+  void _choose(bool wantsLeft) {
+    if (wantsLeft == leftOn) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    onChanged!(wantsLeft);
+  }
+
   @override
   Widget build(BuildContext context) {
     const half = (width - _pad * 2) / 2;
@@ -61,18 +75,14 @@ class TwoWaySlider extends StatelessWidget {
         // taps it, and a toggle would make that depend on the current state.
         onTapUp: !_live
             ? null
-            : (details) {
-                final wantsLeft = details.localPosition.dx < width / 2;
-                if (wantsLeft != leftOn) onChanged!(wantsLeft);
-              },
+            : (details) => _choose(details.localPosition.dx < width / 2),
         // And it really slides, which is what a thumb this shape invites.
         onHorizontalDragEnd: !_live
             ? null
             : (details) {
                 final velocity = details.primaryVelocity ?? 0;
                 if (velocity == 0) return;
-                final wantsLeft = velocity < 0;
-                if (wantsLeft != leftOn) onChanged!(wantsLeft);
+                _choose(velocity < 0);
               },
         child: SizedBox(
           width: width,

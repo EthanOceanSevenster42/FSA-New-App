@@ -1,3 +1,4 @@
+import '../../../core/data/inspector_name.dart';
 import 'dart:io';
 
 import 'package:drift/drift.dart';
@@ -11,6 +12,19 @@ import 'invoice_pdf.dart';
 
 /// Owns the Request for Invoice form: one per grouped inspection, opened
 /// already filled in with everything the inspection already knows.
+/// Whether the form's clock starts when the inspector arrived rather than
+/// when the visit was opened on the handset --
+/// `--dart-define=RFI_FROM_ARRIVAL=true`.
+///
+/// The office asked for it and it is the more accurate of the two: on real
+/// visits the record was opened anywhere from 164 minutes before arrival to
+/// 115 minutes after. But it moves money in both directions -- a visit
+/// whose record was opened after arriving bills MORE, one opened before
+/// setting off bills LESS -- so it waits for the Agency to sign the change
+/// off rather than arriving unannounced on the next invoice run
+/// (Ethan, 2026-10-11).
+const _billFromArrival = bool.fromEnvironment('RFI_FROM_ARRIVAL');
+
 class InvoiceRepository {
   InvoiceRepository(this.database, this.visits);
 
@@ -22,12 +36,12 @@ class InvoiceRepository {
             ..where((t) => t.visitUuid.equals(visitUuid)))
           .getSingleOrNull();
 
-  /// The form as it should open: a saved one if the inspector has been here
-  /// before, otherwise a fresh one built from the visit — who inspected,
-  /// which site, which commodities, and the signatures already taken.
+  /// The form built from the visit as it reads now — who inspected, which
+  /// site, which commodities, the kilometres and the signatures already
+  /// taken. Nothing on it is typed by hand, so it is built afresh every
+  /// time rather than reopened: a visit corrected after sign-off sends an
+  /// RFI that says what the visit now says (Ethan, 2026-09-30).
   Future<InvoiceRequestsCompanion> prefill(StoreVisit visit) async {
-    final saved = await byVisit(visit.uuid);
-    if (saved != null) return saved.toCompanion(true);
 
     final members = await visits.members(visit.uuid);
     final kinds = {for (final m in members) m.kind};
@@ -36,16 +50,42 @@ class InvoiceRepository {
     // Eggs and poultry are inspected on the visit and shown on the form,
     // but their time is not charged for — only the raw and processed-meat
     // stretches are, and the form's own start and finish are those.
-    final window = InvoiceRules.chargeableWindow(
+    // The inspector confirmed the start and finish at sign-off; their
+    // answer is the truth, not the handset's reading of when the record
+    // happened to be opened and closed (Ethan, 2026-10-12).
+    final confirmed = InvoiceRules.confirmedWindow(
+      visit.inspectionStart,
+      visit.inspectionEnd,
+      on: visit.startedAt,
+    );
+    final window = confirmed ??
+        InvoiceRules.chargeableWindow(
       members: [
         for (final m in members) (kind: m.kind, inspectedAt: m.inspectedAt)
       ],
-      visitStarted: visit.startedAt,
+      // The clock starts when the inspector arrived, not when the visit
+      // was opened on the handset: those are the same moment only if the
+      // record happened to be created at the door (Ethan, 2026-10-09).
+      visitStarted: _billFromArrival
+          ? (InvoiceRules.arrivedAt(visit.startedAt, visit.travelEnd) ??
+              visit.startedAt)
+          : visit.startedAt,
       visitEnded: visit.completedAt ?? DateTime.now(),
     );
-    final hours = window.billable
+    // Charged as the tariff charges it -- a minimum of one hour, then
+    // half-hour segments. InvoiceRules.chargeableBands already did this for
+    // the PRINTED form, but the record kept the raw clock reading and that
+    // is what was sent on: the inspector's RFI said one hour while APS
+    // received 0.48 (Ethan, 2026-10-12). timeStarted/timeEnded below still
+    // carry the times actually worked.
+    final measured = window.billable
         ? InvoiceRules.splitHours(window.start, window.end)
         : (normal: 0.0, overtime: 0.0, sunday: 0.0);
+    final hours = InvoiceRules.chargeableBands(
+      normal: measured.normal,
+      overtime: measured.overtime,
+      sunday: measured.sunday,
+    );
 
     // The signatures the sign-off already took: the form carries the same
     // two, so nobody signs twice for one visit.
@@ -66,7 +106,10 @@ class InvoiceRepository {
       visitUuid: visit.uuid,
       dateOfVisit: visit.startedAt,
       updatedAt: DateTime.now(),
-      inspectorName: Value(visit.inspectorUsername),
+      // Name and surname, as on every other document — the RFI printed
+      // the login name (Ethan, 2026-09-30).
+      inspectorName:
+          Value(await database.inspectorFullName(visit.inspectorUsername)),
       siteVisited: Value(visit.facilityName),
       siteManager: Value(visit.managerName.isNotEmpty
           ? visit.managerName
@@ -152,7 +195,18 @@ class InvoiceRepository {
   }
 
   /// What each sampled raw-meat inspection sends to the laboratory, read
-  /// off the category the inspector picked on the form:
+  /// off what the inspector said the sample is being tested for.
+  ///
+  /// It used to be read off the testing category instead, and the form
+  /// asked both: "Category A - Meat (Protein) & Fat Content" against a
+  /// separate Fat/Protein/Calcium/DNA question. The category won, so an
+  /// inspector who ticked Fat alone and left Category A selected invoiced
+  /// the facility for a protein test nobody ordered — R533.18 on Kabelo's
+  /// N1 Factory Clayville sheet (2026-10-23). The category question is off
+  /// the form; this reads the answer the inspector actually gave.
+  ///
+  /// Records captured before that still carry a category and no flags, and
+  /// they are still read the old way so an old visit bills as it did:
   ///
   ///  * Category A — meat (protein) and fat content: one fat, one protein;
   ///  * Category B — soya protein and starch: one soya, one starch;
@@ -173,21 +227,45 @@ class InvoiceRepository {
     };
     var fat = 0, protein = 0, soya = 0, starch = 0, dna = 0;
     for (final row in sampled) {
-      final name = categories[row.sampleCategoryId] ?? '';
-      final letter = RegExp(r'Category\s+([A-D])', caseSensitive: false)
-          .firstMatch(name)
-          ?.group(1)
-          ?.toUpperCase();
-      if (letter == 'A') {
-        fat += 1;
-        protein += 1;
-      } else if (letter == 'B') {
-        soya += 1;
-        starch += 1;
-      } else if (letter == 'C') {
-        dna += 1;
-      } else if (letter == 'D') {
-        fat += 1;
+      if (row.testFat ||
+          row.testProtein ||
+          row.testDna ||
+          row.testSoya ||
+          row.testStarch) {
+        if (row.testFat) fat += 1;
+        if (row.testProtein) protein += 1;
+        if (row.testSoya) soya += 1;
+        if (row.testStarch) starch += 1;
+        if (row.testDna) dna += 1;
+        continue;
+      }
+      // Nothing ticked: an older record, which carries a category instead.
+      // Every category it went for counts, not just the first — a sample
+      // sent for species identification alongside anything else was
+      // invoiced at R0 before this.
+      final ids = [
+        for (final part in row.sampleCategoryIds.split(','))
+          if (int.tryParse(part.trim()) != null) int.parse(part.trim()),
+      ];
+      if (ids.isEmpty && row.sampleCategoryId != null) {
+        ids.add(row.sampleCategoryId!);
+      }
+      for (final id in ids) {
+        final letter = RegExp(r'Category\s+([A-D])', caseSensitive: false)
+            .firstMatch(categories[id] ?? '')
+            ?.group(1)
+            ?.toUpperCase();
+        if (letter == 'A') {
+          fat += 1;
+          protein += 1;
+        } else if (letter == 'B') {
+          soya += 1;
+          starch += 1;
+        } else if (letter == 'C') {
+          dna += 1;
+        } else if (letter == 'D') {
+          fat += 1;
+        }
       }
     }
     return (fat: fat, protein: protein, soya: soya, starch: starch, dna: dna);

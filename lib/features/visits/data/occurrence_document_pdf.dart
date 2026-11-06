@@ -3,9 +3,10 @@ import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
+import '../../../core/documents/fsa_documents.dart';
 import '../../../core/documents/fsa_form_pdf.dart';
 
-/// FSA's Occurrence Document (SOP-APS-009, revision V2), filled in from the
+/// FSA's Occurrence Document (SOP-APS-009, revision V3), filled in from the
 /// handset instead of by hand.
 ///
 /// Laid out as the paper form the Agency scans today: the document-control
@@ -15,20 +16,30 @@ import '../../../core/documents/fsa_form_pdf.dart';
 /// receives one PDF in place of the scan plus loose photos.
 abstract final class OccurrenceDocumentPdf {
   static const docNo = 'SOP-APS-009';
-  static const revision = 'V2';
+  // The revision is carried by FsaDocuments.occurrence, which is what the
+  // header prints; a second copy here only drifts (Ethan, 2026-10-08).
+  // Reworded 2026-10-20 (Neo Noe): the procedure read as though an
+  // occurrence document were only ever written when entry was refused.
+  // Refusal of entry is one occurrence among others — it keeps its place as
+  // the example, but the document is for any occurrence at the premises
+  // that has to be put on record.
   static const procedure =
-      'This document will serve as an occurrence document. The document would '
-      'need to be completed as and when an abattoir, production plant, '
-      'processing facility, repacking plant, importer or retailer refused the '
-      'assignee entry/access. The description of events needs to be captured '
-      'in full and as it happened.';
+      'This document will serve as an occurrence document. The document needs '
+      'to be completed as and when any occurrence or incident arises at an '
+      'abattoir, production plant, processing facility, repacking plant, '
+      'importer or retailer that must be placed on record — including, '
+      'but not limited to, where the assignee is refused entry/access. The '
+      'description of events needs to be captured in full and as it '
+      'happened.';
 
   static const _photosPerPage = 2;
   static const _photosPerRow = 4;
 
   /// Lines of findings that fit on the first page, before the signatures.
-  static const _linesOnFirstPage = 16;
-  static const _linesOnLaterPages = 34;
+  // Fewer than before the letterhead (Ethan, 2026-10-04): the logo and
+  // address above and the band below take about four ruled lines.
+  static const _linesOnFirstPage = 12;
+  static const _linesOnLaterPages = 30;
   static const _charsPerLine = 92;
 
   static Future<File> write({
@@ -51,8 +62,6 @@ abstract final class OccurrenceDocumentPdf {
     final assets = await FsaForm.assets();
     final regular = assets.regular;
     final bold = assets.bold;
-    final logo = assets.logo;
-    final theme = assets.theme;
 
     Future<pw.MemoryImage?> image(String path) async {
       final file = File(path);
@@ -68,14 +77,18 @@ abstract final class OccurrenceDocumentPdf {
         photoPaths.where((p) => File(p).existsSync()).toList();
     // The whole document on one page when it fits — the form, the findings,
     // a strip of photographs and the signatures, as the paper form is one
-    // sheet. Each row of thumbnails costs about seven ruled lines; when the
+    // sheet. Each row of thumbnails costs about six ruled lines; when the
     // findings will not fit alongside, the document falls back to the
     // longer form: findings pages, then photographs two to a page.
+    //
+    // The old guard was `linesWithPhotos >= 6`, which no photographed visit
+    // could ever satisfy — twelve lines less the seven a row costs leaves
+    // five — so a document with pictures always took the long form. One row
+    // of thumbnails fits beside short findings (Ethan, 2026-10-08).
     final photoRows = (existingPhotos.length / _photosPerRow).ceil();
-    final linesWithPhotos = _linesOnFirstPage - photoRows * 7;
-    final onePage = lines.length <= linesWithPhotos && linesWithPhotos >= 6;
+    final linesWithPhotos = _linesOnFirstPage - photoRows * 6;
+    final onePage = photoRows <= 1 && lines.length <= linesWithPhotos;
     final firstPageBudget = onePage ? linesWithPhotos : _linesOnFirstPage;
-    final firstPageLines = lines.take(firstPageBudget).toList();
     final laterLines = lines.skip(firstPageBudget).toList();
     final textPages = 1 +
         (laterLines.isEmpty
@@ -102,7 +115,7 @@ abstract final class OccurrenceDocumentPdf {
             pw.Alignment align = pw.Alignment.centerLeft}) =>
         pw.Container(
           color: fill,
-          padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+          padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 1.5),
           alignment: align,
           child: pw.Text(text,
               style:
@@ -112,117 +125,42 @@ abstract final class OccurrenceDocumentPdf {
     const grey = PdfColors.grey300;
     final border = pw.TableBorder.all(width: 0.6, color: PdfColors.grey700);
 
-    pw.Widget header(int page) {
-      final control = pw.Table(
-        border: border,
-        columnWidths: const {
-          0: pw.FlexColumnWidth(1.1),
-          1: pw.FlexColumnWidth(2.2),
-          2: pw.FlexColumnWidth(1.1),
-          3: pw.FlexColumnWidth(1.6),
-        },
-        children: [
-          pw.TableRow(children: [
-            cell('Doc Type', isBold: true, fill: grey),
-            cell('Document'),
-            cell('Issue Date', isBold: true, fill: grey),
-            cell('1 August 2022'),
-          ]),
-          pw.TableRow(children: [
-            cell('Doc No.', isBold: true, fill: grey),
-            cell(docNo),
-            cell('Eff. Date', isBold: true, fill: grey),
-            cell('1 August 2022'),
-          ]),
-          pw.TableRow(children: [
-            cell('IP', isBold: true, fill: grey),
-            cell('Food Safety Agency (Pty) Ltd'),
-            cell('Rev. Date', isBold: true, fill: grey),
-            cell('31 July 2025'),
-          ]),
-          pw.TableRow(children: [
-            cell('Designed by', isBold: true, fill: grey),
-            cell('N Bergh'),
-            cell('Revision', isBold: true, fill: grey),
-            cell(revision),
-          ]),
-          pw.TableRow(children: [
-            cell('Approved by', isBold: true, fill: grey),
-            cell('Chief Executive Officer'),
-            cell('Page', isBold: true, fill: grey),
-            cell('Page $page of $totalPages'),
-          ]),
-        ],
-      );
-      return pw.Table(
-        border: border,
-        columnWidths: const {
-          0: pw.FlexColumnWidth(1.4),
-          1: pw.FlexColumnWidth(3.6),
-        },
-        children: [
-          pw.TableRow(
-            verticalAlignment: pw.TableCellVerticalAlignment.middle,
-            children: [
-              pw.Container(
-                height: 118,
-                alignment: pw.Alignment.center,
-                padding: const pw.EdgeInsets.all(8),
-                child: pw.Image(logo, fit: pw.BoxFit.contain),
-              ),
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                children: [
-                  pw.Container(
-                    padding: const pw.EdgeInsets.symmetric(vertical: 4),
-                    alignment: pw.Alignment.center,
-                    child: pw.Text('OCCURRENCE DOCUMENT',
-                        style: body(isBold: true, size: 11)),
-                  ),
-                  control,
-                  pw.Table(
-                    border: border,
-                    columnWidths: const {
-                      0: pw.FlexColumnWidth(1.1),
-                      1: pw.FlexColumnWidth(4.9),
-                    },
-                    children: [
-                      pw.TableRow(children: [
-                        cell('Procedure', isBold: true, fill: grey),
-                        pw.Padding(
-                          padding: const pw.EdgeInsets.all(3),
-                          child: pw.Text(procedure,
-                              style: pw.TextStyle(
-                                  fontSize: 6.8,
-                                  font: regular,
-                                  lineSpacing: 1)),
-                        ),
-                      ]),
-                    ],
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      );
-    }
+    // The same document-control header as every other report (Ethan,
+    // 2026-10-08): the Act line, one title bar, merged "Issue / Eff. Date"
+    // and no page row. It used to build its own table, which printed
+    // "OCCURRENCE DOCUMENT" twice on every page — once in the control block
+    // and again in a title bar underneath.
+    pw.Widget header() => FsaForm.header(assets, FsaDocuments.occurrence);
 
-    pw.Widget titleBar() => pw.Container(
-          margin: const pw.EdgeInsets.only(top: 8, bottom: 6),
-          padding: const pw.EdgeInsets.symmetric(vertical: 4),
-          decoration: pw.BoxDecoration(border: pw.Border.all(width: 0.8)),
-          alignment: pw.Alignment.center,
-          child: pw.Text('OCCURRENCE DOCUMENT',
-              style: body(isBold: true, size: 11)),
+    /// The form's standing note on when an occurrence document is written.
+    pw.Widget procedureNote() => pw.Table(
+          border: border,
+          columnWidths: const {
+            0: pw.FlexColumnWidth(1.1),
+            1: pw.FlexColumnWidth(4.9),
+          },
+          children: [
+            pw.TableRow(children: [
+              cell('Procedure', isBold: true, fill: grey),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(3),
+                child: pw.Text(procedure,
+                    style: pw.TextStyle(
+                        fontSize: 6.8, font: regular, lineSpacing: 1)),
+              ),
+            ]),
+          ],
         );
 
     pw.Widget particulars() {
+      // Set at the same size as the tables on the other reports, which also
+      // buys the room the signature block needs to close the sheet on one
+      // page (Ethan, 2026-10-08).
       pw.TableRow row(String label, String value) => pw.TableRow(
             verticalAlignment: pw.TableCellVerticalAlignment.middle,
             children: [
-              cell(label, isBold: true, size: 8),
-              cell(value.isEmpty ? '' : value, size: 9.5),
+              cell(label, isBold: true, size: 7.5),
+              cell(value.isEmpty ? '' : value, size: 8),
             ],
           );
       return pw.Table(
@@ -245,73 +183,9 @@ abstract final class OccurrenceDocumentPdf {
       );
     }
 
-    pw.Widget ruledLines(List<String> text, int count) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            for (var i = 0; i < count; i++)
-              pw.Container(
-                height: 17,
-                decoration: const pw.BoxDecoration(
-                  border: pw.Border(
-                      bottom:
-                          pw.BorderSide(width: 0.5, color: PdfColors.grey700)),
-                ),
-                alignment: pw.Alignment.bottomLeft,
-                padding: const pw.EdgeInsets.only(bottom: 1.5),
-                child: pw.Text(i < text.length ? text[i] : '',
-                    style: const pw.TextStyle(fontSize: 9)),
-              ),
-          ],
-        );
-
-    pw.Widget signatureRow(
-            String nameLabel, String name, pw.MemoryImage? sig) =>
-        pw.Row(
-          crossAxisAlignment: pw.CrossAxisAlignment.end,
-          children: [
-            pw.Expanded(
-              flex: 5,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                children: [
-                  pw.Container(
-                    height: 22,
-                    alignment: pw.Alignment.bottomLeft,
-                    padding: const pw.EdgeInsets.only(left: 16, bottom: 2),
-                    decoration: const pw.BoxDecoration(
-                        border: pw.Border(bottom: pw.BorderSide(width: 0.7))),
-                    child: pw.Text(name.toUpperCase(),
-                        style: const pw.TextStyle(fontSize: 9.5)),
-                  ),
-                  pw.SizedBox(height: 2),
-                  pw.Center(
-                      child: pw.Text(nameLabel, style: small(isBold: true))),
-                ],
-              ),
-            ),
-            pw.SizedBox(width: 30),
-            pw.Expanded(
-              flex: 3,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                children: [
-                  pw.Container(
-                    height: 34,
-                    alignment: pw.Alignment.bottomCenter,
-                    decoration: const pw.BoxDecoration(
-                        border: pw.Border(bottom: pw.BorderSide(width: 0.7))),
-                    child: sig == null
-                        ? pw.SizedBox()
-                        : pw.Image(sig, height: 32, fit: pw.BoxFit.contain),
-                  ),
-                  pw.SizedBox(height: 2),
-                  pw.Center(
-                      child: pw.Text('SIGNATURE', style: small(isBold: true))),
-                ],
-              ),
-            ),
-          ],
-        );
+    // The ruled findings lines and the signature rows are drawn by the shared
+    // furniture now (FsaForm.signedBlock), so the hand-rolled versions that
+    // lived here are gone (Ethan, 2026-10-08).
 
     Future<pw.Widget> photoStrip() async {
       final rows = <pw.Widget>[];
@@ -329,7 +203,7 @@ abstract final class OccurrenceDocumentPdf {
                   border: pw.Border.all(width: 0.5, color: PdfColors.grey600)),
               child: pw.Column(children: [
                 pw.SizedBox(
-                    height: 88,
+                    height: 72,
                     child: pw.Center(
                         child: pw.Image(photo, fit: pw.BoxFit.contain))),
                 pw.SizedBox(height: 2),
@@ -349,8 +223,7 @@ abstract final class OccurrenceDocumentPdf {
       return pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.stretch,
         children: [
-          pw.SizedBox(height: 6),
-          pw.Text('PHOTOGRAPHS:', style: body(isBold: true, size: 9.5)),
+          FsaForm.heading('PHOTOGRAPHS', assets, compact: true),
           ...rows,
         ],
       );
@@ -359,75 +232,71 @@ abstract final class OccurrenceDocumentPdf {
     final strip =
         onePage && existingPhotos.isNotEmpty ? await photoStrip() : null;
 
-    pw.Widget footer() => pw.Container(
-          margin: const pw.EdgeInsets.only(top: 10),
-          alignment: pw.Alignment.center,
-          child: pw.Text('© Food Safety Agency (Pty) Ltd', style: small()),
-        );
+    // The "© Food Safety Agency (Pty) Ltd" caption was removed at Ethan's
+    // request (2026-10-08); kept as an empty widget so callers are unchanged.
+    pw.Widget footer() => pw.SizedBox();
 
+    // Same closing block as every other report (Ethan, 2026-10-08).
     pw.Widget signatures() => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
-            pw.SizedBox(height: 14),
-            signatureRow(
-                'AUDITOR/INSPECTOR NAME', inspectorName, inspectorSignature),
-            pw.SizedBox(height: 16),
-            signatureRow('MANAGER/OWNER/REPRESENTATIVE NAME', managerName,
-                managerSignature),
-            footer(),
+            // No extra gap: the heading already carries its own top margin.
+            FsaForm.heading('SIGNATURE CONTROLS', assets, compact: true),
+            FsaForm.signedBlock(
+              assets,
+              inspectorName: inspectorName,
+              authorisedPersonName: managerName,
+              inspectorSignature: inspectorSignature,
+              authorisedPersonSignature: managerSignature,
+              rightCaption: 'MANAGER/OWNER/REPRESENTATIVE:',
+            ),
           ],
         );
 
-    // Page 1: header, particulars, the first block of findings, and the
-    // signatures when everything fits.
+    // One flowing document: the findings run on as far as they need and the
+    // signatures close them. A fixed-height page dropped any block that did
+    // not fit, which silently lost the findings and the signatures
+    // (Ethan, 2026-10-08).
+    // Four ruled lines when the findings are short, as on the other reports:
+    // twelve pushed the signatures onto a second page, which then repeated
+    // the whole control block for nothing (Ethan, 2026-10-08).
+    const minimumRuledLines = 4;
+    final ruledCount =
+        lines.length < minimumRuledLines ? minimumRuledLines : lines.length;
     document.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(34, 26, 34, 24),
-        theme: theme,
-        build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            header(1),
-            titleBar(),
-            particulars(),
-            pw.SizedBox(height: 10),
-            pw.Text('FINDINGS:', style: body(isBold: true, size: 9.5)),
-            pw.SizedBox(height: 2),
-            ruledLines(firstPageLines, firstPageBudget),
-            if (strip != null) strip,
-            if (laterLines.isEmpty) signatures() else footer(),
-          ],
-        ),
+      pw.MultiPage(
+        pageTheme: FsaForm.letterhead(assets, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14)),
+        header: (context) => header(),
+        build: (context) => [
+          procedureNote(),
+          // Compact bars: the occurrence document is one sheet, and with
+          // photographs on it the roomy spacing tipped it onto a second
+          // page (Ethan, 2026-10-08).
+          FsaForm.heading('DETAILS', assets, compact: true),
+          particulars(),
+          FsaForm.heading('FINDINGS', assets, compact: true),
+          // One widget per ruled line so the page can break between them.
+          for (var i = 0; i < ruledCount; i++)
+            pw.Container(
+              height: 14,
+              decoration: const pw.BoxDecoration(
+                border: pw.Border(
+                    bottom:
+                        pw.BorderSide(width: 0.5, color: PdfColors.grey700)),
+              ),
+              alignment: pw.Alignment.bottomLeft,
+              padding: const pw.EdgeInsets.only(bottom: 1.5),
+              child: pw.Text(i < lines.length ? lines[i] : '',
+                  style: const pw.TextStyle(fontSize: 9)),
+            ),
+          // Signatures then photographs, the order every other report uses
+          // (Ethan, 2026-10-08).
+          signatures(),
+          if (strip != null) strip,
+        ],
       ),
     );
-
-    // Continuation pages for long findings; the signatures close the last.
-    for (var p = 0; p < laterLines.length; p += _linesOnLaterPages) {
-      final chunk = laterLines.skip(p).take(_linesOnLaterPages).toList();
-      final last = p + _linesOnLaterPages >= laterLines.length;
-      final pageNo = 2 + p ~/ _linesOnLaterPages;
-      document.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.fromLTRB(34, 26, 34, 24),
-          theme: theme,
-          build: (context) => pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-            children: [
-              header(pageNo),
-              titleBar(),
-              pw.Text('FINDINGS (continued):',
-                  style: body(isBold: true, size: 9.5)),
-              pw.SizedBox(height: 2),
-              ruledLines(
-                  chunk, last ? _linesOnLaterPages - 8 : _linesOnLaterPages),
-              if (last) signatures() else footer(),
-            ],
-          ),
-        ),
-      );
-    }
 
     // Photographs, two to a page, each in its own captioned frame — only
     // when the document did not fit on one page.
@@ -469,9 +338,8 @@ abstract final class OccurrenceDocumentPdf {
         frames.add(pw.Expanded(child: pw.SizedBox()));
       document.addPage(
         pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.fromLTRB(34, 26, 34, 24),
-          theme: theme,
+          pageTheme: FsaForm.letterhead(assets, PdfPageFormat.a4.landscape,
+              margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14)),
           build: (context) => pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.stretch,
             children: [

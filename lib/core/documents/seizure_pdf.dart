@@ -40,6 +40,15 @@ class SeizedProduct {
 /// copy of it, so the Department's name is set in type beside the Agency's
 /// mark, which is who serves it as assignee.
 abstract final class SeizurePdf {
+  /// How tall the Department's arms print at the head of the sheet.
+  ///
+  /// Their template sets the mark about 8 cm wide. The sheet cannot
+  /// afford that: at 46pt the signature block is pushed onto a second
+  /// page, and a seizure served on two sheets is worse than a smaller
+  /// mark. This is the largest that keeps it to one page
+  /// (Ethan, 2026-10-12).
+  static const _armsHeight = 34.0;
+
   static Future<File> write({
     required File out,
     required String clientName,
@@ -61,14 +70,21 @@ abstract final class SeizurePdf {
     String receiverSignaturePath = '',
     DateTime? receivedAt,
     String receivedPlace = '',
+
+    /// The inspector's findings, printed in their own section.
+    String findings = '',
+
+    /// The Remarks/comments box that sits beside Issued and
+    /// Acknowledgement of receipt on the Department's form.
+    String remarks = '',
   }) async {
     final a = await FsaForm.assets();
-    final inspectorSignature = await FsaForm.image(inspectorSignaturePath);
-    final receiverSignature = await FsaForm.image(receiverSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
+    final receiverSignature = await FsaForm.signature(receiverSignaturePath);
     final doc = pw.Document();
 
     String two(int v) => v.toString().padLeft(2, '0');
-    String date(DateTime d) => '${two(d.day)}/${two(d.month)}/${d.year}';
+    String date(DateTime d) => fsaDateLong(d);
     String time(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
     final received = receivedAt ?? issuedAt;
 
@@ -138,8 +154,7 @@ abstract final class SeizurePdf {
         2: pw.FlexColumnWidth(1.1),
         3: pw.FlexColumnWidth(1.5),
         4: pw.FlexColumnWidth(2.6),
-        5: pw.FlexColumnWidth(1.7),
-        6: pw.FlexColumnWidth(2.0),
+        5: pw.FlexColumnWidth(2.4),
       },
       children: [
         pw.TableRow(children: [
@@ -150,7 +165,6 @@ abstract final class SeizurePdf {
           head('Nature of deviation'),
           head('Corrective actions: Period and kind of treatment as per '
               'section 8(3) of the Act'),
-          head('Remarks/comments'),
         ]),
         for (final p in rows)
           pw.TableRow(children: [
@@ -160,7 +174,6 @@ abstract final class SeizurePdf {
             body(p.regulation),
             body(p.natureOfDeviation),
             body(p.correctiveAction),
-            body(p.remarks),
           ]),
       ],
     );
@@ -194,9 +207,23 @@ abstract final class SeizurePdf {
               width: 70,
               child: pw.Text(caption, style: a.text(isBold: true, size: 7)),
             ),
+            // Tall enough to read: the signature used to be squeezed into
+            // a line 20 points high and came out as a faint squiggle.
             pw.Expanded(
-                child: FsaForm.signatureLine(a,
-                    signature: signature, width: 200)),
+              child: pw.Container(
+                height: 40,
+                alignment: pw.Alignment.bottomCenter,
+                decoration: const pw.BoxDecoration(
+                    border: pw.Border(bottom: pw.BorderSide(width: 0.7))),
+                child: signature == null
+                    ? null
+                    : pw.Padding(
+                        padding: const pw.EdgeInsets.only(bottom: 1),
+                        child: pw.Image(signature,
+                            height: 36, fit: pw.BoxFit.contain),
+                      ),
+              ),
+            ),
           ],
         );
 
@@ -207,8 +234,7 @@ abstract final class SeizurePdf {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               pw.Center(
-                  child:
-                      pw.Text(title, style: a.text(isBold: true, size: 8))),
+                  child: pw.Text(title, style: a.text(isBold: true, size: 8))),
               pw.SizedBox(height: 4),
               ...lines,
             ],
@@ -246,99 +272,126 @@ abstract final class SeizurePdf {
       signed('Signature:', receiverSignature),
     ]);
 
+    // Issued, Acknowledgement of receipt and Remarks/comments stand side
+    // by side across the foot of the form, as the Department rules it.
+    // `issued` and `acknowledgement` were built and then never placed on
+    // the page — the analyzer had been flagging both as unused, and the
+    // served document carried no date, place, designation or signature at
+    // all (Ethan, 2026-10-20).
+    final remarksBox = block('Remarks/ comments', [
+      pw.Container(
+        height: 92,
+        alignment: pw.Alignment.topLeft,
+        child: pw.Text(remarks, style: a.text(size: 7.5)),
+      ),
+    ]);
+
     doc.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(24, 22, 24, 16),
-        build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
+      pw.MultiPage(
+        // Landscape (Ethan, 2026-10-20). The Department's own template is
+        // portrait and the sheet was built that way to match it; Ethan
+        // asked for landscape after seeing it, so the content follows
+        // their form and the paper follows the Agency's other reports.
+        pageTheme: FsaForm.letterhead(a, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(24, 22, 24, 16),
+            // The Department's arms head the sheet, centred, as
+            // their Annexure E template has them — and theirs alone: the
+            // Agency's mark and foot band come off, because the seizure is
+            // served under the Department's authority and the Agency only
+            // signs it as assignee (Ethan, 2026-10-12).
+            centrepiece: a.departmentLogo,
+            centrepieceHeight: _armsHeight,
+            agencyBranding: false),
+        build: (context) => [
+          pw.SizedBox(height: 4),
+          pw.Center(
+              child: pw.Text('SEIZURE', style: a.text(isBold: true, size: 12))),
+          pw.SizedBox(height: 10),
+          // The Department's own wording, set plain and left, not in the
+          // Agency's grey section bar.
+          pw.Text('Particulars of the Client or Owner of the consignment',
+              style: a.text(isBold: true, size: 9)),
+          pw.SizedBox(height: 4),
+          particulars,
+          pw.SizedBox(height: 8),
+          pw.RichText(
+            text: pw.TextSpan(
+              style: a.text(size: 7.5),
               children: [
-                pw.Container(
-                  width: 150,
-                  height: 44,
-                  alignment: pw.Alignment.centerLeft,
-                  child: pw.Image(a.logo, fit: pw.BoxFit.contain),
-                ),
-                pw.Spacer(),
-                pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.end,
-                  children: [
-                    pw.Text('agriculture', style: a.text(size: 13)),
-                    pw.Container(height: 0.8, width: 150,
-                        color: PdfColors.black),
-                    pw.Text('Department:', style: a.text(size: 6.5)),
-                    pw.Text('Agriculture', style: a.text(size: 6.5)),
-                    pw.Text('REPUBLIC OF SOUTH AFRICA',
-                        style: a.text(isBold: true, size: 6.5)),
-                  ],
-                ),
+                const pw.TextSpan(
+                    text: 'The products listed and described below and '
+                        'which have been marked or pointed out by me '
+                        'physically, are being sold/imported in '
+                        'contravention of '),
+                pw.TextSpan(
+                    text: 'Sections 3 (1) and 4A',
+                    style: a.text(isBold: true, size: 7.5)),
+                const pw.TextSpan(
+                    text: ' of the Agricultural Product Standards Act, '
+                        '1990 (Act 119 of 1990) as amended, read in '
+                        'conjunction with the relevant regulations '
+                        'regarding the sale of products. The product is '
+                        'therefore seized by the Executive Officer or '
+                        'Assignee ('),
+                pw.TextSpan(
+                    text: assigneeName, style: a.text(isBold: true, size: 7.5)),
+                const pw.TextSpan(
+                    text: ') in terms of sections 7 and 8 of the Act '
+                        'forthwith.'),
               ],
             ),
-            pw.SizedBox(height: 10),
-            pw.Center(
-                child: pw.Text('SEIZURE',
-                    style: a.text(isBold: true, size: 12))),
-            pw.SizedBox(height: 8),
-            pw.Text('Particulars of the Client or Owner of the consignment',
-                style: a.text(isBold: true, size: 8.5)),
-            pw.SizedBox(height: 4),
-            particulars,
-            pw.SizedBox(height: 8),
-            pw.RichText(
-              text: pw.TextSpan(
-                style: a.text(size: 7.5),
-                children: [
-                  const pw.TextSpan(
-                      text: 'The products listed and described below and '
-                          'which have been marked or pointed out by me '
-                          'physically, are being sold / imported in '
-                          'contravention of '),
-                  pw.TextSpan(
-                      text: 'Sections 3 (1) and 4A',
-                      style: a.text(isBold: true, size: 7.5)),
-                  const pw.TextSpan(
-                      text: ' of the Agricultural Product Standards Act, '
-                          '1990 (Act 119 of 1990) as amended, read in '
-                          'conjunction with the relevant regulations '
-                          'regarding the sale of products. The product is '
-                          'therefore seized by the Executive Officer or '
-                          'Assignee ('),
-                  pw.TextSpan(
-                      text: assigneeName,
-                      style: a.text(isBold: true, size: 7.5)),
-                  const pw.TextSpan(
-                      text: ') in terms of sections 7 and 8 of the Act '
-                          'forthwith.'),
-                ],
-              ),
-            ),
-            pw.SizedBox(height: 8),
-            productTable,
-            pw.SizedBox(height: 12),
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Expanded(child: issued),
-                pw.SizedBox(width: 10),
-                pw.Expanded(child: acknowledgement),
-              ],
-            ),
-            pw.SizedBox(height: 14),
-            pw.Text(
-                'Authorization by the Executive Officer or a delegated '
-                'official in terms of section 8(3) of the Act',
-                style: a.text(isBold: true, size: 8)),
-            pw.SizedBox(height: 4),
-            line('Name of the authorizing official:', '', captionWidth: 130),
-            line('Designation:', '', captionWidth: 130),
-            line('Date:', '', captionWidth: 130),
-            pw.Spacer(),
-            FsaForm.footer(a),
+          ),
+          // The findings text sits above the FINDINGS heading, which heads
+          // the product table (Ethan, 2026-10-08).
+          if (findings.trim().isNotEmpty) ...[
+            pw.SizedBox(height: 6),
+            pw.Text(findings.trim(), style: a.text(size: 7.5)),
           ],
-        ),
+          pw.SizedBox(height: 8),
+          productTable,
+          pw.SizedBox(height: 10),
+          pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Expanded(flex: 4, child: issued),
+              pw.SizedBox(width: 6),
+              pw.Expanded(flex: 4, child: acknowledgement),
+              pw.SizedBox(width: 6),
+              pw.Expanded(flex: 3, child: remarksBox),
+            ],
+          ),
+          pw.SizedBox(height: 10),
+          // Authorisation sits before the signatures so the document ends
+          // SIGNATURE CONTROLS → PHOTOGRAPHS, same as the egg labelling
+          // checklist (Ethan, 2026-10-08).
+          pw.Text(
+              'Authorization by the Executive Officer or a delegated '
+              'official in terms of section 8(3) of the Act',
+              style: a.text(isBold: true, size: 9)),
+          pw.SizedBox(height: 4),
+          // An open box the Department fills in by hand: the Agency does
+          // not authorise its own seizure.
+          pw.Container(
+            width: double.infinity,
+            padding: const pw.EdgeInsets.all(5),
+            decoration: pw.BoxDecoration(border: pw.Border.all(width: 0.7)),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Name of the authorizing official:',
+                    style: a.text(size: 7.5)),
+                pw.SizedBox(height: 7),
+                pw.Text('Designation:', style: a.text(size: 7.5)),
+                pw.SizedBox(height: 7),
+                pw.Text('Date:', style: a.text(size: 7.5)),
+              ],
+            ),
+          ),
+          // No Agency SIGNATURE CONTROLS block: on this form the two
+          // signatures belong inside Issued and Acknowledgement of receipt
+          // above, and printing them twice was the Agency's own layout
+          // showing through the Department's (Ethan, 2026-10-20).
+        ],
       ),
     );
 

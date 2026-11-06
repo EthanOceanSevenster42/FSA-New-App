@@ -7713,6 +7713,14 @@ class $EggRequirementsTable extends EggRequirements
       type: DriftSqlType.string,
       requiredDuringInsert: false,
       defaultValue: const Constant(''));
+  static const VerificationMeta _minLetteringHeightMeta =
+      const VerificationMeta('minLetteringHeight');
+  @override
+  late final GeneratedColumn<String> minLetteringHeight =
+      GeneratedColumn<String>('min_lettering_height', aliasedName, false,
+          type: DriftSqlType.string,
+          requiredDuringInsert: false,
+          defaultValue: const Constant(''));
   static const VerificationMeta _isActiveMeta =
       const VerificationMeta('isActive');
   @override
@@ -7739,6 +7747,7 @@ class $EggRequirementsTable extends EggRequirements
         screenLabel,
         sortOrder,
         regulation,
+        minLetteringHeight,
         isActive,
         updatedAt
       ];
@@ -7785,6 +7794,12 @@ class $EggRequirementsTable extends EggRequirements
           regulation.isAcceptableOrUnknown(
               data['regulation']!, _regulationMeta));
     }
+    if (data.containsKey('min_lettering_height')) {
+      context.handle(
+          _minLetteringHeightMeta,
+          minLetteringHeight.isAcceptableOrUnknown(
+              data['min_lettering_height']!, _minLetteringHeightMeta));
+    }
     if (data.containsKey('is_active')) {
       context.handle(_isActiveMeta,
           isActive.isAcceptableOrUnknown(data['is_active']!, _isActiveMeta));
@@ -7814,6 +7829,8 @@ class $EggRequirementsTable extends EggRequirements
           .read(DriftSqlType.int, data['${effectivePrefix}sort_order'])!,
       regulation: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}regulation'])!,
+      minLetteringHeight: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}min_lettering_height'])!,
       isActive: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}is_active'])!,
       updatedAt: attachedDatabase.typeMapping
@@ -7845,6 +7862,15 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
   /// The original's own list order, which is not alphabetical.
   final int sortOrder;
   final String regulation;
+
+  /// Minimum vertical height of the smallest letter or figure, in
+  /// millimetres, as the sheet's STD column prints it. Table 1 of the
+  /// Annexure to R.345 of 20 March 2020 (gazette 43108, page 28): column 2
+  /// for the container rows, column 3 for the outer-container rows. Text,
+  /// not a number — a row the table says nothing about has no requirement,
+  /// and 0 would read as "must be at least nothing". Asked for by Neo Noe,
+  /// 2026-10-19; every row used to print "-".
+  final String minLetteringHeight;
   final bool isActive;
   final String updatedAt;
   const EggRequirement(
@@ -7854,6 +7880,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
       required this.screenLabel,
       required this.sortOrder,
       required this.regulation,
+      required this.minLetteringHeight,
       required this.isActive,
       required this.updatedAt});
   @override
@@ -7865,6 +7892,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
     map['screen_label'] = Variable<String>(screenLabel);
     map['sort_order'] = Variable<int>(sortOrder);
     map['regulation'] = Variable<String>(regulation);
+    map['min_lettering_height'] = Variable<String>(minLetteringHeight);
     map['is_active'] = Variable<bool>(isActive);
     map['updated_at'] = Variable<String>(updatedAt);
     return map;
@@ -7878,6 +7906,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
       screenLabel: Value(screenLabel),
       sortOrder: Value(sortOrder),
       regulation: Value(regulation),
+      minLetteringHeight: Value(minLetteringHeight),
       isActive: Value(isActive),
       updatedAt: Value(updatedAt),
     );
@@ -7893,6 +7922,8 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
       screenLabel: serializer.fromJson<String>(json['screenLabel']),
       sortOrder: serializer.fromJson<int>(json['sortOrder']),
       regulation: serializer.fromJson<String>(json['regulation']),
+      minLetteringHeight:
+          serializer.fromJson<String>(json['minLetteringHeight']),
       isActive: serializer.fromJson<bool>(json['isActive']),
       updatedAt: serializer.fromJson<String>(json['updatedAt']),
     );
@@ -7907,6 +7938,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
       'screenLabel': serializer.toJson<String>(screenLabel),
       'sortOrder': serializer.toJson<int>(sortOrder),
       'regulation': serializer.toJson<String>(regulation),
+      'minLetteringHeight': serializer.toJson<String>(minLetteringHeight),
       'isActive': serializer.toJson<bool>(isActive),
       'updatedAt': serializer.toJson<String>(updatedAt),
     };
@@ -7919,6 +7951,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
           String? screenLabel,
           int? sortOrder,
           String? regulation,
+          String? minLetteringHeight,
           bool? isActive,
           String? updatedAt}) =>
       EggRequirement(
@@ -7928,6 +7961,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
         screenLabel: screenLabel ?? this.screenLabel,
         sortOrder: sortOrder ?? this.sortOrder,
         regulation: regulation ?? this.regulation,
+        minLetteringHeight: minLetteringHeight ?? this.minLetteringHeight,
         isActive: isActive ?? this.isActive,
         updatedAt: updatedAt ?? this.updatedAt,
       );
@@ -7942,6 +7976,9 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
       regulation:
           data.regulation.present ? data.regulation.value : this.regulation,
+      minLetteringHeight: data.minLetteringHeight.present
+          ? data.minLetteringHeight.value
+          : this.minLetteringHeight,
       isActive: data.isActive.present ? data.isActive.value : this.isActive,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
     );
@@ -7956,6 +7993,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
           ..write('screenLabel: $screenLabel, ')
           ..write('sortOrder: $sortOrder, ')
           ..write('regulation: $regulation, ')
+          ..write('minLetteringHeight: $minLetteringHeight, ')
           ..write('isActive: $isActive, ')
           ..write('updatedAt: $updatedAt')
           ..write(')'))
@@ -7964,7 +8002,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
 
   @override
   int get hashCode => Object.hash(id, kind, description, screenLabel, sortOrder,
-      regulation, isActive, updatedAt);
+      regulation, minLetteringHeight, isActive, updatedAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -7975,6 +8013,7 @@ class EggRequirement extends DataClass implements Insertable<EggRequirement> {
           other.screenLabel == this.screenLabel &&
           other.sortOrder == this.sortOrder &&
           other.regulation == this.regulation &&
+          other.minLetteringHeight == this.minLetteringHeight &&
           other.isActive == this.isActive &&
           other.updatedAt == this.updatedAt);
 }
@@ -7986,6 +8025,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
   final Value<String> screenLabel;
   final Value<int> sortOrder;
   final Value<String> regulation;
+  final Value<String> minLetteringHeight;
   final Value<bool> isActive;
   final Value<String> updatedAt;
   const EggRequirementsCompanion({
@@ -7995,6 +8035,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
     this.screenLabel = const Value.absent(),
     this.sortOrder = const Value.absent(),
     this.regulation = const Value.absent(),
+    this.minLetteringHeight = const Value.absent(),
     this.isActive = const Value.absent(),
     this.updatedAt = const Value.absent(),
   });
@@ -8005,6 +8046,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
     this.screenLabel = const Value.absent(),
     this.sortOrder = const Value.absent(),
     this.regulation = const Value.absent(),
+    this.minLetteringHeight = const Value.absent(),
     this.isActive = const Value.absent(),
     this.updatedAt = const Value.absent(),
   })  : kind = Value(kind),
@@ -8016,6 +8058,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
     Expression<String>? screenLabel,
     Expression<int>? sortOrder,
     Expression<String>? regulation,
+    Expression<String>? minLetteringHeight,
     Expression<bool>? isActive,
     Expression<String>? updatedAt,
   }) {
@@ -8026,6 +8069,8 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
       if (screenLabel != null) 'screen_label': screenLabel,
       if (sortOrder != null) 'sort_order': sortOrder,
       if (regulation != null) 'regulation': regulation,
+      if (minLetteringHeight != null)
+        'min_lettering_height': minLetteringHeight,
       if (isActive != null) 'is_active': isActive,
       if (updatedAt != null) 'updated_at': updatedAt,
     });
@@ -8038,6 +8083,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
       Value<String>? screenLabel,
       Value<int>? sortOrder,
       Value<String>? regulation,
+      Value<String>? minLetteringHeight,
       Value<bool>? isActive,
       Value<String>? updatedAt}) {
     return EggRequirementsCompanion(
@@ -8047,6 +8093,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
       screenLabel: screenLabel ?? this.screenLabel,
       sortOrder: sortOrder ?? this.sortOrder,
       regulation: regulation ?? this.regulation,
+      minLetteringHeight: minLetteringHeight ?? this.minLetteringHeight,
       isActive: isActive ?? this.isActive,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -8073,6 +8120,9 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
     if (regulation.present) {
       map['regulation'] = Variable<String>(regulation.value);
     }
+    if (minLetteringHeight.present) {
+      map['min_lettering_height'] = Variable<String>(minLetteringHeight.value);
+    }
     if (isActive.present) {
       map['is_active'] = Variable<bool>(isActive.value);
     }
@@ -8091,6 +8141,7 @@ class EggRequirementsCompanion extends UpdateCompanion<EggRequirement> {
           ..write('screenLabel: $screenLabel, ')
           ..write('sortOrder: $sortOrder, ')
           ..write('regulation: $regulation, ')
+          ..write('minLetteringHeight: $minLetteringHeight, ')
           ..write('isActive: $isActive, ')
           ..write('updatedAt: $updatedAt')
           ..write(')'))
@@ -9560,6 +9611,14 @@ class $EggInspectionsTable extends EggInspections
       defaultConstraints: GeneratedColumn.constraintIsAlways(
           'CHECK ("haugh_not_required" IN (0, 1))'),
       defaultValue: const Constant(false));
+  static const VerificationMeta _haughSampleNumbersMeta =
+      const VerificationMeta('haughSampleNumbers');
+  @override
+  late final GeneratedColumn<String> haughSampleNumbers =
+      GeneratedColumn<String>('haugh_sample_numbers', aliasedName, false,
+          type: DriftSqlType.string,
+          requiredDuringInsert: false,
+          defaultValue: const Constant(''));
   static const VerificationMeta _weighingNotRequiredMeta =
       const VerificationMeta('weighingNotRequired');
   @override
@@ -9744,6 +9803,7 @@ class $EggInspectionsTable extends EggInspections
         sampleSize,
         pasteurisedPresent,
         haughNotRequired,
+        haughSampleNumbers,
         weighingNotRequired,
         outerLabellingAvailable,
         labelChecklistComplete,
@@ -9928,6 +9988,12 @@ class $EggInspectionsTable extends EggInspections
           haughNotRequired.isAcceptableOrUnknown(
               data['haugh_not_required']!, _haughNotRequiredMeta));
     }
+    if (data.containsKey('haugh_sample_numbers')) {
+      context.handle(
+          _haughSampleNumbersMeta,
+          haughSampleNumbers.isAcceptableOrUnknown(
+              data['haugh_sample_numbers']!, _haughSampleNumbersMeta));
+    }
     if (data.containsKey('weighing_not_required')) {
       context.handle(
           _weighingNotRequiredMeta,
@@ -10104,6 +10170,8 @@ class $EggInspectionsTable extends EggInspections
           DriftSqlType.bool, data['${effectivePrefix}pasteurised_present'])!,
       haughNotRequired: attachedDatabase.typeMapping.read(
           DriftSqlType.bool, data['${effectivePrefix}haugh_not_required'])!,
+      haughSampleNumbers: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}haugh_sample_numbers'])!,
       weighingNotRequired: attachedDatabase.typeMapping.read(
           DriftSqlType.bool, data['${effectivePrefix}weighing_not_required'])!,
       outerLabellingAvailable: attachedDatabase.typeMapping.read(
@@ -10196,6 +10264,14 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
   final bool pasteurisedPresent;
   final bool haughNotRequired;
 
+  /// Which eggs of the set carry the Haugh reading, as a comma-separated
+  /// list of egg numbers, drawn by the app rather than chosen by the
+  /// inspector (Ethan, 2026-10-23).
+  ///
+  /// Stored, not re-drawn: reopening a record must ask for the same eggs,
+  /// and the sheet has to say which six were measured.
+  final String haughSampleNumbers;
+
   /// The original's `switchEggWeighingInspectionNotRequired`. Eggs cannot be
   /// broken open on a retailer's premises, so at a retailer the inspector may
   /// record that no weighing or grading was possible. The sizing and grading
@@ -10285,6 +10361,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
       this.sampleSize,
       required this.pasteurisedPresent,
       required this.haughNotRequired,
+      required this.haughSampleNumbers,
       required this.weighingNotRequired,
       required this.outerLabellingAvailable,
       required this.labelChecklistComplete,
@@ -10347,6 +10424,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
     }
     map['pasteurised_present'] = Variable<bool>(pasteurisedPresent);
     map['haugh_not_required'] = Variable<bool>(haughNotRequired);
+    map['haugh_sample_numbers'] = Variable<String>(haughSampleNumbers);
     map['weighing_not_required'] = Variable<bool>(weighingNotRequired);
     map['outer_labelling_available'] = Variable<bool>(outerLabellingAvailable);
     map['label_checklist_complete'] = Variable<bool>(labelChecklistComplete);
@@ -10421,6 +10499,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
           : Value(sampleSize),
       pasteurisedPresent: Value(pasteurisedPresent),
       haughNotRequired: Value(haughNotRequired),
+      haughSampleNumbers: Value(haughSampleNumbers),
       weighingNotRequired: Value(weighingNotRequired),
       outerLabellingAvailable: Value(outerLabellingAvailable),
       labelChecklistComplete: Value(labelChecklistComplete),
@@ -10484,6 +10563,8 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
       sampleSize: serializer.fromJson<int?>(json['sampleSize']),
       pasteurisedPresent: serializer.fromJson<bool>(json['pasteurisedPresent']),
       haughNotRequired: serializer.fromJson<bool>(json['haughNotRequired']),
+      haughSampleNumbers:
+          serializer.fromJson<String>(json['haughSampleNumbers']),
       weighingNotRequired:
           serializer.fromJson<bool>(json['weighingNotRequired']),
       outerLabellingAvailable:
@@ -10544,6 +10625,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
       'sampleSize': serializer.toJson<int?>(sampleSize),
       'pasteurisedPresent': serializer.toJson<bool>(pasteurisedPresent),
       'haughNotRequired': serializer.toJson<bool>(haughNotRequired),
+      'haughSampleNumbers': serializer.toJson<String>(haughSampleNumbers),
       'weighingNotRequired': serializer.toJson<bool>(weighingNotRequired),
       'outerLabellingAvailable':
           serializer.toJson<bool>(outerLabellingAvailable),
@@ -10597,6 +10679,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
           Value<int?> sampleSize = const Value.absent(),
           bool? pasteurisedPresent,
           bool? haughNotRequired,
+          String? haughSampleNumbers,
           bool? weighingNotRequired,
           bool? outerLabellingAvailable,
           bool? labelChecklistComplete,
@@ -10647,6 +10730,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
         sampleSize: sampleSize.present ? sampleSize.value : this.sampleSize,
         pasteurisedPresent: pasteurisedPresent ?? this.pasteurisedPresent,
         haughNotRequired: haughNotRequired ?? this.haughNotRequired,
+        haughSampleNumbers: haughSampleNumbers ?? this.haughSampleNumbers,
         weighingNotRequired: weighingNotRequired ?? this.weighingNotRequired,
         outerLabellingAvailable:
             outerLabellingAvailable ?? this.outerLabellingAvailable,
@@ -10741,6 +10825,9 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
       haughNotRequired: data.haughNotRequired.present
           ? data.haughNotRequired.value
           : this.haughNotRequired,
+      haughSampleNumbers: data.haughSampleNumbers.present
+          ? data.haughSampleNumbers.value
+          : this.haughSampleNumbers,
       weighingNotRequired: data.weighingNotRequired.present
           ? data.weighingNotRequired.value
           : this.weighingNotRequired,
@@ -10823,6 +10910,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
           ..write('sampleSize: $sampleSize, ')
           ..write('pasteurisedPresent: $pasteurisedPresent, ')
           ..write('haughNotRequired: $haughNotRequired, ')
+          ..write('haughSampleNumbers: $haughSampleNumbers, ')
           ..write('weighingNotRequired: $weighingNotRequired, ')
           ..write('outerLabellingAvailable: $outerLabellingAvailable, ')
           ..write('labelChecklistComplete: $labelChecklistComplete, ')
@@ -10874,6 +10962,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
         sampleSize,
         pasteurisedPresent,
         haughNotRequired,
+        haughSampleNumbers,
         weighingNotRequired,
         outerLabellingAvailable,
         labelChecklistComplete,
@@ -10924,6 +11013,7 @@ class EggInspection extends DataClass implements Insertable<EggInspection> {
           other.sampleSize == this.sampleSize &&
           other.pasteurisedPresent == this.pasteurisedPresent &&
           other.haughNotRequired == this.haughNotRequired &&
+          other.haughSampleNumbers == this.haughSampleNumbers &&
           other.weighingNotRequired == this.weighingNotRequired &&
           other.outerLabellingAvailable == this.outerLabellingAvailable &&
           other.labelChecklistComplete == this.labelChecklistComplete &&
@@ -10972,6 +11062,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
   final Value<int?> sampleSize;
   final Value<bool> pasteurisedPresent;
   final Value<bool> haughNotRequired;
+  final Value<String> haughSampleNumbers;
   final Value<bool> weighingNotRequired;
   final Value<bool> outerLabellingAvailable;
   final Value<bool> labelChecklistComplete;
@@ -11019,6 +11110,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
     this.sampleSize = const Value.absent(),
     this.pasteurisedPresent = const Value.absent(),
     this.haughNotRequired = const Value.absent(),
+    this.haughSampleNumbers = const Value.absent(),
     this.weighingNotRequired = const Value.absent(),
     this.outerLabellingAvailable = const Value.absent(),
     this.labelChecklistComplete = const Value.absent(),
@@ -11067,6 +11159,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
     this.sampleSize = const Value.absent(),
     this.pasteurisedPresent = const Value.absent(),
     this.haughNotRequired = const Value.absent(),
+    this.haughSampleNumbers = const Value.absent(),
     this.weighingNotRequired = const Value.absent(),
     this.outerLabellingAvailable = const Value.absent(),
     this.labelChecklistComplete = const Value.absent(),
@@ -11117,6 +11210,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
     Expression<int>? sampleSize,
     Expression<bool>? pasteurisedPresent,
     Expression<bool>? haughNotRequired,
+    Expression<String>? haughSampleNumbers,
     Expression<bool>? weighingNotRequired,
     Expression<bool>? outerLabellingAvailable,
     Expression<bool>? labelChecklistComplete,
@@ -11167,6 +11261,8 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
       if (sampleSize != null) 'sample_size': sampleSize,
       if (pasteurisedPresent != null) 'pasteurised_present': pasteurisedPresent,
       if (haughNotRequired != null) 'haugh_not_required': haughNotRequired,
+      if (haughSampleNumbers != null)
+        'haugh_sample_numbers': haughSampleNumbers,
       if (weighingNotRequired != null)
         'weighing_not_required': weighingNotRequired,
       if (outerLabellingAvailable != null)
@@ -11225,6 +11321,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
       Value<int?>? sampleSize,
       Value<bool>? pasteurisedPresent,
       Value<bool>? haughNotRequired,
+      Value<String>? haughSampleNumbers,
       Value<bool>? weighingNotRequired,
       Value<bool>? outerLabellingAvailable,
       Value<bool>? labelChecklistComplete,
@@ -11272,6 +11369,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
       sampleSize: sampleSize ?? this.sampleSize,
       pasteurisedPresent: pasteurisedPresent ?? this.pasteurisedPresent,
       haughNotRequired: haughNotRequired ?? this.haughNotRequired,
+      haughSampleNumbers: haughSampleNumbers ?? this.haughSampleNumbers,
       weighingNotRequired: weighingNotRequired ?? this.weighingNotRequired,
       outerLabellingAvailable:
           outerLabellingAvailable ?? this.outerLabellingAvailable,
@@ -11383,6 +11481,9 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
     if (haughNotRequired.present) {
       map['haugh_not_required'] = Variable<bool>(haughNotRequired.value);
     }
+    if (haughSampleNumbers.present) {
+      map['haugh_sample_numbers'] = Variable<String>(haughSampleNumbers.value);
+    }
     if (weighingNotRequired.present) {
       map['weighing_not_required'] = Variable<bool>(weighingNotRequired.value);
     }
@@ -11482,6 +11583,7 @@ class EggInspectionsCompanion extends UpdateCompanion<EggInspection> {
           ..write('sampleSize: $sampleSize, ')
           ..write('pasteurisedPresent: $pasteurisedPresent, ')
           ..write('haughNotRequired: $haughNotRequired, ')
+          ..write('haughSampleNumbers: $haughSampleNumbers, ')
           ..write('weighingNotRequired: $weighingNotRequired, ')
           ..write('outerLabellingAvailable: $outerLabellingAvailable, ')
           ..write('labelChecklistComplete: $labelChecklistComplete, ')
@@ -23313,6 +23415,38 @@ class $StoreVisitsTable extends StoreVisits
   late final GeneratedColumn<double> distanceTravelledKm =
       GeneratedColumn<double>('distance_travelled_km', aliasedName, true,
           type: DriftSqlType.double, requiredDuringInsert: false);
+  static const VerificationMeta _travelStartMeta =
+      const VerificationMeta('travelStart');
+  @override
+  late final GeneratedColumn<String> travelStart = GeneratedColumn<String>(
+      'travel_start', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _travelEndMeta =
+      const VerificationMeta('travelEnd');
+  @override
+  late final GeneratedColumn<String> travelEnd = GeneratedColumn<String>(
+      'travel_end', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _inspectionStartMeta =
+      const VerificationMeta('inspectionStart');
+  @override
+  late final GeneratedColumn<String> inspectionStart = GeneratedColumn<String>(
+      'inspection_start', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _inspectionEndMeta =
+      const VerificationMeta('inspectionEnd');
+  @override
+  late final GeneratedColumn<String> inspectionEnd = GeneratedColumn<String>(
+      'inspection_end', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
   static const VerificationMeta _inspectorUsernameMeta =
       const VerificationMeta('inspectorUsername');
   @override
@@ -23497,6 +23631,10 @@ class $StoreVisitsTable extends StoreVisits
         additionalEmail2,
         additionalEmail3,
         distanceTravelledKm,
+        travelStart,
+        travelEnd,
+        inspectionStart,
+        inspectionEnd,
         inspectorUsername,
         plannedEggs,
         plannedPoultry,
@@ -23606,6 +23744,28 @@ class $StoreVisitsTable extends StoreVisits
           _distanceTravelledKmMeta,
           distanceTravelledKm.isAcceptableOrUnknown(
               data['distance_travelled_km']!, _distanceTravelledKmMeta));
+    }
+    if (data.containsKey('travel_start')) {
+      context.handle(
+          _travelStartMeta,
+          travelStart.isAcceptableOrUnknown(
+              data['travel_start']!, _travelStartMeta));
+    }
+    if (data.containsKey('travel_end')) {
+      context.handle(_travelEndMeta,
+          travelEnd.isAcceptableOrUnknown(data['travel_end']!, _travelEndMeta));
+    }
+    if (data.containsKey('inspection_start')) {
+      context.handle(
+          _inspectionStartMeta,
+          inspectionStart.isAcceptableOrUnknown(
+              data['inspection_start']!, _inspectionStartMeta));
+    }
+    if (data.containsKey('inspection_end')) {
+      context.handle(
+          _inspectionEndMeta,
+          inspectionEnd.isAcceptableOrUnknown(
+              data['inspection_end']!, _inspectionEndMeta));
     }
     if (data.containsKey('inspector_username')) {
       context.handle(
@@ -23767,6 +23927,14 @@ class $StoreVisitsTable extends StoreVisits
           DriftSqlType.string, data['${effectivePrefix}additional_email3'])!,
       distanceTravelledKm: attachedDatabase.typeMapping.read(
           DriftSqlType.double, data['${effectivePrefix}distance_travelled_km']),
+      travelStart: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}travel_start'])!,
+      travelEnd: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}travel_end'])!,
+      inspectionStart: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}inspection_start'])!,
+      inspectionEnd: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}inspection_end'])!,
       inspectorUsername: attachedDatabase.typeMapping.read(
           DriftSqlType.string, data['${effectivePrefix}inspector_username'])!,
       plannedEggs: attachedDatabase.typeMapping
@@ -23852,6 +24020,23 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
   /// raw record: two raw inspections in a visit asked for it twice and the
   /// invoice kept whichever it read first.
   final double? distanceTravelledKm;
+
+  /// When the inspector set off and when the travelling ended, as HH:mm
+  /// (Ethan, 2026-10-02). Compulsory, as APS asks for them: the office's
+  /// analytics run on travel time as well as kilometres.
+  final String travelStart;
+  final String travelEnd;
+
+  /// When the inspection itself started and finished, "HH:mm", as the
+  /// inspector confirmed them at sign-off.
+  ///
+  /// The handset works these out from the record, but a record opened in
+  /// the car or signed off hours later makes them wrong, and nobody ever
+  /// saw the figure before it became an invoice. The sign-off now shows
+  /// what it has and asks; these hold the answer (Ethan, 2026-10-12).
+  /// Empty on a visit signed off before that question existed.
+  final String inspectionStart;
+  final String inspectionEnd;
   final String inspectorUsername;
 
   /// How many of each commodity the inspector planned for this visit —
@@ -23937,6 +24122,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
       required this.additionalEmail2,
       required this.additionalEmail3,
       this.distanceTravelledKm,
+      required this.travelStart,
+      required this.travelEnd,
+      required this.inspectionStart,
+      required this.inspectionEnd,
       required this.inspectorUsername,
       required this.plannedEggs,
       required this.plannedPoultry,
@@ -23976,6 +24165,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
     if (!nullToAbsent || distanceTravelledKm != null) {
       map['distance_travelled_km'] = Variable<double>(distanceTravelledKm);
     }
+    map['travel_start'] = Variable<String>(travelStart);
+    map['travel_end'] = Variable<String>(travelEnd);
+    map['inspection_start'] = Variable<String>(inspectionStart);
+    map['inspection_end'] = Variable<String>(inspectionEnd);
     map['inspector_username'] = Variable<String>(inspectorUsername);
     map['planned_eggs'] = Variable<int>(plannedEggs);
     map['planned_poultry'] = Variable<int>(plannedPoultry);
@@ -24022,6 +24215,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
       distanceTravelledKm: distanceTravelledKm == null && nullToAbsent
           ? const Value.absent()
           : Value(distanceTravelledKm),
+      travelStart: Value(travelStart),
+      travelEnd: Value(travelEnd),
+      inspectionStart: Value(inspectionStart),
+      inspectionEnd: Value(inspectionEnd),
       inspectorUsername: Value(inspectorUsername),
       plannedEggs: Value(plannedEggs),
       plannedPoultry: Value(plannedPoultry),
@@ -24068,6 +24265,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
       additionalEmail3: serializer.fromJson<String>(json['additionalEmail3']),
       distanceTravelledKm:
           serializer.fromJson<double?>(json['distanceTravelledKm']),
+      travelStart: serializer.fromJson<String>(json['travelStart']),
+      travelEnd: serializer.fromJson<String>(json['travelEnd']),
+      inspectionStart: serializer.fromJson<String>(json['inspectionStart']),
+      inspectionEnd: serializer.fromJson<String>(json['inspectionEnd']),
       inspectorUsername: serializer.fromJson<String>(json['inspectorUsername']),
       plannedEggs: serializer.fromJson<int>(json['plannedEggs']),
       plannedPoultry: serializer.fromJson<int>(json['plannedPoultry']),
@@ -24113,6 +24314,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
       'additionalEmail2': serializer.toJson<String>(additionalEmail2),
       'additionalEmail3': serializer.toJson<String>(additionalEmail3),
       'distanceTravelledKm': serializer.toJson<double?>(distanceTravelledKm),
+      'travelStart': serializer.toJson<String>(travelStart),
+      'travelEnd': serializer.toJson<String>(travelEnd),
+      'inspectionStart': serializer.toJson<String>(inspectionStart),
+      'inspectionEnd': serializer.toJson<String>(inspectionEnd),
       'inspectorUsername': serializer.toJson<String>(inspectorUsername),
       'plannedEggs': serializer.toJson<int>(plannedEggs),
       'plannedPoultry': serializer.toJson<int>(plannedPoultry),
@@ -24153,6 +24358,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
           String? additionalEmail2,
           String? additionalEmail3,
           Value<double?> distanceTravelledKm = const Value.absent(),
+          String? travelStart,
+          String? travelEnd,
+          String? inspectionStart,
+          String? inspectionEnd,
           String? inspectorUsername,
           int? plannedEggs,
           int? plannedPoultry,
@@ -24190,6 +24399,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
         distanceTravelledKm: distanceTravelledKm.present
             ? distanceTravelledKm.value
             : this.distanceTravelledKm,
+        travelStart: travelStart ?? this.travelStart,
+        travelEnd: travelEnd ?? this.travelEnd,
+        inspectionStart: inspectionStart ?? this.inspectionStart,
+        inspectionEnd: inspectionEnd ?? this.inspectionEnd,
         inspectorUsername: inspectorUsername ?? this.inspectorUsername,
         plannedEggs: plannedEggs ?? this.plannedEggs,
         plannedPoultry: plannedPoultry ?? this.plannedPoultry,
@@ -24254,6 +24467,15 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
       distanceTravelledKm: data.distanceTravelledKm.present
           ? data.distanceTravelledKm.value
           : this.distanceTravelledKm,
+      travelStart:
+          data.travelStart.present ? data.travelStart.value : this.travelStart,
+      travelEnd: data.travelEnd.present ? data.travelEnd.value : this.travelEnd,
+      inspectionStart: data.inspectionStart.present
+          ? data.inspectionStart.value
+          : this.inspectionStart,
+      inspectionEnd: data.inspectionEnd.present
+          ? data.inspectionEnd.value
+          : this.inspectionEnd,
       inspectorUsername: data.inspectorUsername.present
           ? data.inspectorUsername.value
           : this.inspectorUsername,
@@ -24326,6 +24548,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
           ..write('additionalEmail2: $additionalEmail2, ')
           ..write('additionalEmail3: $additionalEmail3, ')
           ..write('distanceTravelledKm: $distanceTravelledKm, ')
+          ..write('travelStart: $travelStart, ')
+          ..write('travelEnd: $travelEnd, ')
+          ..write('inspectionStart: $inspectionStart, ')
+          ..write('inspectionEnd: $inspectionEnd, ')
           ..write('inspectorUsername: $inspectorUsername, ')
           ..write('plannedEggs: $plannedEggs, ')
           ..write('plannedPoultry: $plannedPoultry, ')
@@ -24366,6 +24592,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
         additionalEmail2,
         additionalEmail3,
         distanceTravelledKm,
+        travelStart,
+        travelEnd,
+        inspectionStart,
+        inspectionEnd,
         inspectorUsername,
         plannedEggs,
         plannedPoultry,
@@ -24405,6 +24635,10 @@ class StoreVisit extends DataClass implements Insertable<StoreVisit> {
           other.additionalEmail2 == this.additionalEmail2 &&
           other.additionalEmail3 == this.additionalEmail3 &&
           other.distanceTravelledKm == this.distanceTravelledKm &&
+          other.travelStart == this.travelStart &&
+          other.travelEnd == this.travelEnd &&
+          other.inspectionStart == this.inspectionStart &&
+          other.inspectionEnd == this.inspectionEnd &&
           other.inspectorUsername == this.inspectorUsername &&
           other.plannedEggs == this.plannedEggs &&
           other.plannedPoultry == this.plannedPoultry &&
@@ -24442,6 +24676,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
   final Value<String> additionalEmail2;
   final Value<String> additionalEmail3;
   final Value<double?> distanceTravelledKm;
+  final Value<String> travelStart;
+  final Value<String> travelEnd;
+  final Value<String> inspectionStart;
+  final Value<String> inspectionEnd;
   final Value<String> inspectorUsername;
   final Value<int> plannedEggs;
   final Value<int> plannedPoultry;
@@ -24478,6 +24716,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
     this.additionalEmail2 = const Value.absent(),
     this.additionalEmail3 = const Value.absent(),
     this.distanceTravelledKm = const Value.absent(),
+    this.travelStart = const Value.absent(),
+    this.travelEnd = const Value.absent(),
+    this.inspectionStart = const Value.absent(),
+    this.inspectionEnd = const Value.absent(),
     this.inspectorUsername = const Value.absent(),
     this.plannedEggs = const Value.absent(),
     this.plannedPoultry = const Value.absent(),
@@ -24515,6 +24757,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
     this.additionalEmail2 = const Value.absent(),
     this.additionalEmail3 = const Value.absent(),
     this.distanceTravelledKm = const Value.absent(),
+    this.travelStart = const Value.absent(),
+    this.travelEnd = const Value.absent(),
+    this.inspectionStart = const Value.absent(),
+    this.inspectionEnd = const Value.absent(),
     this.inspectorUsername = const Value.absent(),
     this.plannedEggs = const Value.absent(),
     this.plannedPoultry = const Value.absent(),
@@ -24553,6 +24799,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
     Expression<String>? additionalEmail2,
     Expression<String>? additionalEmail3,
     Expression<double>? distanceTravelledKm,
+    Expression<String>? travelStart,
+    Expression<String>? travelEnd,
+    Expression<String>? inspectionStart,
+    Expression<String>? inspectionEnd,
     Expression<String>? inspectorUsername,
     Expression<int>? plannedEggs,
     Expression<int>? plannedPoultry,
@@ -24591,6 +24841,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
       if (additionalEmail3 != null) 'additional_email3': additionalEmail3,
       if (distanceTravelledKm != null)
         'distance_travelled_km': distanceTravelledKm,
+      if (travelStart != null) 'travel_start': travelStart,
+      if (travelEnd != null) 'travel_end': travelEnd,
+      if (inspectionStart != null) 'inspection_start': inspectionStart,
+      if (inspectionEnd != null) 'inspection_end': inspectionEnd,
       if (inspectorUsername != null) 'inspector_username': inspectorUsername,
       if (plannedEggs != null) 'planned_eggs': plannedEggs,
       if (plannedPoultry != null) 'planned_poultry': plannedPoultry,
@@ -24636,6 +24890,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
       Value<String>? additionalEmail2,
       Value<String>? additionalEmail3,
       Value<double?>? distanceTravelledKm,
+      Value<String>? travelStart,
+      Value<String>? travelEnd,
+      Value<String>? inspectionStart,
+      Value<String>? inspectionEnd,
       Value<String>? inspectorUsername,
       Value<int>? plannedEggs,
       Value<int>? plannedPoultry,
@@ -24672,6 +24930,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
       additionalEmail2: additionalEmail2 ?? this.additionalEmail2,
       additionalEmail3: additionalEmail3 ?? this.additionalEmail3,
       distanceTravelledKm: distanceTravelledKm ?? this.distanceTravelledKm,
+      travelStart: travelStart ?? this.travelStart,
+      travelEnd: travelEnd ?? this.travelEnd,
+      inspectionStart: inspectionStart ?? this.inspectionStart,
+      inspectionEnd: inspectionEnd ?? this.inspectionEnd,
       inspectorUsername: inspectorUsername ?? this.inspectorUsername,
       plannedEggs: plannedEggs ?? this.plannedEggs,
       plannedPoultry: plannedPoultry ?? this.plannedPoultry,
@@ -24743,6 +25005,18 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
     if (distanceTravelledKm.present) {
       map['distance_travelled_km'] =
           Variable<double>(distanceTravelledKm.value);
+    }
+    if (travelStart.present) {
+      map['travel_start'] = Variable<String>(travelStart.value);
+    }
+    if (travelEnd.present) {
+      map['travel_end'] = Variable<String>(travelEnd.value);
+    }
+    if (inspectionStart.present) {
+      map['inspection_start'] = Variable<String>(inspectionStart.value);
+    }
+    if (inspectionEnd.present) {
+      map['inspection_end'] = Variable<String>(inspectionEnd.value);
     }
     if (inspectorUsername.present) {
       map['inspector_username'] = Variable<String>(inspectorUsername.value);
@@ -24834,6 +25108,10 @@ class StoreVisitsCompanion extends UpdateCompanion<StoreVisit> {
           ..write('additionalEmail2: $additionalEmail2, ')
           ..write('additionalEmail3: $additionalEmail3, ')
           ..write('distanceTravelledKm: $distanceTravelledKm, ')
+          ..write('travelStart: $travelStart, ')
+          ..write('travelEnd: $travelEnd, ')
+          ..write('inspectionStart: $inspectionStart, ')
+          ..write('inspectionEnd: $inspectionEnd, ')
           ..write('inspectorUsername: $inspectorUsername, ')
           ..write('plannedEggs: $plannedEggs, ')
           ..write('plannedPoultry: $plannedPoultry, ')
@@ -37471,6 +37749,14 @@ class $PmpInspectionsTable extends PmpInspections
   late final GeneratedColumn<int> storageTypeId = GeneratedColumn<int>(
       'storage_type_id', aliasedName, true,
       type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _productClassMeta =
+      const VerificationMeta('productClass');
+  @override
+  late final GeneratedColumn<String> productClass = GeneratedColumn<String>(
+      'product_class', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
   static const VerificationMeta _primarySampleSizeMeta =
       const VerificationMeta('primarySampleSize');
   @override
@@ -37654,6 +37940,46 @@ class $PmpInspectionsTable extends PmpInspections
       type: DriftSqlType.string,
       requiredDuringInsert: false,
       defaultValue: const Constant(''));
+  static const VerificationMeta _testFatMeta =
+      const VerificationMeta('testFat');
+  @override
+  late final GeneratedColumn<bool> testFat = GeneratedColumn<bool>(
+      'test_fat', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_fat" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testProteinMeta =
+      const VerificationMeta('testProtein');
+  @override
+  late final GeneratedColumn<bool> testProtein = GeneratedColumn<bool>(
+      'test_protein', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("test_protein" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testCalciumMeta =
+      const VerificationMeta('testCalcium');
+  @override
+  late final GeneratedColumn<bool> testCalcium = GeneratedColumn<bool>(
+      'test_calcium', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("test_calcium" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testDnaMeta =
+      const VerificationMeta('testDna');
+  @override
+  late final GeneratedColumn<bool> testDna = GeneratedColumn<bool>(
+      'test_dna', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_dna" IN (0, 1))'),
+      defaultValue: const Constant(false));
   static const VerificationMeta _isCourieredMeta =
       const VerificationMeta('isCouriered');
   @override
@@ -37833,6 +38159,7 @@ class $PmpInspectionsTable extends PmpInspections
         batchNumber,
         manufacturedPackedDate,
         storageTypeId,
+        productClass,
         primarySampleSize,
         markingLabelsPresent,
         scaleLabelsPresent,
@@ -37854,6 +38181,10 @@ class $PmpInspectionsTable extends PmpInspections
         laboratoryId,
         internalSampleNumber,
         testSampleSize,
+        testFat,
+        testProtein,
+        testCalcium,
+        testDna,
         isCouriered,
         labInfoComplete,
         waybill,
@@ -38027,6 +38358,12 @@ class $PmpInspectionsTable extends PmpInspections
           storageTypeId.isAcceptableOrUnknown(
               data['storage_type_id']!, _storageTypeIdMeta));
     }
+    if (data.containsKey('product_class')) {
+      context.handle(
+          _productClassMeta,
+          productClass.isAcceptableOrUnknown(
+              data['product_class']!, _productClassMeta));
+    }
     if (data.containsKey('primary_sample_size')) {
       context.handle(
           _primarySampleSizeMeta,
@@ -38153,6 +38490,26 @@ class $PmpInspectionsTable extends PmpInspections
           _testSampleSizeMeta,
           testSampleSize.isAcceptableOrUnknown(
               data['test_sample_size']!, _testSampleSizeMeta));
+    }
+    if (data.containsKey('test_fat')) {
+      context.handle(_testFatMeta,
+          testFat.isAcceptableOrUnknown(data['test_fat']!, _testFatMeta));
+    }
+    if (data.containsKey('test_protein')) {
+      context.handle(
+          _testProteinMeta,
+          testProtein.isAcceptableOrUnknown(
+              data['test_protein']!, _testProteinMeta));
+    }
+    if (data.containsKey('test_calcium')) {
+      context.handle(
+          _testCalciumMeta,
+          testCalcium.isAcceptableOrUnknown(
+              data['test_calcium']!, _testCalciumMeta));
+    }
+    if (data.containsKey('test_dna')) {
+      context.handle(_testDnaMeta,
+          testDna.isAcceptableOrUnknown(data['test_dna']!, _testDnaMeta));
     }
     if (data.containsKey('is_couriered')) {
       context.handle(
@@ -38323,6 +38680,8 @@ class $PmpInspectionsTable extends PmpInspections
           data['${effectivePrefix}manufactured_packed_date'])!,
       storageTypeId: attachedDatabase.typeMapping
           .read(DriftSqlType.int, data['${effectivePrefix}storage_type_id']),
+      productClass: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}product_class'])!,
       primarySampleSize: attachedDatabase.typeMapping.read(
           DriftSqlType.string, data['${effectivePrefix}primary_sample_size'])!,
       markingLabelsPresent: attachedDatabase.typeMapping.read(
@@ -38370,6 +38729,14 @@ class $PmpInspectionsTable extends PmpInspections
           data['${effectivePrefix}internal_sample_number'])!,
       testSampleSize: attachedDatabase.typeMapping.read(
           DriftSqlType.string, data['${effectivePrefix}test_sample_size'])!,
+      testFat: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_fat'])!,
+      testProtein: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_protein'])!,
+      testCalcium: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_calcium'])!,
+      testDna: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_dna'])!,
       isCouriered: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}is_couriered'])!,
       labInfoComplete: attachedDatabase.typeMapping.read(
@@ -38462,6 +38829,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
   /// not always a date, and the original's field is a free entry.
   final String manufacturedPackedDate;
   final int? storageTypeId;
+
+  /// The product's class as APS files it — one of [pmpProductClasses]
+  /// (Ethan, 2026-10-04). Empty on a record from before the dropdown.
+  final String productClass;
   final String primarySampleSize;
   final bool markingLabelsPresent;
   final bool scaleLabelsPresent;
@@ -38486,10 +38857,15 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
   final int? laboratoryId;
   final String internalSampleNumber;
   final String testSampleSize;
+  final bool testFat;
+  final bool testProtein;
+  final bool testCalcium;
+  final bool testDna;
 
-  /// The original's field is named IsCouriered but captioned "Hand
-  /// Delivered" — kept exactly as they are, disagreement included, because
-  /// the Pending Courier screen filters on the field.
+  /// Whether the sample went by courier, as the raw form asks it (Ethan,
+  /// 2026-10-02). The Pending Courier screen lists these until the waybill
+  /// is in. Until schema 64 the form's "Hand Delivered" switch wrote it the
+  /// other way round; the upgrade flipped those records.
   final bool isCouriered;
   final bool labInfoComplete;
 
@@ -38545,6 +38921,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       required this.batchNumber,
       required this.manufacturedPackedDate,
       this.storageTypeId,
+      required this.productClass,
       required this.primarySampleSize,
       required this.markingLabelsPresent,
       required this.scaleLabelsPresent,
@@ -38566,6 +38943,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       this.laboratoryId,
       required this.internalSampleNumber,
       required this.testSampleSize,
+      required this.testFat,
+      required this.testProtein,
+      required this.testCalcium,
+      required this.testDna,
       required this.isCouriered,
       required this.labInfoComplete,
       required this.waybill,
@@ -38619,6 +39000,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
     if (!nullToAbsent || storageTypeId != null) {
       map['storage_type_id'] = Variable<int>(storageTypeId);
     }
+    map['product_class'] = Variable<String>(productClass);
     map['primary_sample_size'] = Variable<String>(primarySampleSize);
     map['marking_labels_present'] = Variable<bool>(markingLabelsPresent);
     map['scale_labels_present'] = Variable<bool>(scaleLabelsPresent);
@@ -38649,6 +39031,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
     }
     map['internal_sample_number'] = Variable<String>(internalSampleNumber);
     map['test_sample_size'] = Variable<String>(testSampleSize);
+    map['test_fat'] = Variable<bool>(testFat);
+    map['test_protein'] = Variable<bool>(testProtein);
+    map['test_calcium'] = Variable<bool>(testCalcium);
+    map['test_dna'] = Variable<bool>(testDna);
     map['is_couriered'] = Variable<bool>(isCouriered);
     map['lab_info_complete'] = Variable<bool>(labInfoComplete);
     map['waybill'] = Variable<String>(waybill);
@@ -38712,6 +39098,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       storageTypeId: storageTypeId == null && nullToAbsent
           ? const Value.absent()
           : Value(storageTypeId),
+      productClass: Value(productClass),
       primarySampleSize: Value(primarySampleSize),
       markingLabelsPresent: Value(markingLabelsPresent),
       scaleLabelsPresent: Value(scaleLabelsPresent),
@@ -38739,6 +39126,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           : Value(laboratoryId),
       internalSampleNumber: Value(internalSampleNumber),
       testSampleSize: Value(testSampleSize),
+      testFat: Value(testFat),
+      testProtein: Value(testProtein),
+      testCalcium: Value(testCalcium),
+      testDna: Value(testDna),
       isCouriered: Value(isCouriered),
       labInfoComplete: Value(labInfoComplete),
       waybill: Value(waybill),
@@ -38802,6 +39193,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       manufacturedPackedDate:
           serializer.fromJson<String>(json['manufacturedPackedDate']),
       storageTypeId: serializer.fromJson<int?>(json['storageTypeId']),
+      productClass: serializer.fromJson<String>(json['productClass']),
       primarySampleSize: serializer.fromJson<String>(json['primarySampleSize']),
       markingLabelsPresent:
           serializer.fromJson<bool>(json['markingLabelsPresent']),
@@ -38831,6 +39223,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       internalSampleNumber:
           serializer.fromJson<String>(json['internalSampleNumber']),
       testSampleSize: serializer.fromJson<String>(json['testSampleSize']),
+      testFat: serializer.fromJson<bool>(json['testFat']),
+      testProtein: serializer.fromJson<bool>(json['testProtein']),
+      testCalcium: serializer.fromJson<bool>(json['testCalcium']),
+      testDna: serializer.fromJson<bool>(json['testDna']),
       isCouriered: serializer.fromJson<bool>(json['isCouriered']),
       labInfoComplete: serializer.fromJson<bool>(json['labInfoComplete']),
       waybill: serializer.fromJson<String>(json['waybill']),
@@ -38885,6 +39281,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       'manufacturedPackedDate':
           serializer.toJson<String>(manufacturedPackedDate),
       'storageTypeId': serializer.toJson<int?>(storageTypeId),
+      'productClass': serializer.toJson<String>(productClass),
       'primarySampleSize': serializer.toJson<String>(primarySampleSize),
       'markingLabelsPresent': serializer.toJson<bool>(markingLabelsPresent),
       'scaleLabelsPresent': serializer.toJson<bool>(scaleLabelsPresent),
@@ -38909,6 +39306,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       'laboratoryId': serializer.toJson<int?>(laboratoryId),
       'internalSampleNumber': serializer.toJson<String>(internalSampleNumber),
       'testSampleSize': serializer.toJson<String>(testSampleSize),
+      'testFat': serializer.toJson<bool>(testFat),
+      'testProtein': serializer.toJson<bool>(testProtein),
+      'testCalcium': serializer.toJson<bool>(testCalcium),
+      'testDna': serializer.toJson<bool>(testDna),
       'isCouriered': serializer.toJson<bool>(isCouriered),
       'labInfoComplete': serializer.toJson<bool>(labInfoComplete),
       'waybill': serializer.toJson<String>(waybill),
@@ -38958,6 +39359,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           String? batchNumber,
           String? manufacturedPackedDate,
           Value<int?> storageTypeId = const Value.absent(),
+          String? productClass,
           String? primarySampleSize,
           bool? markingLabelsPresent,
           bool? scaleLabelsPresent,
@@ -38979,6 +39381,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           Value<int?> laboratoryId = const Value.absent(),
           String? internalSampleNumber,
           String? testSampleSize,
+          bool? testFat,
+          bool? testProtein,
+          bool? testCalcium,
+          bool? testDna,
           bool? isCouriered,
           bool? labInfoComplete,
           String? waybill,
@@ -39026,6 +39432,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
             manufacturedPackedDate ?? this.manufacturedPackedDate,
         storageTypeId:
             storageTypeId.present ? storageTypeId.value : this.storageTypeId,
+        productClass: productClass ?? this.productClass,
         primarySampleSize: primarySampleSize ?? this.primarySampleSize,
         markingLabelsPresent: markingLabelsPresent ?? this.markingLabelsPresent,
         scaleLabelsPresent: scaleLabelsPresent ?? this.scaleLabelsPresent,
@@ -39055,6 +39462,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
             laboratoryId.present ? laboratoryId.value : this.laboratoryId,
         internalSampleNumber: internalSampleNumber ?? this.internalSampleNumber,
         testSampleSize: testSampleSize ?? this.testSampleSize,
+        testFat: testFat ?? this.testFat,
+        testProtein: testProtein ?? this.testProtein,
+        testCalcium: testCalcium ?? this.testCalcium,
+        testDna: testDna ?? this.testDna,
         isCouriered: isCouriered ?? this.isCouriered,
         labInfoComplete: labInfoComplete ?? this.labInfoComplete,
         waybill: waybill ?? this.waybill,
@@ -39143,6 +39554,9 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       storageTypeId: data.storageTypeId.present
           ? data.storageTypeId.value
           : this.storageTypeId,
+      productClass: data.productClass.present
+          ? data.productClass.value
+          : this.productClass,
       primarySampleSize: data.primarySampleSize.present
           ? data.primarySampleSize.value
           : this.primarySampleSize,
@@ -39204,6 +39618,12 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
       testSampleSize: data.testSampleSize.present
           ? data.testSampleSize.value
           : this.testSampleSize,
+      testFat: data.testFat.present ? data.testFat.value : this.testFat,
+      testProtein:
+          data.testProtein.present ? data.testProtein.value : this.testProtein,
+      testCalcium:
+          data.testCalcium.present ? data.testCalcium.value : this.testCalcium,
+      testDna: data.testDna.present ? data.testDna.value : this.testDna,
       isCouriered:
           data.isCouriered.present ? data.isCouriered.value : this.isCouriered,
       labInfoComplete: data.labInfoComplete.present
@@ -39280,6 +39700,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           ..write('batchNumber: $batchNumber, ')
           ..write('manufacturedPackedDate: $manufacturedPackedDate, ')
           ..write('storageTypeId: $storageTypeId, ')
+          ..write('productClass: $productClass, ')
           ..write('primarySampleSize: $primarySampleSize, ')
           ..write('markingLabelsPresent: $markingLabelsPresent, ')
           ..write('scaleLabelsPresent: $scaleLabelsPresent, ')
@@ -39302,6 +39723,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           ..write('laboratoryId: $laboratoryId, ')
           ..write('internalSampleNumber: $internalSampleNumber, ')
           ..write('testSampleSize: $testSampleSize, ')
+          ..write('testFat: $testFat, ')
+          ..write('testProtein: $testProtein, ')
+          ..write('testCalcium: $testCalcium, ')
+          ..write('testDna: $testDna, ')
           ..write('isCouriered: $isCouriered, ')
           ..write('labInfoComplete: $labInfoComplete, ')
           ..write('waybill: $waybill, ')
@@ -39351,6 +39776,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
         batchNumber,
         manufacturedPackedDate,
         storageTypeId,
+        productClass,
         primarySampleSize,
         markingLabelsPresent,
         scaleLabelsPresent,
@@ -39372,6 +39798,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
         laboratoryId,
         internalSampleNumber,
         testSampleSize,
+        testFat,
+        testProtein,
+        testCalcium,
+        testDna,
         isCouriered,
         labInfoComplete,
         waybill,
@@ -39421,6 +39851,7 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           other.batchNumber == this.batchNumber &&
           other.manufacturedPackedDate == this.manufacturedPackedDate &&
           other.storageTypeId == this.storageTypeId &&
+          other.productClass == this.productClass &&
           other.primarySampleSize == this.primarySampleSize &&
           other.markingLabelsPresent == this.markingLabelsPresent &&
           other.scaleLabelsPresent == this.scaleLabelsPresent &&
@@ -39443,6 +39874,10 @@ class PmpInspection extends DataClass implements Insertable<PmpInspection> {
           other.laboratoryId == this.laboratoryId &&
           other.internalSampleNumber == this.internalSampleNumber &&
           other.testSampleSize == this.testSampleSize &&
+          other.testFat == this.testFat &&
+          other.testProtein == this.testProtein &&
+          other.testCalcium == this.testCalcium &&
+          other.testDna == this.testDna &&
           other.isCouriered == this.isCouriered &&
           other.labInfoComplete == this.labInfoComplete &&
           other.waybill == this.waybill &&
@@ -39489,6 +39924,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
   final Value<String> batchNumber;
   final Value<String> manufacturedPackedDate;
   final Value<int?> storageTypeId;
+  final Value<String> productClass;
   final Value<String> primarySampleSize;
   final Value<bool> markingLabelsPresent;
   final Value<bool> scaleLabelsPresent;
@@ -39510,6 +39946,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
   final Value<int?> laboratoryId;
   final Value<String> internalSampleNumber;
   final Value<String> testSampleSize;
+  final Value<bool> testFat;
+  final Value<bool> testProtein;
+  final Value<bool> testCalcium;
+  final Value<bool> testDna;
   final Value<bool> isCouriered;
   final Value<bool> labInfoComplete;
   final Value<String> waybill;
@@ -39555,6 +39995,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     this.batchNumber = const Value.absent(),
     this.manufacturedPackedDate = const Value.absent(),
     this.storageTypeId = const Value.absent(),
+    this.productClass = const Value.absent(),
     this.primarySampleSize = const Value.absent(),
     this.markingLabelsPresent = const Value.absent(),
     this.scaleLabelsPresent = const Value.absent(),
@@ -39576,6 +40017,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     this.laboratoryId = const Value.absent(),
     this.internalSampleNumber = const Value.absent(),
     this.testSampleSize = const Value.absent(),
+    this.testFat = const Value.absent(),
+    this.testProtein = const Value.absent(),
+    this.testCalcium = const Value.absent(),
+    this.testDna = const Value.absent(),
     this.isCouriered = const Value.absent(),
     this.labInfoComplete = const Value.absent(),
     this.waybill = const Value.absent(),
@@ -39622,6 +40067,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     this.batchNumber = const Value.absent(),
     this.manufacturedPackedDate = const Value.absent(),
     this.storageTypeId = const Value.absent(),
+    this.productClass = const Value.absent(),
     this.primarySampleSize = const Value.absent(),
     this.markingLabelsPresent = const Value.absent(),
     this.scaleLabelsPresent = const Value.absent(),
@@ -39643,6 +40089,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     this.laboratoryId = const Value.absent(),
     this.internalSampleNumber = const Value.absent(),
     this.testSampleSize = const Value.absent(),
+    this.testFat = const Value.absent(),
+    this.testProtein = const Value.absent(),
+    this.testCalcium = const Value.absent(),
+    this.testDna = const Value.absent(),
     this.isCouriered = const Value.absent(),
     this.labInfoComplete = const Value.absent(),
     this.waybill = const Value.absent(),
@@ -39691,6 +40141,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     Expression<String>? batchNumber,
     Expression<String>? manufacturedPackedDate,
     Expression<int>? storageTypeId,
+    Expression<String>? productClass,
     Expression<String>? primarySampleSize,
     Expression<bool>? markingLabelsPresent,
     Expression<bool>? scaleLabelsPresent,
@@ -39712,6 +40163,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     Expression<int>? laboratoryId,
     Expression<String>? internalSampleNumber,
     Expression<String>? testSampleSize,
+    Expression<bool>? testFat,
+    Expression<bool>? testProtein,
+    Expression<bool>? testCalcium,
+    Expression<bool>? testDna,
     Expression<bool>? isCouriered,
     Expression<bool>? labInfoComplete,
     Expression<String>? waybill,
@@ -39763,6 +40218,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       if (manufacturedPackedDate != null)
         'manufactured_packed_date': manufacturedPackedDate,
       if (storageTypeId != null) 'storage_type_id': storageTypeId,
+      if (productClass != null) 'product_class': productClass,
       if (primarySampleSize != null) 'primary_sample_size': primarySampleSize,
       if (markingLabelsPresent != null)
         'marking_labels_present': markingLabelsPresent,
@@ -39793,6 +40249,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       if (internalSampleNumber != null)
         'internal_sample_number': internalSampleNumber,
       if (testSampleSize != null) 'test_sample_size': testSampleSize,
+      if (testFat != null) 'test_fat': testFat,
+      if (testProtein != null) 'test_protein': testProtein,
+      if (testCalcium != null) 'test_calcium': testCalcium,
+      if (testDna != null) 'test_dna': testDna,
       if (isCouriered != null) 'is_couriered': isCouriered,
       if (labInfoComplete != null) 'lab_info_complete': labInfoComplete,
       if (waybill != null) 'waybill': waybill,
@@ -39844,6 +40304,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       Value<String>? batchNumber,
       Value<String>? manufacturedPackedDate,
       Value<int?>? storageTypeId,
+      Value<String>? productClass,
       Value<String>? primarySampleSize,
       Value<bool>? markingLabelsPresent,
       Value<bool>? scaleLabelsPresent,
@@ -39865,6 +40326,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       Value<int?>? laboratoryId,
       Value<String>? internalSampleNumber,
       Value<String>? testSampleSize,
+      Value<bool>? testFat,
+      Value<bool>? testProtein,
+      Value<bool>? testCalcium,
+      Value<bool>? testDna,
       Value<bool>? isCouriered,
       Value<bool>? labInfoComplete,
       Value<String>? waybill,
@@ -39912,6 +40377,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       manufacturedPackedDate:
           manufacturedPackedDate ?? this.manufacturedPackedDate,
       storageTypeId: storageTypeId ?? this.storageTypeId,
+      productClass: productClass ?? this.productClass,
       primarySampleSize: primarySampleSize ?? this.primarySampleSize,
       markingLabelsPresent: markingLabelsPresent ?? this.markingLabelsPresent,
       scaleLabelsPresent: scaleLabelsPresent ?? this.scaleLabelsPresent,
@@ -39937,6 +40403,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
       laboratoryId: laboratoryId ?? this.laboratoryId,
       internalSampleNumber: internalSampleNumber ?? this.internalSampleNumber,
       testSampleSize: testSampleSize ?? this.testSampleSize,
+      testFat: testFat ?? this.testFat,
+      testProtein: testProtein ?? this.testProtein,
+      testCalcium: testCalcium ?? this.testCalcium,
+      testDna: testDna ?? this.testDna,
       isCouriered: isCouriered ?? this.isCouriered,
       labInfoComplete: labInfoComplete ?? this.labInfoComplete,
       waybill: waybill ?? this.waybill,
@@ -40041,6 +40511,9 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     if (storageTypeId.present) {
       map['storage_type_id'] = Variable<int>(storageTypeId.value);
     }
+    if (productClass.present) {
+      map['product_class'] = Variable<String>(productClass.value);
+    }
     if (primarySampleSize.present) {
       map['primary_sample_size'] = Variable<String>(primarySampleSize.value);
     }
@@ -40110,6 +40583,18 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
     }
     if (testSampleSize.present) {
       map['test_sample_size'] = Variable<String>(testSampleSize.value);
+    }
+    if (testFat.present) {
+      map['test_fat'] = Variable<bool>(testFat.value);
+    }
+    if (testProtein.present) {
+      map['test_protein'] = Variable<bool>(testProtein.value);
+    }
+    if (testCalcium.present) {
+      map['test_calcium'] = Variable<bool>(testCalcium.value);
+    }
+    if (testDna.present) {
+      map['test_dna'] = Variable<bool>(testDna.value);
     }
     if (isCouriered.present) {
       map['is_couriered'] = Variable<bool>(isCouriered.value);
@@ -40205,6 +40690,7 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
           ..write('batchNumber: $batchNumber, ')
           ..write('manufacturedPackedDate: $manufacturedPackedDate, ')
           ..write('storageTypeId: $storageTypeId, ')
+          ..write('productClass: $productClass, ')
           ..write('primarySampleSize: $primarySampleSize, ')
           ..write('markingLabelsPresent: $markingLabelsPresent, ')
           ..write('scaleLabelsPresent: $scaleLabelsPresent, ')
@@ -40227,6 +40713,10 @@ class PmpInspectionsCompanion extends UpdateCompanion<PmpInspection> {
           ..write('laboratoryId: $laboratoryId, ')
           ..write('internalSampleNumber: $internalSampleNumber, ')
           ..write('testSampleSize: $testSampleSize, ')
+          ..write('testFat: $testFat, ')
+          ..write('testProtein: $testProtein, ')
+          ..write('testCalcium: $testCalcium, ')
+          ..write('testDna: $testDna, ')
           ..write('isCouriered: $isCouriered, ')
           ..write('labInfoComplete: $labInfoComplete, ')
           ..write('waybill: $waybill, ')
@@ -45035,6 +45525,14 @@ class $RawRmpInspectionsTable extends RawRmpInspections
   late final GeneratedColumn<int> storageTypeId = GeneratedColumn<int>(
       'storage_type_id', aliasedName, true,
       type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _productClassMeta =
+      const VerificationMeta('productClass');
+  @override
+  late final GeneratedColumn<String> productClass = GeneratedColumn<String>(
+      'product_class', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
   static const VerificationMeta _markingLabelsPresentMeta =
       const VerificationMeta('markingLabelsPresent');
   @override
@@ -45211,6 +45709,56 @@ class $RawRmpInspectionsTable extends RawRmpInspections
       requiredDuringInsert: false,
       defaultConstraints: GeneratedColumn.constraintIsAlways(
           'CHECK ("calcium_test_required" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testFatMeta =
+      const VerificationMeta('testFat');
+  @override
+  late final GeneratedColumn<bool> testFat = GeneratedColumn<bool>(
+      'test_fat', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_fat" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testProteinMeta =
+      const VerificationMeta('testProtein');
+  @override
+  late final GeneratedColumn<bool> testProtein = GeneratedColumn<bool>(
+      'test_protein', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("test_protein" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testDnaMeta =
+      const VerificationMeta('testDna');
+  @override
+  late final GeneratedColumn<bool> testDna = GeneratedColumn<bool>(
+      'test_dna', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_dna" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testSoyaMeta =
+      const VerificationMeta('testSoya');
+  @override
+  late final GeneratedColumn<bool> testSoya = GeneratedColumn<bool>(
+      'test_soya', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_soya" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _testStarchMeta =
+      const VerificationMeta('testStarch');
+  @override
+  late final GeneratedColumn<bool> testStarch = GeneratedColumn<bool>(
+      'test_starch', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("test_starch" IN (0, 1))'),
       defaultValue: const Constant(false));
   static const VerificationMeta _isCourieredMeta =
       const VerificationMeta('isCouriered');
@@ -45419,6 +45967,7 @@ class $RawRmpInspectionsTable extends RawRmpInspections
         batchNumber,
         manufacturedPackedDate,
         storageTypeId,
+        productClass,
         markingLabelsPresent,
         scaleLabelsPresent,
         containersPresent,
@@ -45439,6 +45988,11 @@ class $RawRmpInspectionsTable extends RawRmpInspections
         dnaSpeciesText,
         productNameAbsent,
         calciumTestRequired,
+        testFat,
+        testProtein,
+        testDna,
+        testSoya,
+        testStarch,
         isCouriered,
         labInfoComplete,
         waybill,
@@ -45616,6 +46170,12 @@ class $RawRmpInspectionsTable extends RawRmpInspections
           storageTypeId.isAcceptableOrUnknown(
               data['storage_type_id']!, _storageTypeIdMeta));
     }
+    if (data.containsKey('product_class')) {
+      context.handle(
+          _productClassMeta,
+          productClass.isAcceptableOrUnknown(
+              data['product_class']!, _productClassMeta));
+    }
     if (data.containsKey('marking_labels_present')) {
       context.handle(
           _markingLabelsPresentMeta,
@@ -45736,6 +46296,30 @@ class $RawRmpInspectionsTable extends RawRmpInspections
           _calciumTestRequiredMeta,
           calciumTestRequired.isAcceptableOrUnknown(
               data['calcium_test_required']!, _calciumTestRequiredMeta));
+    }
+    if (data.containsKey('test_fat')) {
+      context.handle(_testFatMeta,
+          testFat.isAcceptableOrUnknown(data['test_fat']!, _testFatMeta));
+    }
+    if (data.containsKey('test_protein')) {
+      context.handle(
+          _testProteinMeta,
+          testProtein.isAcceptableOrUnknown(
+              data['test_protein']!, _testProteinMeta));
+    }
+    if (data.containsKey('test_dna')) {
+      context.handle(_testDnaMeta,
+          testDna.isAcceptableOrUnknown(data['test_dna']!, _testDnaMeta));
+    }
+    if (data.containsKey('test_soya')) {
+      context.handle(_testSoyaMeta,
+          testSoya.isAcceptableOrUnknown(data['test_soya']!, _testSoyaMeta));
+    }
+    if (data.containsKey('test_starch')) {
+      context.handle(
+          _testStarchMeta,
+          testStarch.isAcceptableOrUnknown(
+              data['test_starch']!, _testStarchMeta));
     }
     if (data.containsKey('is_couriered')) {
       context.handle(
@@ -45931,6 +46515,8 @@ class $RawRmpInspectionsTable extends RawRmpInspections
           data['${effectivePrefix}manufactured_packed_date'])!,
       storageTypeId: attachedDatabase.typeMapping
           .read(DriftSqlType.int, data['${effectivePrefix}storage_type_id']),
+      productClass: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}product_class'])!,
       markingLabelsPresent: attachedDatabase.typeMapping.read(
           DriftSqlType.bool, data['${effectivePrefix}marking_labels_present'])!,
       scaleLabelsPresent: attachedDatabase.typeMapping.read(
@@ -45975,6 +46561,16 @@ class $RawRmpInspectionsTable extends RawRmpInspections
           DriftSqlType.bool, data['${effectivePrefix}product_name_absent'])!,
       calciumTestRequired: attachedDatabase.typeMapping.read(
           DriftSqlType.bool, data['${effectivePrefix}calcium_test_required'])!,
+      testFat: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_fat'])!,
+      testProtein: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_protein'])!,
+      testDna: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_dna'])!,
+      testSoya: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_soya'])!,
+      testStarch: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}test_starch'])!,
       isCouriered: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}is_couriered'])!,
       labInfoComplete: attachedDatabase.typeMapping.read(
@@ -46078,6 +46674,10 @@ class RawRmpInspection extends DataClass
   final String batchNumber;
   final String manufacturedPackedDate;
   final int? storageTypeId;
+
+  /// The product's class as APS files it — one of [rawProductClasses]
+  /// (Ethan, 2026-10-04). Empty on a record from before the dropdown.
+  final String productClass;
   final bool markingLabelsPresent;
   final bool scaleLabelsPresent;
   final bool containersPresent;
@@ -46107,12 +46707,23 @@ class RawRmpInspection extends DataClass
   /// permanently hidden. Carried so nothing is lost if that ever changes.
   final String dnaSpeciesText;
 
-  /// "Request Calcuim Content Test (for MRM only)" — the original's caption,
+  /// "Request Calcium Content Test (for MRM only)" — the original's caption,
   /// typo and all.
   /// The inspector's answer when the product-name row is unticked: was the
   /// name absent altogether (a seizure) or merely deficient (a deviation)?
   final bool productNameAbsent;
   final bool calciumTestRequired;
+  final bool testFat;
+  final bool testProtein;
+  final bool testDna;
+
+  /// Soya and starch, which used to be reachable only by picking
+  /// "Category B - Soya Protein & Starch Content" (Ethan, 2026-10-23). The
+  /// testing-category question asked the same thing a second time and
+  /// disagreed with this one, so it came off the form and these two moved
+  /// here with the rest.
+  final bool testSoya;
+  final bool testStarch;
 
   /// The original's field is named IsCouriered but captioned "Hand
   /// Delivered" — kept exactly as they are, disagreement included, because
@@ -46188,6 +46799,7 @@ class RawRmpInspection extends DataClass
       required this.batchNumber,
       required this.manufacturedPackedDate,
       this.storageTypeId,
+      required this.productClass,
       required this.markingLabelsPresent,
       required this.scaleLabelsPresent,
       required this.containersPresent,
@@ -46208,6 +46820,11 @@ class RawRmpInspection extends DataClass
       required this.dnaSpeciesText,
       required this.productNameAbsent,
       required this.calciumTestRequired,
+      required this.testFat,
+      required this.testProtein,
+      required this.testDna,
+      required this.testSoya,
+      required this.testStarch,
       required this.isCouriered,
       required this.labInfoComplete,
       required this.waybill,
@@ -46265,6 +46882,7 @@ class RawRmpInspection extends DataClass
     if (!nullToAbsent || storageTypeId != null) {
       map['storage_type_id'] = Variable<int>(storageTypeId);
     }
+    map['product_class'] = Variable<String>(productClass);
     map['marking_labels_present'] = Variable<bool>(markingLabelsPresent);
     map['scale_labels_present'] = Variable<bool>(scaleLabelsPresent);
     map['containers_present'] = Variable<bool>(containersPresent);
@@ -46292,6 +46910,11 @@ class RawRmpInspection extends DataClass
     map['dna_species_text'] = Variable<String>(dnaSpeciesText);
     map['product_name_absent'] = Variable<bool>(productNameAbsent);
     map['calcium_test_required'] = Variable<bool>(calciumTestRequired);
+    map['test_fat'] = Variable<bool>(testFat);
+    map['test_protein'] = Variable<bool>(testProtein);
+    map['test_dna'] = Variable<bool>(testDna);
+    map['test_soya'] = Variable<bool>(testSoya);
+    map['test_starch'] = Variable<bool>(testStarch);
     map['is_couriered'] = Variable<bool>(isCouriered);
     map['lab_info_complete'] = Variable<bool>(labInfoComplete);
     map['waybill'] = Variable<String>(waybill);
@@ -46362,6 +46985,7 @@ class RawRmpInspection extends DataClass
       storageTypeId: storageTypeId == null && nullToAbsent
           ? const Value.absent()
           : Value(storageTypeId),
+      productClass: Value(productClass),
       markingLabelsPresent: Value(markingLabelsPresent),
       scaleLabelsPresent: Value(scaleLabelsPresent),
       containersPresent: Value(containersPresent),
@@ -46386,6 +47010,11 @@ class RawRmpInspection extends DataClass
       dnaSpeciesText: Value(dnaSpeciesText),
       productNameAbsent: Value(productNameAbsent),
       calciumTestRequired: Value(calciumTestRequired),
+      testFat: Value(testFat),
+      testProtein: Value(testProtein),
+      testDna: Value(testDna),
+      testSoya: Value(testSoya),
+      testStarch: Value(testStarch),
       isCouriered: Value(isCouriered),
       labInfoComplete: Value(labInfoComplete),
       waybill: Value(waybill),
@@ -46455,6 +47084,7 @@ class RawRmpInspection extends DataClass
       manufacturedPackedDate:
           serializer.fromJson<String>(json['manufacturedPackedDate']),
       storageTypeId: serializer.fromJson<int?>(json['storageTypeId']),
+      productClass: serializer.fromJson<String>(json['productClass']),
       markingLabelsPresent:
           serializer.fromJson<bool>(json['markingLabelsPresent']),
       scaleLabelsPresent: serializer.fromJson<bool>(json['scaleLabelsPresent']),
@@ -46483,6 +47113,11 @@ class RawRmpInspection extends DataClass
       productNameAbsent: serializer.fromJson<bool>(json['productNameAbsent']),
       calciumTestRequired:
           serializer.fromJson<bool>(json['calciumTestRequired']),
+      testFat: serializer.fromJson<bool>(json['testFat']),
+      testProtein: serializer.fromJson<bool>(json['testProtein']),
+      testDna: serializer.fromJson<bool>(json['testDna']),
+      testSoya: serializer.fromJson<bool>(json['testSoya']),
+      testStarch: serializer.fromJson<bool>(json['testStarch']),
       isCouriered: serializer.fromJson<bool>(json['isCouriered']),
       labInfoComplete: serializer.fromJson<bool>(json['labInfoComplete']),
       waybill: serializer.fromJson<String>(json['waybill']),
@@ -46545,6 +47180,7 @@ class RawRmpInspection extends DataClass
       'manufacturedPackedDate':
           serializer.toJson<String>(manufacturedPackedDate),
       'storageTypeId': serializer.toJson<int?>(storageTypeId),
+      'productClass': serializer.toJson<String>(productClass),
       'markingLabelsPresent': serializer.toJson<bool>(markingLabelsPresent),
       'scaleLabelsPresent': serializer.toJson<bool>(scaleLabelsPresent),
       'containersPresent': serializer.toJson<bool>(containersPresent),
@@ -46568,6 +47204,11 @@ class RawRmpInspection extends DataClass
       'dnaSpeciesText': serializer.toJson<String>(dnaSpeciesText),
       'productNameAbsent': serializer.toJson<bool>(productNameAbsent),
       'calciumTestRequired': serializer.toJson<bool>(calciumTestRequired),
+      'testFat': serializer.toJson<bool>(testFat),
+      'testProtein': serializer.toJson<bool>(testProtein),
+      'testDna': serializer.toJson<bool>(testDna),
+      'testSoya': serializer.toJson<bool>(testSoya),
+      'testStarch': serializer.toJson<bool>(testStarch),
       'isCouriered': serializer.toJson<bool>(isCouriered),
       'labInfoComplete': serializer.toJson<bool>(labInfoComplete),
       'waybill': serializer.toJson<String>(waybill),
@@ -46623,6 +47264,7 @@ class RawRmpInspection extends DataClass
           String? batchNumber,
           String? manufacturedPackedDate,
           Value<int?> storageTypeId = const Value.absent(),
+          String? productClass,
           bool? markingLabelsPresent,
           bool? scaleLabelsPresent,
           bool? containersPresent,
@@ -46643,6 +47285,11 @@ class RawRmpInspection extends DataClass
           String? dnaSpeciesText,
           bool? productNameAbsent,
           bool? calciumTestRequired,
+          bool? testFat,
+          bool? testProtein,
+          bool? testDna,
+          bool? testSoya,
+          bool? testStarch,
           bool? isCouriered,
           bool? labInfoComplete,
           String? waybill,
@@ -46694,6 +47341,7 @@ class RawRmpInspection extends DataClass
             manufacturedPackedDate ?? this.manufacturedPackedDate,
         storageTypeId:
             storageTypeId.present ? storageTypeId.value : this.storageTypeId,
+        productClass: productClass ?? this.productClass,
         markingLabelsPresent: markingLabelsPresent ?? this.markingLabelsPresent,
         scaleLabelsPresent: scaleLabelsPresent ?? this.scaleLabelsPresent,
         containersPresent: containersPresent ?? this.containersPresent,
@@ -46720,6 +47368,11 @@ class RawRmpInspection extends DataClass
         dnaSpeciesText: dnaSpeciesText ?? this.dnaSpeciesText,
         productNameAbsent: productNameAbsent ?? this.productNameAbsent,
         calciumTestRequired: calciumTestRequired ?? this.calciumTestRequired,
+        testFat: testFat ?? this.testFat,
+        testProtein: testProtein ?? this.testProtein,
+        testDna: testDna ?? this.testDna,
+        testSoya: testSoya ?? this.testSoya,
+        testStarch: testStarch ?? this.testStarch,
         isCouriered: isCouriered ?? this.isCouriered,
         labInfoComplete: labInfoComplete ?? this.labInfoComplete,
         waybill: waybill ?? this.waybill,
@@ -46816,6 +47469,9 @@ class RawRmpInspection extends DataClass
       storageTypeId: data.storageTypeId.present
           ? data.storageTypeId.value
           : this.storageTypeId,
+      productClass: data.productClass.present
+          ? data.productClass.value
+          : this.productClass,
       markingLabelsPresent: data.markingLabelsPresent.present
           ? data.markingLabelsPresent.value
           : this.markingLabelsPresent,
@@ -46874,6 +47530,13 @@ class RawRmpInspection extends DataClass
       calciumTestRequired: data.calciumTestRequired.present
           ? data.calciumTestRequired.value
           : this.calciumTestRequired,
+      testFat: data.testFat.present ? data.testFat.value : this.testFat,
+      testProtein:
+          data.testProtein.present ? data.testProtein.value : this.testProtein,
+      testDna: data.testDna.present ? data.testDna.value : this.testDna,
+      testSoya: data.testSoya.present ? data.testSoya.value : this.testSoya,
+      testStarch:
+          data.testStarch.present ? data.testStarch.value : this.testStarch,
       isCouriered:
           data.isCouriered.present ? data.isCouriered.value : this.isCouriered,
       labInfoComplete: data.labInfoComplete.present
@@ -46961,6 +47624,7 @@ class RawRmpInspection extends DataClass
           ..write('batchNumber: $batchNumber, ')
           ..write('manufacturedPackedDate: $manufacturedPackedDate, ')
           ..write('storageTypeId: $storageTypeId, ')
+          ..write('productClass: $productClass, ')
           ..write('markingLabelsPresent: $markingLabelsPresent, ')
           ..write('scaleLabelsPresent: $scaleLabelsPresent, ')
           ..write('containersPresent: $containersPresent, ')
@@ -46982,6 +47646,11 @@ class RawRmpInspection extends DataClass
           ..write('dnaSpeciesText: $dnaSpeciesText, ')
           ..write('productNameAbsent: $productNameAbsent, ')
           ..write('calciumTestRequired: $calciumTestRequired, ')
+          ..write('testFat: $testFat, ')
+          ..write('testProtein: $testProtein, ')
+          ..write('testDna: $testDna, ')
+          ..write('testSoya: $testSoya, ')
+          ..write('testStarch: $testStarch, ')
           ..write('isCouriered: $isCouriered, ')
           ..write('labInfoComplete: $labInfoComplete, ')
           ..write('waybill: $waybill, ')
@@ -47035,6 +47704,7 @@ class RawRmpInspection extends DataClass
         batchNumber,
         manufacturedPackedDate,
         storageTypeId,
+        productClass,
         markingLabelsPresent,
         scaleLabelsPresent,
         containersPresent,
@@ -47055,6 +47725,11 @@ class RawRmpInspection extends DataClass
         dnaSpeciesText,
         productNameAbsent,
         calciumTestRequired,
+        testFat,
+        testProtein,
+        testDna,
+        testSoya,
+        testStarch,
         isCouriered,
         labInfoComplete,
         waybill,
@@ -47108,6 +47783,7 @@ class RawRmpInspection extends DataClass
           other.batchNumber == this.batchNumber &&
           other.manufacturedPackedDate == this.manufacturedPackedDate &&
           other.storageTypeId == this.storageTypeId &&
+          other.productClass == this.productClass &&
           other.markingLabelsPresent == this.markingLabelsPresent &&
           other.scaleLabelsPresent == this.scaleLabelsPresent &&
           other.containersPresent == this.containersPresent &&
@@ -47129,6 +47805,11 @@ class RawRmpInspection extends DataClass
           other.dnaSpeciesText == this.dnaSpeciesText &&
           other.productNameAbsent == this.productNameAbsent &&
           other.calciumTestRequired == this.calciumTestRequired &&
+          other.testFat == this.testFat &&
+          other.testProtein == this.testProtein &&
+          other.testDna == this.testDna &&
+          other.testSoya == this.testSoya &&
+          other.testStarch == this.testStarch &&
           other.isCouriered == this.isCouriered &&
           other.labInfoComplete == this.labInfoComplete &&
           other.waybill == this.waybill &&
@@ -47179,6 +47860,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
   final Value<String> batchNumber;
   final Value<String> manufacturedPackedDate;
   final Value<int?> storageTypeId;
+  final Value<String> productClass;
   final Value<bool> markingLabelsPresent;
   final Value<bool> scaleLabelsPresent;
   final Value<bool> containersPresent;
@@ -47199,6 +47881,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
   final Value<String> dnaSpeciesText;
   final Value<bool> productNameAbsent;
   final Value<bool> calciumTestRequired;
+  final Value<bool> testFat;
+  final Value<bool> testProtein;
+  final Value<bool> testDna;
+  final Value<bool> testSoya;
+  final Value<bool> testStarch;
   final Value<bool> isCouriered;
   final Value<bool> labInfoComplete;
   final Value<String> waybill;
@@ -47248,6 +47935,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     this.batchNumber = const Value.absent(),
     this.manufacturedPackedDate = const Value.absent(),
     this.storageTypeId = const Value.absent(),
+    this.productClass = const Value.absent(),
     this.markingLabelsPresent = const Value.absent(),
     this.scaleLabelsPresent = const Value.absent(),
     this.containersPresent = const Value.absent(),
@@ -47268,6 +47956,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     this.dnaSpeciesText = const Value.absent(),
     this.productNameAbsent = const Value.absent(),
     this.calciumTestRequired = const Value.absent(),
+    this.testFat = const Value.absent(),
+    this.testProtein = const Value.absent(),
+    this.testDna = const Value.absent(),
+    this.testSoya = const Value.absent(),
+    this.testStarch = const Value.absent(),
     this.isCouriered = const Value.absent(),
     this.labInfoComplete = const Value.absent(),
     this.waybill = const Value.absent(),
@@ -47318,6 +48011,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     this.batchNumber = const Value.absent(),
     this.manufacturedPackedDate = const Value.absent(),
     this.storageTypeId = const Value.absent(),
+    this.productClass = const Value.absent(),
     this.markingLabelsPresent = const Value.absent(),
     this.scaleLabelsPresent = const Value.absent(),
     this.containersPresent = const Value.absent(),
@@ -47338,6 +48032,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     this.dnaSpeciesText = const Value.absent(),
     this.productNameAbsent = const Value.absent(),
     this.calciumTestRequired = const Value.absent(),
+    this.testFat = const Value.absent(),
+    this.testProtein = const Value.absent(),
+    this.testDna = const Value.absent(),
+    this.testSoya = const Value.absent(),
+    this.testStarch = const Value.absent(),
     this.isCouriered = const Value.absent(),
     this.labInfoComplete = const Value.absent(),
     this.waybill = const Value.absent(),
@@ -47390,6 +48089,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     Expression<String>? batchNumber,
     Expression<String>? manufacturedPackedDate,
     Expression<int>? storageTypeId,
+    Expression<String>? productClass,
     Expression<bool>? markingLabelsPresent,
     Expression<bool>? scaleLabelsPresent,
     Expression<bool>? containersPresent,
@@ -47410,6 +48110,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     Expression<String>? dnaSpeciesText,
     Expression<bool>? productNameAbsent,
     Expression<bool>? calciumTestRequired,
+    Expression<bool>? testFat,
+    Expression<bool>? testProtein,
+    Expression<bool>? testDna,
+    Expression<bool>? testSoya,
+    Expression<bool>? testStarch,
     Expression<bool>? isCouriered,
     Expression<bool>? labInfoComplete,
     Expression<String>? waybill,
@@ -47465,6 +48170,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       if (manufacturedPackedDate != null)
         'manufactured_packed_date': manufacturedPackedDate,
       if (storageTypeId != null) 'storage_type_id': storageTypeId,
+      if (productClass != null) 'product_class': productClass,
       if (markingLabelsPresent != null)
         'marking_labels_present': markingLabelsPresent,
       if (scaleLabelsPresent != null)
@@ -47494,6 +48200,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       if (productNameAbsent != null) 'product_name_absent': productNameAbsent,
       if (calciumTestRequired != null)
         'calcium_test_required': calciumTestRequired,
+      if (testFat != null) 'test_fat': testFat,
+      if (testProtein != null) 'test_protein': testProtein,
+      if (testDna != null) 'test_dna': testDna,
+      if (testSoya != null) 'test_soya': testSoya,
+      if (testStarch != null) 'test_starch': testStarch,
       if (isCouriered != null) 'is_couriered': isCouriered,
       if (labInfoComplete != null) 'lab_info_complete': labInfoComplete,
       if (waybill != null) 'waybill': waybill,
@@ -47553,6 +48264,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       Value<String>? batchNumber,
       Value<String>? manufacturedPackedDate,
       Value<int?>? storageTypeId,
+      Value<String>? productClass,
       Value<bool>? markingLabelsPresent,
       Value<bool>? scaleLabelsPresent,
       Value<bool>? containersPresent,
@@ -47573,6 +48285,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       Value<String>? dnaSpeciesText,
       Value<bool>? productNameAbsent,
       Value<bool>? calciumTestRequired,
+      Value<bool>? testFat,
+      Value<bool>? testProtein,
+      Value<bool>? testDna,
+      Value<bool>? testSoya,
+      Value<bool>? testStarch,
       Value<bool>? isCouriered,
       Value<bool>? labInfoComplete,
       Value<String>? waybill,
@@ -47624,6 +48341,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       manufacturedPackedDate:
           manufacturedPackedDate ?? this.manufacturedPackedDate,
       storageTypeId: storageTypeId ?? this.storageTypeId,
+      productClass: productClass ?? this.productClass,
       markingLabelsPresent: markingLabelsPresent ?? this.markingLabelsPresent,
       scaleLabelsPresent: scaleLabelsPresent ?? this.scaleLabelsPresent,
       containersPresent: containersPresent ?? this.containersPresent,
@@ -47647,6 +48365,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
       dnaSpeciesText: dnaSpeciesText ?? this.dnaSpeciesText,
       productNameAbsent: productNameAbsent ?? this.productNameAbsent,
       calciumTestRequired: calciumTestRequired ?? this.calciumTestRequired,
+      testFat: testFat ?? this.testFat,
+      testProtein: testProtein ?? this.testProtein,
+      testDna: testDna ?? this.testDna,
+      testSoya: testSoya ?? this.testSoya,
+      testStarch: testStarch ?? this.testStarch,
       isCouriered: isCouriered ?? this.isCouriered,
       labInfoComplete: labInfoComplete ?? this.labInfoComplete,
       waybill: waybill ?? this.waybill,
@@ -47757,6 +48480,9 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     if (storageTypeId.present) {
       map['storage_type_id'] = Variable<int>(storageTypeId.value);
     }
+    if (productClass.present) {
+      map['product_class'] = Variable<String>(productClass.value);
+    }
     if (markingLabelsPresent.present) {
       map['marking_labels_present'] =
           Variable<bool>(markingLabelsPresent.value);
@@ -47822,6 +48548,21 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
     }
     if (calciumTestRequired.present) {
       map['calcium_test_required'] = Variable<bool>(calciumTestRequired.value);
+    }
+    if (testFat.present) {
+      map['test_fat'] = Variable<bool>(testFat.value);
+    }
+    if (testProtein.present) {
+      map['test_protein'] = Variable<bool>(testProtein.value);
+    }
+    if (testDna.present) {
+      map['test_dna'] = Variable<bool>(testDna.value);
+    }
+    if (testSoya.present) {
+      map['test_soya'] = Variable<bool>(testSoya.value);
+    }
+    if (testStarch.present) {
+      map['test_starch'] = Variable<bool>(testStarch.value);
     }
     if (isCouriered.present) {
       map['is_couriered'] = Variable<bool>(isCouriered.value);
@@ -47932,6 +48673,7 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
           ..write('batchNumber: $batchNumber, ')
           ..write('manufacturedPackedDate: $manufacturedPackedDate, ')
           ..write('storageTypeId: $storageTypeId, ')
+          ..write('productClass: $productClass, ')
           ..write('markingLabelsPresent: $markingLabelsPresent, ')
           ..write('scaleLabelsPresent: $scaleLabelsPresent, ')
           ..write('containersPresent: $containersPresent, ')
@@ -47953,6 +48695,11 @@ class RawRmpInspectionsCompanion extends UpdateCompanion<RawRmpInspection> {
           ..write('dnaSpeciesText: $dnaSpeciesText, ')
           ..write('productNameAbsent: $productNameAbsent, ')
           ..write('calciumTestRequired: $calciumTestRequired, ')
+          ..write('testFat: $testFat, ')
+          ..write('testProtein: $testProtein, ')
+          ..write('testDna: $testDna, ')
+          ..write('testSoya: $testSoya, ')
+          ..write('testStarch: $testStarch, ')
           ..write('isCouriered: $isCouriered, ')
           ..write('labInfoComplete: $labInfoComplete, ')
           ..write('waybill: $waybill, ')
@@ -49220,6 +49967,787 @@ class RawRmpDirectionsCompanion extends UpdateCompanion<RawRmpDirection> {
   }
 }
 
+class $PlannedVisitsTable extends PlannedVisits
+    with TableInfo<$PlannedVisitsTable, PlannedVisit> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $PlannedVisitsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _uuidMeta = const VerificationMeta('uuid');
+  @override
+  late final GeneratedColumn<String> uuid = GeneratedColumn<String>(
+      'uuid', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _inspectorUsernameMeta =
+      const VerificationMeta('inspectorUsername');
+  @override
+  late final GeneratedColumn<String> inspectorUsername =
+      GeneratedColumn<String>('inspector_username', aliasedName, false,
+          type: DriftSqlType.string,
+          requiredDuringInsert: false,
+          defaultValue: const Constant(''));
+  static const VerificationMeta _plannedForMeta =
+      const VerificationMeta('plannedFor');
+  @override
+  late final GeneratedColumn<DateTime> plannedFor = GeneratedColumn<DateTime>(
+      'planned_for', aliasedName, false,
+      type: DriftSqlType.dateTime, requiredDuringInsert: true);
+  static const VerificationMeta _facilityNameMeta =
+      const VerificationMeta('facilityName');
+  @override
+  late final GeneratedColumn<String> facilityName = GeneratedColumn<String>(
+      'facility_name', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _facilityAddressMeta =
+      const VerificationMeta('facilityAddress');
+  @override
+  late final GeneratedColumn<String> facilityAddress = GeneratedColumn<String>(
+      'facility_address', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _facilityPhoneMeta =
+      const VerificationMeta('facilityPhone');
+  @override
+  late final GeneratedColumn<String> facilityPhone = GeneratedColumn<String>(
+      'facility_phone', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _commodityMeta =
+      const VerificationMeta('commodity');
+  @override
+  late final GeneratedColumn<String> commodity = GeneratedColumn<String>(
+      'commodity', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _noteMeta = const VerificationMeta('note');
+  @override
+  late final GeneratedColumn<String> note = GeneratedColumn<String>(
+      'note', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _startedVisitUuidMeta =
+      const VerificationMeta('startedVisitUuid');
+  @override
+  late final GeneratedColumn<String> startedVisitUuid = GeneratedColumn<String>(
+      'started_visit_uuid', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _scheduledByOfficeMeta =
+      const VerificationMeta('scheduledByOffice');
+  @override
+  late final GeneratedColumn<bool> scheduledByOffice = GeneratedColumn<bool>(
+      'scheduled_by_office', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("scheduled_by_office" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _scheduledByMeta =
+      const VerificationMeta('scheduledBy');
+  @override
+  late final GeneratedColumn<String> scheduledBy = GeneratedColumn<String>(
+      'scheduled_by', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _removedMeta =
+      const VerificationMeta('removed');
+  @override
+  late final GeneratedColumn<bool> removed = GeneratedColumn<bool>(
+      'removed', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("removed" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _isUploadedMeta =
+      const VerificationMeta('isUploaded');
+  @override
+  late final GeneratedColumn<bool> isUploaded = GeneratedColumn<bool>(
+      'is_uploaded', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints:
+          GeneratedColumn.constraintIsAlways('CHECK ("is_uploaded" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _createdAtMeta =
+      const VerificationMeta('createdAt');
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+      'created_at', aliasedName, false,
+      type: DriftSqlType.dateTime, requiredDuringInsert: true);
+  static const VerificationMeta _updatedAtMeta =
+      const VerificationMeta('updatedAt');
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+      'updated_at', aliasedName, false,
+      type: DriftSqlType.dateTime, requiredDuringInsert: true);
+  @override
+  List<GeneratedColumn> get $columns => [
+        uuid,
+        inspectorUsername,
+        plannedFor,
+        facilityName,
+        facilityAddress,
+        facilityPhone,
+        commodity,
+        note,
+        startedVisitUuid,
+        scheduledByOffice,
+        scheduledBy,
+        removed,
+        isUploaded,
+        createdAt,
+        updatedAt
+      ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'planned_visits';
+  @override
+  VerificationContext validateIntegrity(Insertable<PlannedVisit> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('uuid')) {
+      context.handle(
+          _uuidMeta, uuid.isAcceptableOrUnknown(data['uuid']!, _uuidMeta));
+    } else if (isInserting) {
+      context.missing(_uuidMeta);
+    }
+    if (data.containsKey('inspector_username')) {
+      context.handle(
+          _inspectorUsernameMeta,
+          inspectorUsername.isAcceptableOrUnknown(
+              data['inspector_username']!, _inspectorUsernameMeta));
+    }
+    if (data.containsKey('planned_for')) {
+      context.handle(
+          _plannedForMeta,
+          plannedFor.isAcceptableOrUnknown(
+              data['planned_for']!, _plannedForMeta));
+    } else if (isInserting) {
+      context.missing(_plannedForMeta);
+    }
+    if (data.containsKey('facility_name')) {
+      context.handle(
+          _facilityNameMeta,
+          facilityName.isAcceptableOrUnknown(
+              data['facility_name']!, _facilityNameMeta));
+    }
+    if (data.containsKey('facility_address')) {
+      context.handle(
+          _facilityAddressMeta,
+          facilityAddress.isAcceptableOrUnknown(
+              data['facility_address']!, _facilityAddressMeta));
+    }
+    if (data.containsKey('facility_phone')) {
+      context.handle(
+          _facilityPhoneMeta,
+          facilityPhone.isAcceptableOrUnknown(
+              data['facility_phone']!, _facilityPhoneMeta));
+    }
+    if (data.containsKey('commodity')) {
+      context.handle(_commodityMeta,
+          commodity.isAcceptableOrUnknown(data['commodity']!, _commodityMeta));
+    }
+    if (data.containsKey('note')) {
+      context.handle(
+          _noteMeta, note.isAcceptableOrUnknown(data['note']!, _noteMeta));
+    }
+    if (data.containsKey('started_visit_uuid')) {
+      context.handle(
+          _startedVisitUuidMeta,
+          startedVisitUuid.isAcceptableOrUnknown(
+              data['started_visit_uuid']!, _startedVisitUuidMeta));
+    }
+    if (data.containsKey('scheduled_by_office')) {
+      context.handle(
+          _scheduledByOfficeMeta,
+          scheduledByOffice.isAcceptableOrUnknown(
+              data['scheduled_by_office']!, _scheduledByOfficeMeta));
+    }
+    if (data.containsKey('scheduled_by')) {
+      context.handle(
+          _scheduledByMeta,
+          scheduledBy.isAcceptableOrUnknown(
+              data['scheduled_by']!, _scheduledByMeta));
+    }
+    if (data.containsKey('removed')) {
+      context.handle(_removedMeta,
+          removed.isAcceptableOrUnknown(data['removed']!, _removedMeta));
+    }
+    if (data.containsKey('is_uploaded')) {
+      context.handle(
+          _isUploadedMeta,
+          isUploaded.isAcceptableOrUnknown(
+              data['is_uploaded']!, _isUploadedMeta));
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(_createdAtMeta,
+          createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta));
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(_updatedAtMeta,
+          updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta));
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {uuid};
+  @override
+  PlannedVisit map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return PlannedVisit(
+      uuid: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}uuid'])!,
+      inspectorUsername: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}inspector_username'])!,
+      plannedFor: attachedDatabase.typeMapping
+          .read(DriftSqlType.dateTime, data['${effectivePrefix}planned_for'])!,
+      facilityName: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}facility_name'])!,
+      facilityAddress: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}facility_address'])!,
+      facilityPhone: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}facility_phone'])!,
+      commodity: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}commodity'])!,
+      note: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}note'])!,
+      startedVisitUuid: attachedDatabase.typeMapping.read(
+          DriftSqlType.string, data['${effectivePrefix}started_visit_uuid'])!,
+      scheduledByOffice: attachedDatabase.typeMapping.read(
+          DriftSqlType.bool, data['${effectivePrefix}scheduled_by_office'])!,
+      scheduledBy: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}scheduled_by'])!,
+      removed: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}removed'])!,
+      isUploaded: attachedDatabase.typeMapping
+          .read(DriftSqlType.bool, data['${effectivePrefix}is_uploaded'])!,
+      createdAt: attachedDatabase.typeMapping
+          .read(DriftSqlType.dateTime, data['${effectivePrefix}created_at'])!,
+      updatedAt: attachedDatabase.typeMapping
+          .read(DriftSqlType.dateTime, data['${effectivePrefix}updated_at'])!,
+    );
+  }
+
+  @override
+  $PlannedVisitsTable createAlias(String alias) {
+    return $PlannedVisitsTable(attachedDatabase, alias);
+  }
+}
+
+class PlannedVisit extends DataClass implements Insertable<PlannedVisit> {
+  final String uuid;
+
+  /// Whose plan it is. A plan is personal, so a handset shared between two
+  /// inspectors does not show one the other's week. Rows written before a
+  /// session was stored carry an empty string and are shown to everyone,
+  /// the same reading of ownership the inspection tables use.
+  final String inspectorUsername;
+
+  /// The day it is planned for, at midnight. The day only: an inspector
+  /// planning six stops cannot say which hour each will fall in, and a
+  /// made-up time on the calendar is worse than none.
+  final DateTime plannedFor;
+  final String facilityName;
+  final String facilityAddress;
+  final String facilityPhone;
+
+  /// What the visit is for, as a comma-separated list.
+  ///
+  /// More than one, because a visit is more than one: the grouped
+  /// inspection the handset captures holds every commodity found at the
+  /// premises, so a single call can be raw processed meat and eggs
+  /// together. A plan that could name only one would be wrong about most
+  /// of the week.
+  final String commodity;
+  final String note;
+
+  /// The store visit opened from this plan, empty until it is started.
+  final String startedVisitUuid;
+
+  /// The office put this visit on the calendar, rather than the inspector
+  /// planning it themselves.
+  ///
+  /// It changes what the app lets them do with it. They open the
+  /// inspection from it the same way, but cannot move, edit or delete it:
+  /// somebody at the office is relying on this call being made, and a plan
+  /// that could be quietly dropped would not be worth scheduling. Their
+  /// own plans stay entirely their own.
+  final bool scheduledByOffice;
+
+  /// Who at the office scheduled it, so the card can say whose instruction
+  /// it is rather than just "the office". Blank on a plan the inspector
+  /// made.
+  final String scheduledBy;
+
+  /// Removed by the inspector.
+  ///
+  /// Kept as a mark rather than deleting the row, because the office has
+  /// a copy: the handset has to be able to say "this one is gone", and a
+  /// row that simply stopped being mentioned says nothing — an inspector
+  /// with a second handset would otherwise have each one deleting the
+  /// other's week on every sync. Hidden everywhere in the app; it exists
+  /// only to carry the news up once.
+  final bool removed;
+
+  /// True once the server has this row as it currently stands. Cleared by
+  /// every edit, so a plan changed offline goes up again.
+  final bool isUploaded;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  const PlannedVisit(
+      {required this.uuid,
+      required this.inspectorUsername,
+      required this.plannedFor,
+      required this.facilityName,
+      required this.facilityAddress,
+      required this.facilityPhone,
+      required this.commodity,
+      required this.note,
+      required this.startedVisitUuid,
+      required this.scheduledByOffice,
+      required this.scheduledBy,
+      required this.removed,
+      required this.isUploaded,
+      required this.createdAt,
+      required this.updatedAt});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['uuid'] = Variable<String>(uuid);
+    map['inspector_username'] = Variable<String>(inspectorUsername);
+    map['planned_for'] = Variable<DateTime>(plannedFor);
+    map['facility_name'] = Variable<String>(facilityName);
+    map['facility_address'] = Variable<String>(facilityAddress);
+    map['facility_phone'] = Variable<String>(facilityPhone);
+    map['commodity'] = Variable<String>(commodity);
+    map['note'] = Variable<String>(note);
+    map['started_visit_uuid'] = Variable<String>(startedVisitUuid);
+    map['scheduled_by_office'] = Variable<bool>(scheduledByOffice);
+    map['scheduled_by'] = Variable<String>(scheduledBy);
+    map['removed'] = Variable<bool>(removed);
+    map['is_uploaded'] = Variable<bool>(isUploaded);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    return map;
+  }
+
+  PlannedVisitsCompanion toCompanion(bool nullToAbsent) {
+    return PlannedVisitsCompanion(
+      uuid: Value(uuid),
+      inspectorUsername: Value(inspectorUsername),
+      plannedFor: Value(plannedFor),
+      facilityName: Value(facilityName),
+      facilityAddress: Value(facilityAddress),
+      facilityPhone: Value(facilityPhone),
+      commodity: Value(commodity),
+      note: Value(note),
+      startedVisitUuid: Value(startedVisitUuid),
+      scheduledByOffice: Value(scheduledByOffice),
+      scheduledBy: Value(scheduledBy),
+      removed: Value(removed),
+      isUploaded: Value(isUploaded),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory PlannedVisit.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return PlannedVisit(
+      uuid: serializer.fromJson<String>(json['uuid']),
+      inspectorUsername: serializer.fromJson<String>(json['inspectorUsername']),
+      plannedFor: serializer.fromJson<DateTime>(json['plannedFor']),
+      facilityName: serializer.fromJson<String>(json['facilityName']),
+      facilityAddress: serializer.fromJson<String>(json['facilityAddress']),
+      facilityPhone: serializer.fromJson<String>(json['facilityPhone']),
+      commodity: serializer.fromJson<String>(json['commodity']),
+      note: serializer.fromJson<String>(json['note']),
+      startedVisitUuid: serializer.fromJson<String>(json['startedVisitUuid']),
+      scheduledByOffice: serializer.fromJson<bool>(json['scheduledByOffice']),
+      scheduledBy: serializer.fromJson<String>(json['scheduledBy']),
+      removed: serializer.fromJson<bool>(json['removed']),
+      isUploaded: serializer.fromJson<bool>(json['isUploaded']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'uuid': serializer.toJson<String>(uuid),
+      'inspectorUsername': serializer.toJson<String>(inspectorUsername),
+      'plannedFor': serializer.toJson<DateTime>(plannedFor),
+      'facilityName': serializer.toJson<String>(facilityName),
+      'facilityAddress': serializer.toJson<String>(facilityAddress),
+      'facilityPhone': serializer.toJson<String>(facilityPhone),
+      'commodity': serializer.toJson<String>(commodity),
+      'note': serializer.toJson<String>(note),
+      'startedVisitUuid': serializer.toJson<String>(startedVisitUuid),
+      'scheduledByOffice': serializer.toJson<bool>(scheduledByOffice),
+      'scheduledBy': serializer.toJson<String>(scheduledBy),
+      'removed': serializer.toJson<bool>(removed),
+      'isUploaded': serializer.toJson<bool>(isUploaded),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+    };
+  }
+
+  PlannedVisit copyWith(
+          {String? uuid,
+          String? inspectorUsername,
+          DateTime? plannedFor,
+          String? facilityName,
+          String? facilityAddress,
+          String? facilityPhone,
+          String? commodity,
+          String? note,
+          String? startedVisitUuid,
+          bool? scheduledByOffice,
+          String? scheduledBy,
+          bool? removed,
+          bool? isUploaded,
+          DateTime? createdAt,
+          DateTime? updatedAt}) =>
+      PlannedVisit(
+        uuid: uuid ?? this.uuid,
+        inspectorUsername: inspectorUsername ?? this.inspectorUsername,
+        plannedFor: plannedFor ?? this.plannedFor,
+        facilityName: facilityName ?? this.facilityName,
+        facilityAddress: facilityAddress ?? this.facilityAddress,
+        facilityPhone: facilityPhone ?? this.facilityPhone,
+        commodity: commodity ?? this.commodity,
+        note: note ?? this.note,
+        startedVisitUuid: startedVisitUuid ?? this.startedVisitUuid,
+        scheduledByOffice: scheduledByOffice ?? this.scheduledByOffice,
+        scheduledBy: scheduledBy ?? this.scheduledBy,
+        removed: removed ?? this.removed,
+        isUploaded: isUploaded ?? this.isUploaded,
+        createdAt: createdAt ?? this.createdAt,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
+  PlannedVisit copyWithCompanion(PlannedVisitsCompanion data) {
+    return PlannedVisit(
+      uuid: data.uuid.present ? data.uuid.value : this.uuid,
+      inspectorUsername: data.inspectorUsername.present
+          ? data.inspectorUsername.value
+          : this.inspectorUsername,
+      plannedFor:
+          data.plannedFor.present ? data.plannedFor.value : this.plannedFor,
+      facilityName: data.facilityName.present
+          ? data.facilityName.value
+          : this.facilityName,
+      facilityAddress: data.facilityAddress.present
+          ? data.facilityAddress.value
+          : this.facilityAddress,
+      facilityPhone: data.facilityPhone.present
+          ? data.facilityPhone.value
+          : this.facilityPhone,
+      commodity: data.commodity.present ? data.commodity.value : this.commodity,
+      note: data.note.present ? data.note.value : this.note,
+      startedVisitUuid: data.startedVisitUuid.present
+          ? data.startedVisitUuid.value
+          : this.startedVisitUuid,
+      scheduledByOffice: data.scheduledByOffice.present
+          ? data.scheduledByOffice.value
+          : this.scheduledByOffice,
+      scheduledBy:
+          data.scheduledBy.present ? data.scheduledBy.value : this.scheduledBy,
+      removed: data.removed.present ? data.removed.value : this.removed,
+      isUploaded:
+          data.isUploaded.present ? data.isUploaded.value : this.isUploaded,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PlannedVisit(')
+          ..write('uuid: $uuid, ')
+          ..write('inspectorUsername: $inspectorUsername, ')
+          ..write('plannedFor: $plannedFor, ')
+          ..write('facilityName: $facilityName, ')
+          ..write('facilityAddress: $facilityAddress, ')
+          ..write('facilityPhone: $facilityPhone, ')
+          ..write('commodity: $commodity, ')
+          ..write('note: $note, ')
+          ..write('startedVisitUuid: $startedVisitUuid, ')
+          ..write('scheduledByOffice: $scheduledByOffice, ')
+          ..write('scheduledBy: $scheduledBy, ')
+          ..write('removed: $removed, ')
+          ..write('isUploaded: $isUploaded, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+      uuid,
+      inspectorUsername,
+      plannedFor,
+      facilityName,
+      facilityAddress,
+      facilityPhone,
+      commodity,
+      note,
+      startedVisitUuid,
+      scheduledByOffice,
+      scheduledBy,
+      removed,
+      isUploaded,
+      createdAt,
+      updatedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is PlannedVisit &&
+          other.uuid == this.uuid &&
+          other.inspectorUsername == this.inspectorUsername &&
+          other.plannedFor == this.plannedFor &&
+          other.facilityName == this.facilityName &&
+          other.facilityAddress == this.facilityAddress &&
+          other.facilityPhone == this.facilityPhone &&
+          other.commodity == this.commodity &&
+          other.note == this.note &&
+          other.startedVisitUuid == this.startedVisitUuid &&
+          other.scheduledByOffice == this.scheduledByOffice &&
+          other.scheduledBy == this.scheduledBy &&
+          other.removed == this.removed &&
+          other.isUploaded == this.isUploaded &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class PlannedVisitsCompanion extends UpdateCompanion<PlannedVisit> {
+  final Value<String> uuid;
+  final Value<String> inspectorUsername;
+  final Value<DateTime> plannedFor;
+  final Value<String> facilityName;
+  final Value<String> facilityAddress;
+  final Value<String> facilityPhone;
+  final Value<String> commodity;
+  final Value<String> note;
+  final Value<String> startedVisitUuid;
+  final Value<bool> scheduledByOffice;
+  final Value<String> scheduledBy;
+  final Value<bool> removed;
+  final Value<bool> isUploaded;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<int> rowid;
+  const PlannedVisitsCompanion({
+    this.uuid = const Value.absent(),
+    this.inspectorUsername = const Value.absent(),
+    this.plannedFor = const Value.absent(),
+    this.facilityName = const Value.absent(),
+    this.facilityAddress = const Value.absent(),
+    this.facilityPhone = const Value.absent(),
+    this.commodity = const Value.absent(),
+    this.note = const Value.absent(),
+    this.startedVisitUuid = const Value.absent(),
+    this.scheduledByOffice = const Value.absent(),
+    this.scheduledBy = const Value.absent(),
+    this.removed = const Value.absent(),
+    this.isUploaded = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  PlannedVisitsCompanion.insert({
+    required String uuid,
+    this.inspectorUsername = const Value.absent(),
+    required DateTime plannedFor,
+    this.facilityName = const Value.absent(),
+    this.facilityAddress = const Value.absent(),
+    this.facilityPhone = const Value.absent(),
+    this.commodity = const Value.absent(),
+    this.note = const Value.absent(),
+    this.startedVisitUuid = const Value.absent(),
+    this.scheduledByOffice = const Value.absent(),
+    this.scheduledBy = const Value.absent(),
+    this.removed = const Value.absent(),
+    this.isUploaded = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.rowid = const Value.absent(),
+  })  : uuid = Value(uuid),
+        plannedFor = Value(plannedFor),
+        createdAt = Value(createdAt),
+        updatedAt = Value(updatedAt);
+  static Insertable<PlannedVisit> custom({
+    Expression<String>? uuid,
+    Expression<String>? inspectorUsername,
+    Expression<DateTime>? plannedFor,
+    Expression<String>? facilityName,
+    Expression<String>? facilityAddress,
+    Expression<String>? facilityPhone,
+    Expression<String>? commodity,
+    Expression<String>? note,
+    Expression<String>? startedVisitUuid,
+    Expression<bool>? scheduledByOffice,
+    Expression<String>? scheduledBy,
+    Expression<bool>? removed,
+    Expression<bool>? isUploaded,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (uuid != null) 'uuid': uuid,
+      if (inspectorUsername != null) 'inspector_username': inspectorUsername,
+      if (plannedFor != null) 'planned_for': plannedFor,
+      if (facilityName != null) 'facility_name': facilityName,
+      if (facilityAddress != null) 'facility_address': facilityAddress,
+      if (facilityPhone != null) 'facility_phone': facilityPhone,
+      if (commodity != null) 'commodity': commodity,
+      if (note != null) 'note': note,
+      if (startedVisitUuid != null) 'started_visit_uuid': startedVisitUuid,
+      if (scheduledByOffice != null) 'scheduled_by_office': scheduledByOffice,
+      if (scheduledBy != null) 'scheduled_by': scheduledBy,
+      if (removed != null) 'removed': removed,
+      if (isUploaded != null) 'is_uploaded': isUploaded,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  PlannedVisitsCompanion copyWith(
+      {Value<String>? uuid,
+      Value<String>? inspectorUsername,
+      Value<DateTime>? plannedFor,
+      Value<String>? facilityName,
+      Value<String>? facilityAddress,
+      Value<String>? facilityPhone,
+      Value<String>? commodity,
+      Value<String>? note,
+      Value<String>? startedVisitUuid,
+      Value<bool>? scheduledByOffice,
+      Value<String>? scheduledBy,
+      Value<bool>? removed,
+      Value<bool>? isUploaded,
+      Value<DateTime>? createdAt,
+      Value<DateTime>? updatedAt,
+      Value<int>? rowid}) {
+    return PlannedVisitsCompanion(
+      uuid: uuid ?? this.uuid,
+      inspectorUsername: inspectorUsername ?? this.inspectorUsername,
+      plannedFor: plannedFor ?? this.plannedFor,
+      facilityName: facilityName ?? this.facilityName,
+      facilityAddress: facilityAddress ?? this.facilityAddress,
+      facilityPhone: facilityPhone ?? this.facilityPhone,
+      commodity: commodity ?? this.commodity,
+      note: note ?? this.note,
+      startedVisitUuid: startedVisitUuid ?? this.startedVisitUuid,
+      scheduledByOffice: scheduledByOffice ?? this.scheduledByOffice,
+      scheduledBy: scheduledBy ?? this.scheduledBy,
+      removed: removed ?? this.removed,
+      isUploaded: isUploaded ?? this.isUploaded,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (uuid.present) {
+      map['uuid'] = Variable<String>(uuid.value);
+    }
+    if (inspectorUsername.present) {
+      map['inspector_username'] = Variable<String>(inspectorUsername.value);
+    }
+    if (plannedFor.present) {
+      map['planned_for'] = Variable<DateTime>(plannedFor.value);
+    }
+    if (facilityName.present) {
+      map['facility_name'] = Variable<String>(facilityName.value);
+    }
+    if (facilityAddress.present) {
+      map['facility_address'] = Variable<String>(facilityAddress.value);
+    }
+    if (facilityPhone.present) {
+      map['facility_phone'] = Variable<String>(facilityPhone.value);
+    }
+    if (commodity.present) {
+      map['commodity'] = Variable<String>(commodity.value);
+    }
+    if (note.present) {
+      map['note'] = Variable<String>(note.value);
+    }
+    if (startedVisitUuid.present) {
+      map['started_visit_uuid'] = Variable<String>(startedVisitUuid.value);
+    }
+    if (scheduledByOffice.present) {
+      map['scheduled_by_office'] = Variable<bool>(scheduledByOffice.value);
+    }
+    if (scheduledBy.present) {
+      map['scheduled_by'] = Variable<String>(scheduledBy.value);
+    }
+    if (removed.present) {
+      map['removed'] = Variable<bool>(removed.value);
+    }
+    if (isUploaded.present) {
+      map['is_uploaded'] = Variable<bool>(isUploaded.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PlannedVisitsCompanion(')
+          ..write('uuid: $uuid, ')
+          ..write('inspectorUsername: $inspectorUsername, ')
+          ..write('plannedFor: $plannedFor, ')
+          ..write('facilityName: $facilityName, ')
+          ..write('facilityAddress: $facilityAddress, ')
+          ..write('facilityPhone: $facilityPhone, ')
+          ..write('commodity: $commodity, ')
+          ..write('note: $note, ')
+          ..write('startedVisitUuid: $startedVisitUuid, ')
+          ..write('scheduledByOffice: $scheduledByOffice, ')
+          ..write('scheduledBy: $scheduledBy, ')
+          ..write('removed: $removed, ')
+          ..write('isUploaded: $isUploaded, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$LocalDatabase extends GeneratedDatabase {
   _$LocalDatabase(QueryExecutor e) : super(e);
   $LocalDatabaseManager get managers => $LocalDatabaseManager(this);
@@ -49361,6 +50889,7 @@ abstract class _$LocalDatabase extends GeneratedDatabase {
       $RawRmpInspectionsTable(this);
   late final $RawRmpDirectionsTable rawRmpDirections =
       $RawRmpDirectionsTable(this);
+  late final $PlannedVisitsTable plannedVisits = $PlannedVisitsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -49450,7 +50979,8 @@ abstract class _$LocalDatabase extends GeneratedDatabase {
         rawRmpChecklistItems,
         rawRmpLabelNonConformances,
         rawRmpInspections,
-        rawRmpDirections
+        rawRmpDirections,
+        plannedVisits
       ];
 }
 
@@ -53437,6 +54967,7 @@ typedef $$EggRequirementsTableCreateCompanionBuilder = EggRequirementsCompanion
   Value<String> screenLabel,
   Value<int> sortOrder,
   Value<String> regulation,
+  Value<String> minLetteringHeight,
   Value<bool> isActive,
   Value<String> updatedAt,
 });
@@ -53448,6 +54979,7 @@ typedef $$EggRequirementsTableUpdateCompanionBuilder = EggRequirementsCompanion
   Value<String> screenLabel,
   Value<int> sortOrder,
   Value<String> regulation,
+  Value<String> minLetteringHeight,
   Value<bool> isActive,
   Value<String> updatedAt,
 });
@@ -53478,6 +55010,10 @@ class $$EggRequirementsTableFilterComposer
 
   ColumnFilters<String> get regulation => $composableBuilder(
       column: $table.regulation, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get minLetteringHeight => $composableBuilder(
+      column: $table.minLetteringHeight,
+      builder: (column) => ColumnFilters(column));
 
   ColumnFilters<bool> get isActive => $composableBuilder(
       column: $table.isActive, builder: (column) => ColumnFilters(column));
@@ -53513,6 +55049,10 @@ class $$EggRequirementsTableOrderingComposer
   ColumnOrderings<String> get regulation => $composableBuilder(
       column: $table.regulation, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get minLetteringHeight => $composableBuilder(
+      column: $table.minLetteringHeight,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<bool> get isActive => $composableBuilder(
       column: $table.isActive, builder: (column) => ColumnOrderings(column));
 
@@ -53546,6 +55086,9 @@ class $$EggRequirementsTableAnnotationComposer
 
   GeneratedColumn<String> get regulation => $composableBuilder(
       column: $table.regulation, builder: (column) => column);
+
+  GeneratedColumn<String> get minLetteringHeight => $composableBuilder(
+      column: $table.minLetteringHeight, builder: (column) => column);
 
   GeneratedColumn<bool> get isActive =>
       $composableBuilder(column: $table.isActive, builder: (column) => column);
@@ -53587,6 +55130,7 @@ class $$EggRequirementsTableTableManager extends RootTableManager<
             Value<String> screenLabel = const Value.absent(),
             Value<int> sortOrder = const Value.absent(),
             Value<String> regulation = const Value.absent(),
+            Value<String> minLetteringHeight = const Value.absent(),
             Value<bool> isActive = const Value.absent(),
             Value<String> updatedAt = const Value.absent(),
           }) =>
@@ -53597,6 +55141,7 @@ class $$EggRequirementsTableTableManager extends RootTableManager<
             screenLabel: screenLabel,
             sortOrder: sortOrder,
             regulation: regulation,
+            minLetteringHeight: minLetteringHeight,
             isActive: isActive,
             updatedAt: updatedAt,
           ),
@@ -53607,6 +55152,7 @@ class $$EggRequirementsTableTableManager extends RootTableManager<
             Value<String> screenLabel = const Value.absent(),
             Value<int> sortOrder = const Value.absent(),
             Value<String> regulation = const Value.absent(),
+            Value<String> minLetteringHeight = const Value.absent(),
             Value<bool> isActive = const Value.absent(),
             Value<String> updatedAt = const Value.absent(),
           }) =>
@@ -53617,6 +55163,7 @@ class $$EggRequirementsTableTableManager extends RootTableManager<
             screenLabel: screenLabel,
             sortOrder: sortOrder,
             regulation: regulation,
+            minLetteringHeight: minLetteringHeight,
             isActive: isActive,
             updatedAt: updatedAt,
           ),
@@ -54382,6 +55929,7 @@ typedef $$EggInspectionsTableCreateCompanionBuilder = EggInspectionsCompanion
   Value<int?> sampleSize,
   Value<bool> pasteurisedPresent,
   Value<bool> haughNotRequired,
+  Value<String> haughSampleNumbers,
   Value<bool> weighingNotRequired,
   Value<bool> outerLabellingAvailable,
   Value<bool> labelChecklistComplete,
@@ -54431,6 +55979,7 @@ typedef $$EggInspectionsTableUpdateCompanionBuilder = EggInspectionsCompanion
   Value<int?> sampleSize,
   Value<bool> pasteurisedPresent,
   Value<bool> haughNotRequired,
+  Value<String> haughSampleNumbers,
   Value<bool> weighingNotRequired,
   Value<bool> outerLabellingAvailable,
   Value<bool> labelChecklistComplete,
@@ -54548,6 +56097,10 @@ class $$EggInspectionsTableFilterComposer
 
   ColumnFilters<bool> get haughNotRequired => $composableBuilder(
       column: $table.haughNotRequired,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get haughSampleNumbers => $composableBuilder(
+      column: $table.haughSampleNumbers,
       builder: (column) => ColumnFilters(column));
 
   ColumnFilters<bool> get weighingNotRequired => $composableBuilder(
@@ -54724,6 +56277,10 @@ class $$EggInspectionsTableOrderingComposer
       column: $table.haughNotRequired,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get haughSampleNumbers => $composableBuilder(
+      column: $table.haughSampleNumbers,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<bool> get weighingNotRequired => $composableBuilder(
       column: $table.weighingNotRequired,
       builder: (column) => ColumnOrderings(column));
@@ -54884,6 +56441,9 @@ class $$EggInspectionsTableAnnotationComposer
   GeneratedColumn<bool> get haughNotRequired => $composableBuilder(
       column: $table.haughNotRequired, builder: (column) => column);
 
+  GeneratedColumn<String> get haughSampleNumbers => $composableBuilder(
+      column: $table.haughSampleNumbers, builder: (column) => column);
+
   GeneratedColumn<bool> get weighingNotRequired => $composableBuilder(
       column: $table.weighingNotRequired, builder: (column) => column);
 
@@ -54995,6 +56555,7 @@ class $$EggInspectionsTableTableManager extends RootTableManager<
             Value<int?> sampleSize = const Value.absent(),
             Value<bool> pasteurisedPresent = const Value.absent(),
             Value<bool> haughNotRequired = const Value.absent(),
+            Value<String> haughSampleNumbers = const Value.absent(),
             Value<bool> weighingNotRequired = const Value.absent(),
             Value<bool> outerLabellingAvailable = const Value.absent(),
             Value<bool> labelChecklistComplete = const Value.absent(),
@@ -55043,6 +56604,7 @@ class $$EggInspectionsTableTableManager extends RootTableManager<
             sampleSize: sampleSize,
             pasteurisedPresent: pasteurisedPresent,
             haughNotRequired: haughNotRequired,
+            haughSampleNumbers: haughSampleNumbers,
             weighingNotRequired: weighingNotRequired,
             outerLabellingAvailable: outerLabellingAvailable,
             labelChecklistComplete: labelChecklistComplete,
@@ -55091,6 +56653,7 @@ class $$EggInspectionsTableTableManager extends RootTableManager<
             Value<int?> sampleSize = const Value.absent(),
             Value<bool> pasteurisedPresent = const Value.absent(),
             Value<bool> haughNotRequired = const Value.absent(),
+            Value<String> haughSampleNumbers = const Value.absent(),
             Value<bool> weighingNotRequired = const Value.absent(),
             Value<bool> outerLabellingAvailable = const Value.absent(),
             Value<bool> labelChecklistComplete = const Value.absent(),
@@ -55139,6 +56702,7 @@ class $$EggInspectionsTableTableManager extends RootTableManager<
             sampleSize: sampleSize,
             pasteurisedPresent: pasteurisedPresent,
             haughNotRequired: haughNotRequired,
+            haughSampleNumbers: haughSampleNumbers,
             weighingNotRequired: weighingNotRequired,
             outerLabellingAvailable: outerLabellingAvailable,
             labelChecklistComplete: labelChecklistComplete,
@@ -60825,6 +62389,10 @@ typedef $$StoreVisitsTableCreateCompanionBuilder = StoreVisitsCompanion
   Value<String> additionalEmail2,
   Value<String> additionalEmail3,
   Value<double?> distanceTravelledKm,
+  Value<String> travelStart,
+  Value<String> travelEnd,
+  Value<String> inspectionStart,
+  Value<String> inspectionEnd,
   Value<String> inspectorUsername,
   Value<int> plannedEggs,
   Value<int> plannedPoultry,
@@ -60863,6 +62431,10 @@ typedef $$StoreVisitsTableUpdateCompanionBuilder = StoreVisitsCompanion
   Value<String> additionalEmail2,
   Value<String> additionalEmail3,
   Value<double?> distanceTravelledKm,
+  Value<String> travelStart,
+  Value<String> travelEnd,
+  Value<String> inspectionStart,
+  Value<String> inspectionEnd,
   Value<String> inspectorUsername,
   Value<int> plannedEggs,
   Value<int> plannedPoultry,
@@ -60940,6 +62512,19 @@ class $$StoreVisitsTableFilterComposer
   ColumnFilters<double> get distanceTravelledKm => $composableBuilder(
       column: $table.distanceTravelledKm,
       builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get travelStart => $composableBuilder(
+      column: $table.travelStart, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get travelEnd => $composableBuilder(
+      column: $table.travelEnd, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get inspectionStart => $composableBuilder(
+      column: $table.inspectionStart,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get inspectionEnd => $composableBuilder(
+      column: $table.inspectionEnd, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<String> get inspectorUsername => $composableBuilder(
       column: $table.inspectorUsername,
@@ -61073,6 +62658,20 @@ class $$StoreVisitsTableOrderingComposer
       column: $table.distanceTravelledKm,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get travelStart => $composableBuilder(
+      column: $table.travelStart, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get travelEnd => $composableBuilder(
+      column: $table.travelEnd, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get inspectionStart => $composableBuilder(
+      column: $table.inspectionStart,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get inspectionEnd => $composableBuilder(
+      column: $table.inspectionEnd,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<String> get inspectorUsername => $composableBuilder(
       column: $table.inspectorUsername,
       builder: (column) => ColumnOrderings(column));
@@ -61198,6 +62797,18 @@ class $$StoreVisitsTableAnnotationComposer
   GeneratedColumn<double> get distanceTravelledKm => $composableBuilder(
       column: $table.distanceTravelledKm, builder: (column) => column);
 
+  GeneratedColumn<String> get travelStart => $composableBuilder(
+      column: $table.travelStart, builder: (column) => column);
+
+  GeneratedColumn<String> get travelEnd =>
+      $composableBuilder(column: $table.travelEnd, builder: (column) => column);
+
+  GeneratedColumn<String> get inspectionStart => $composableBuilder(
+      column: $table.inspectionStart, builder: (column) => column);
+
+  GeneratedColumn<String> get inspectionEnd => $composableBuilder(
+      column: $table.inspectionEnd, builder: (column) => column);
+
   GeneratedColumn<String> get inspectorUsername => $composableBuilder(
       column: $table.inspectorUsername, builder: (column) => column);
 
@@ -61301,6 +62912,10 @@ class $$StoreVisitsTableTableManager extends RootTableManager<
             Value<String> additionalEmail2 = const Value.absent(),
             Value<String> additionalEmail3 = const Value.absent(),
             Value<double?> distanceTravelledKm = const Value.absent(),
+            Value<String> travelStart = const Value.absent(),
+            Value<String> travelEnd = const Value.absent(),
+            Value<String> inspectionStart = const Value.absent(),
+            Value<String> inspectionEnd = const Value.absent(),
             Value<String> inspectorUsername = const Value.absent(),
             Value<int> plannedEggs = const Value.absent(),
             Value<int> plannedPoultry = const Value.absent(),
@@ -61338,6 +62953,10 @@ class $$StoreVisitsTableTableManager extends RootTableManager<
             additionalEmail2: additionalEmail2,
             additionalEmail3: additionalEmail3,
             distanceTravelledKm: distanceTravelledKm,
+            travelStart: travelStart,
+            travelEnd: travelEnd,
+            inspectionStart: inspectionStart,
+            inspectionEnd: inspectionEnd,
             inspectorUsername: inspectorUsername,
             plannedEggs: plannedEggs,
             plannedPoultry: plannedPoultry,
@@ -61375,6 +62994,10 @@ class $$StoreVisitsTableTableManager extends RootTableManager<
             Value<String> additionalEmail2 = const Value.absent(),
             Value<String> additionalEmail3 = const Value.absent(),
             Value<double?> distanceTravelledKm = const Value.absent(),
+            Value<String> travelStart = const Value.absent(),
+            Value<String> travelEnd = const Value.absent(),
+            Value<String> inspectionStart = const Value.absent(),
+            Value<String> inspectionEnd = const Value.absent(),
             Value<String> inspectorUsername = const Value.absent(),
             Value<int> plannedEggs = const Value.absent(),
             Value<int> plannedPoultry = const Value.absent(),
@@ -61412,6 +63035,10 @@ class $$StoreVisitsTableTableManager extends RootTableManager<
             additionalEmail2: additionalEmail2,
             additionalEmail3: additionalEmail3,
             distanceTravelledKm: distanceTravelledKm,
+            travelStart: travelStart,
+            travelEnd: travelEnd,
+            inspectionStart: inspectionStart,
+            inspectionEnd: inspectionEnd,
             inspectorUsername: inspectorUsername,
             plannedEggs: plannedEggs,
             plannedPoultry: plannedPoultry,
@@ -67304,6 +68931,7 @@ typedef $$PmpInspectionsTableCreateCompanionBuilder = PmpInspectionsCompanion
   Value<String> batchNumber,
   Value<String> manufacturedPackedDate,
   Value<int?> storageTypeId,
+  Value<String> productClass,
   Value<String> primarySampleSize,
   Value<bool> markingLabelsPresent,
   Value<bool> scaleLabelsPresent,
@@ -67325,6 +68953,10 @@ typedef $$PmpInspectionsTableCreateCompanionBuilder = PmpInspectionsCompanion
   Value<int?> laboratoryId,
   Value<String> internalSampleNumber,
   Value<String> testSampleSize,
+  Value<bool> testFat,
+  Value<bool> testProtein,
+  Value<bool> testCalcium,
+  Value<bool> testDna,
   Value<bool> isCouriered,
   Value<bool> labInfoComplete,
   Value<String> waybill,
@@ -67372,6 +69004,7 @@ typedef $$PmpInspectionsTableUpdateCompanionBuilder = PmpInspectionsCompanion
   Value<String> batchNumber,
   Value<String> manufacturedPackedDate,
   Value<int?> storageTypeId,
+  Value<String> productClass,
   Value<String> primarySampleSize,
   Value<bool> markingLabelsPresent,
   Value<bool> scaleLabelsPresent,
@@ -67393,6 +69026,10 @@ typedef $$PmpInspectionsTableUpdateCompanionBuilder = PmpInspectionsCompanion
   Value<int?> laboratoryId,
   Value<String> internalSampleNumber,
   Value<String> testSampleSize,
+  Value<bool> testFat,
+  Value<bool> testProtein,
+  Value<bool> testCalcium,
+  Value<bool> testDna,
   Value<bool> isCouriered,
   Value<bool> labInfoComplete,
   Value<String> waybill,
@@ -67507,6 +69144,9 @@ class $$PmpInspectionsTableFilterComposer
   ColumnFilters<int> get storageTypeId => $composableBuilder(
       column: $table.storageTypeId, builder: (column) => ColumnFilters(column));
 
+  ColumnFilters<String> get productClass => $composableBuilder(
+      column: $table.productClass, builder: (column) => ColumnFilters(column));
+
   ColumnFilters<String> get primarySampleSize => $composableBuilder(
       column: $table.primarySampleSize,
       builder: (column) => ColumnFilters(column));
@@ -67586,6 +69226,18 @@ class $$PmpInspectionsTableFilterComposer
   ColumnFilters<String> get testSampleSize => $composableBuilder(
       column: $table.testSampleSize,
       builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testFat => $composableBuilder(
+      column: $table.testFat, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testCalcium => $composableBuilder(
+      column: $table.testCalcium, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testDna => $composableBuilder(
+      column: $table.testDna, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => ColumnFilters(column));
@@ -67751,6 +69403,10 @@ class $$PmpInspectionsTableOrderingComposer
       column: $table.storageTypeId,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get productClass => $composableBuilder(
+      column: $table.productClass,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<String> get primarySampleSize => $composableBuilder(
       column: $table.primarySampleSize,
       builder: (column) => ColumnOrderings(column));
@@ -67833,6 +69489,18 @@ class $$PmpInspectionsTableOrderingComposer
   ColumnOrderings<String> get testSampleSize => $composableBuilder(
       column: $table.testSampleSize,
       builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testFat => $composableBuilder(
+      column: $table.testFat, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testCalcium => $composableBuilder(
+      column: $table.testCalcium, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testDna => $composableBuilder(
+      column: $table.testDna, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => ColumnOrderings(column));
@@ -67986,6 +69654,9 @@ class $$PmpInspectionsTableAnnotationComposer
   GeneratedColumn<int> get storageTypeId => $composableBuilder(
       column: $table.storageTypeId, builder: (column) => column);
 
+  GeneratedColumn<String> get productClass => $composableBuilder(
+      column: $table.productClass, builder: (column) => column);
+
   GeneratedColumn<String> get primarySampleSize => $composableBuilder(
       column: $table.primarySampleSize, builder: (column) => column);
 
@@ -68048,6 +69719,18 @@ class $$PmpInspectionsTableAnnotationComposer
 
   GeneratedColumn<String> get testSampleSize => $composableBuilder(
       column: $table.testSampleSize, builder: (column) => column);
+
+  GeneratedColumn<bool> get testFat =>
+      $composableBuilder(column: $table.testFat, builder: (column) => column);
+
+  GeneratedColumn<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => column);
+
+  GeneratedColumn<bool> get testCalcium => $composableBuilder(
+      column: $table.testCalcium, builder: (column) => column);
+
+  GeneratedColumn<bool> get testDna =>
+      $composableBuilder(column: $table.testDna, builder: (column) => column);
 
   GeneratedColumn<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => column);
@@ -68158,6 +69841,7 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             Value<String> batchNumber = const Value.absent(),
             Value<String> manufacturedPackedDate = const Value.absent(),
             Value<int?> storageTypeId = const Value.absent(),
+            Value<String> productClass = const Value.absent(),
             Value<String> primarySampleSize = const Value.absent(),
             Value<bool> markingLabelsPresent = const Value.absent(),
             Value<bool> scaleLabelsPresent = const Value.absent(),
@@ -68179,6 +69863,10 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             Value<int?> laboratoryId = const Value.absent(),
             Value<String> internalSampleNumber = const Value.absent(),
             Value<String> testSampleSize = const Value.absent(),
+            Value<bool> testFat = const Value.absent(),
+            Value<bool> testProtein = const Value.absent(),
+            Value<bool> testCalcium = const Value.absent(),
+            Value<bool> testDna = const Value.absent(),
             Value<bool> isCouriered = const Value.absent(),
             Value<bool> labInfoComplete = const Value.absent(),
             Value<String> waybill = const Value.absent(),
@@ -68225,6 +69913,7 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             batchNumber: batchNumber,
             manufacturedPackedDate: manufacturedPackedDate,
             storageTypeId: storageTypeId,
+            productClass: productClass,
             primarySampleSize: primarySampleSize,
             markingLabelsPresent: markingLabelsPresent,
             scaleLabelsPresent: scaleLabelsPresent,
@@ -68246,6 +69935,10 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             laboratoryId: laboratoryId,
             internalSampleNumber: internalSampleNumber,
             testSampleSize: testSampleSize,
+            testFat: testFat,
+            testProtein: testProtein,
+            testCalcium: testCalcium,
+            testDna: testDna,
             isCouriered: isCouriered,
             labInfoComplete: labInfoComplete,
             waybill: waybill,
@@ -68292,6 +69985,7 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             Value<String> batchNumber = const Value.absent(),
             Value<String> manufacturedPackedDate = const Value.absent(),
             Value<int?> storageTypeId = const Value.absent(),
+            Value<String> productClass = const Value.absent(),
             Value<String> primarySampleSize = const Value.absent(),
             Value<bool> markingLabelsPresent = const Value.absent(),
             Value<bool> scaleLabelsPresent = const Value.absent(),
@@ -68313,6 +70007,10 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             Value<int?> laboratoryId = const Value.absent(),
             Value<String> internalSampleNumber = const Value.absent(),
             Value<String> testSampleSize = const Value.absent(),
+            Value<bool> testFat = const Value.absent(),
+            Value<bool> testProtein = const Value.absent(),
+            Value<bool> testCalcium = const Value.absent(),
+            Value<bool> testDna = const Value.absent(),
             Value<bool> isCouriered = const Value.absent(),
             Value<bool> labInfoComplete = const Value.absent(),
             Value<String> waybill = const Value.absent(),
@@ -68359,6 +70057,7 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             batchNumber: batchNumber,
             manufacturedPackedDate: manufacturedPackedDate,
             storageTypeId: storageTypeId,
+            productClass: productClass,
             primarySampleSize: primarySampleSize,
             markingLabelsPresent: markingLabelsPresent,
             scaleLabelsPresent: scaleLabelsPresent,
@@ -68380,6 +70079,10 @@ class $$PmpInspectionsTableTableManager extends RootTableManager<
             laboratoryId: laboratoryId,
             internalSampleNumber: internalSampleNumber,
             testSampleSize: testSampleSize,
+            testFat: testFat,
+            testProtein: testProtein,
+            testCalcium: testCalcium,
+            testDna: testDna,
             isCouriered: isCouriered,
             labInfoComplete: labInfoComplete,
             waybill: waybill,
@@ -70893,6 +72596,7 @@ typedef $$RawRmpInspectionsTableCreateCompanionBuilder
   Value<String> batchNumber,
   Value<String> manufacturedPackedDate,
   Value<int?> storageTypeId,
+  Value<String> productClass,
   Value<bool> markingLabelsPresent,
   Value<bool> scaleLabelsPresent,
   Value<bool> containersPresent,
@@ -70913,6 +72617,11 @@ typedef $$RawRmpInspectionsTableCreateCompanionBuilder
   Value<String> dnaSpeciesText,
   Value<bool> productNameAbsent,
   Value<bool> calciumTestRequired,
+  Value<bool> testFat,
+  Value<bool> testProtein,
+  Value<bool> testDna,
+  Value<bool> testSoya,
+  Value<bool> testStarch,
   Value<bool> isCouriered,
   Value<bool> labInfoComplete,
   Value<String> waybill,
@@ -70964,6 +72673,7 @@ typedef $$RawRmpInspectionsTableUpdateCompanionBuilder
   Value<String> batchNumber,
   Value<String> manufacturedPackedDate,
   Value<int?> storageTypeId,
+  Value<String> productClass,
   Value<bool> markingLabelsPresent,
   Value<bool> scaleLabelsPresent,
   Value<bool> containersPresent,
@@ -70984,6 +72694,11 @@ typedef $$RawRmpInspectionsTableUpdateCompanionBuilder
   Value<String> dnaSpeciesText,
   Value<bool> productNameAbsent,
   Value<bool> calciumTestRequired,
+  Value<bool> testFat,
+  Value<bool> testProtein,
+  Value<bool> testDna,
+  Value<bool> testSoya,
+  Value<bool> testStarch,
   Value<bool> isCouriered,
   Value<bool> labInfoComplete,
   Value<String> waybill,
@@ -71102,6 +72817,9 @@ class $$RawRmpInspectionsTableFilterComposer
   ColumnFilters<int> get storageTypeId => $composableBuilder(
       column: $table.storageTypeId, builder: (column) => ColumnFilters(column));
 
+  ColumnFilters<String> get productClass => $composableBuilder(
+      column: $table.productClass, builder: (column) => ColumnFilters(column));
+
   ColumnFilters<bool> get markingLabelsPresent => $composableBuilder(
       column: $table.markingLabelsPresent,
       builder: (column) => ColumnFilters(column));
@@ -71179,6 +72897,21 @@ class $$RawRmpInspectionsTableFilterComposer
   ColumnFilters<bool> get calciumTestRequired => $composableBuilder(
       column: $table.calciumTestRequired,
       builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testFat => $composableBuilder(
+      column: $table.testFat, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testDna => $composableBuilder(
+      column: $table.testDna, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testSoya => $composableBuilder(
+      column: $table.testSoya, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get testStarch => $composableBuilder(
+      column: $table.testStarch, builder: (column) => ColumnFilters(column));
 
   ColumnFilters<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => ColumnFilters(column));
@@ -71359,6 +73092,10 @@ class $$RawRmpInspectionsTableOrderingComposer
       column: $table.storageTypeId,
       builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get productClass => $composableBuilder(
+      column: $table.productClass,
+      builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<bool> get markingLabelsPresent => $composableBuilder(
       column: $table.markingLabelsPresent,
       builder: (column) => ColumnOrderings(column));
@@ -71437,6 +73174,21 @@ class $$RawRmpInspectionsTableOrderingComposer
   ColumnOrderings<bool> get calciumTestRequired => $composableBuilder(
       column: $table.calciumTestRequired,
       builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testFat => $composableBuilder(
+      column: $table.testFat, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testDna => $composableBuilder(
+      column: $table.testDna, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testSoya => $composableBuilder(
+      column: $table.testSoya, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get testStarch => $composableBuilder(
+      column: $table.testStarch, builder: (column) => ColumnOrderings(column));
 
   ColumnOrderings<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => ColumnOrderings(column));
@@ -71605,6 +73357,9 @@ class $$RawRmpInspectionsTableAnnotationComposer
   GeneratedColumn<int> get storageTypeId => $composableBuilder(
       column: $table.storageTypeId, builder: (column) => column);
 
+  GeneratedColumn<String> get productClass => $composableBuilder(
+      column: $table.productClass, builder: (column) => column);
+
   GeneratedColumn<bool> get markingLabelsPresent => $composableBuilder(
       column: $table.markingLabelsPresent, builder: (column) => column);
 
@@ -71664,6 +73419,21 @@ class $$RawRmpInspectionsTableAnnotationComposer
 
   GeneratedColumn<bool> get calciumTestRequired => $composableBuilder(
       column: $table.calciumTestRequired, builder: (column) => column);
+
+  GeneratedColumn<bool> get testFat =>
+      $composableBuilder(column: $table.testFat, builder: (column) => column);
+
+  GeneratedColumn<bool> get testProtein => $composableBuilder(
+      column: $table.testProtein, builder: (column) => column);
+
+  GeneratedColumn<bool> get testDna =>
+      $composableBuilder(column: $table.testDna, builder: (column) => column);
+
+  GeneratedColumn<bool> get testSoya =>
+      $composableBuilder(column: $table.testSoya, builder: (column) => column);
+
+  GeneratedColumn<bool> get testStarch => $composableBuilder(
+      column: $table.testStarch, builder: (column) => column);
 
   GeneratedColumn<bool> get isCouriered => $composableBuilder(
       column: $table.isCouriered, builder: (column) => column);
@@ -71787,6 +73557,7 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             Value<String> batchNumber = const Value.absent(),
             Value<String> manufacturedPackedDate = const Value.absent(),
             Value<int?> storageTypeId = const Value.absent(),
+            Value<String> productClass = const Value.absent(),
             Value<bool> markingLabelsPresent = const Value.absent(),
             Value<bool> scaleLabelsPresent = const Value.absent(),
             Value<bool> containersPresent = const Value.absent(),
@@ -71807,6 +73578,11 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             Value<String> dnaSpeciesText = const Value.absent(),
             Value<bool> productNameAbsent = const Value.absent(),
             Value<bool> calciumTestRequired = const Value.absent(),
+            Value<bool> testFat = const Value.absent(),
+            Value<bool> testProtein = const Value.absent(),
+            Value<bool> testDna = const Value.absent(),
+            Value<bool> testSoya = const Value.absent(),
+            Value<bool> testStarch = const Value.absent(),
             Value<bool> isCouriered = const Value.absent(),
             Value<bool> labInfoComplete = const Value.absent(),
             Value<String> waybill = const Value.absent(),
@@ -71857,6 +73633,7 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             batchNumber: batchNumber,
             manufacturedPackedDate: manufacturedPackedDate,
             storageTypeId: storageTypeId,
+            productClass: productClass,
             markingLabelsPresent: markingLabelsPresent,
             scaleLabelsPresent: scaleLabelsPresent,
             containersPresent: containersPresent,
@@ -71877,6 +73654,11 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             dnaSpeciesText: dnaSpeciesText,
             productNameAbsent: productNameAbsent,
             calciumTestRequired: calciumTestRequired,
+            testFat: testFat,
+            testProtein: testProtein,
+            testDna: testDna,
+            testSoya: testSoya,
+            testStarch: testStarch,
             isCouriered: isCouriered,
             labInfoComplete: labInfoComplete,
             waybill: waybill,
@@ -71927,6 +73709,7 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             Value<String> batchNumber = const Value.absent(),
             Value<String> manufacturedPackedDate = const Value.absent(),
             Value<int?> storageTypeId = const Value.absent(),
+            Value<String> productClass = const Value.absent(),
             Value<bool> markingLabelsPresent = const Value.absent(),
             Value<bool> scaleLabelsPresent = const Value.absent(),
             Value<bool> containersPresent = const Value.absent(),
@@ -71947,6 +73730,11 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             Value<String> dnaSpeciesText = const Value.absent(),
             Value<bool> productNameAbsent = const Value.absent(),
             Value<bool> calciumTestRequired = const Value.absent(),
+            Value<bool> testFat = const Value.absent(),
+            Value<bool> testProtein = const Value.absent(),
+            Value<bool> testDna = const Value.absent(),
+            Value<bool> testSoya = const Value.absent(),
+            Value<bool> testStarch = const Value.absent(),
             Value<bool> isCouriered = const Value.absent(),
             Value<bool> labInfoComplete = const Value.absent(),
             Value<String> waybill = const Value.absent(),
@@ -71997,6 +73785,7 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             batchNumber: batchNumber,
             manufacturedPackedDate: manufacturedPackedDate,
             storageTypeId: storageTypeId,
+            productClass: productClass,
             markingLabelsPresent: markingLabelsPresent,
             scaleLabelsPresent: scaleLabelsPresent,
             containersPresent: containersPresent,
@@ -72017,6 +73806,11 @@ class $$RawRmpInspectionsTableTableManager extends RootTableManager<
             dnaSpeciesText: dnaSpeciesText,
             productNameAbsent: productNameAbsent,
             calciumTestRequired: calciumTestRequired,
+            testFat: testFat,
+            testProtein: testProtein,
+            testDna: testDna,
+            testSoya: testSoya,
+            testStarch: testStarch,
             isCouriered: isCouriered,
             labInfoComplete: labInfoComplete,
             waybill: waybill,
@@ -72575,6 +74369,340 @@ typedef $$RawRmpDirectionsTableProcessedTableManager = ProcessedTableManager<
     ),
     RawRmpDirection,
     PrefetchHooks Function()>;
+typedef $$PlannedVisitsTableCreateCompanionBuilder = PlannedVisitsCompanion
+    Function({
+  required String uuid,
+  Value<String> inspectorUsername,
+  required DateTime plannedFor,
+  Value<String> facilityName,
+  Value<String> facilityAddress,
+  Value<String> facilityPhone,
+  Value<String> commodity,
+  Value<String> note,
+  Value<String> startedVisitUuid,
+  Value<bool> scheduledByOffice,
+  Value<String> scheduledBy,
+  Value<bool> removed,
+  Value<bool> isUploaded,
+  required DateTime createdAt,
+  required DateTime updatedAt,
+  Value<int> rowid,
+});
+typedef $$PlannedVisitsTableUpdateCompanionBuilder = PlannedVisitsCompanion
+    Function({
+  Value<String> uuid,
+  Value<String> inspectorUsername,
+  Value<DateTime> plannedFor,
+  Value<String> facilityName,
+  Value<String> facilityAddress,
+  Value<String> facilityPhone,
+  Value<String> commodity,
+  Value<String> note,
+  Value<String> startedVisitUuid,
+  Value<bool> scheduledByOffice,
+  Value<String> scheduledBy,
+  Value<bool> removed,
+  Value<bool> isUploaded,
+  Value<DateTime> createdAt,
+  Value<DateTime> updatedAt,
+  Value<int> rowid,
+});
+
+class $$PlannedVisitsTableFilterComposer
+    extends Composer<_$LocalDatabase, $PlannedVisitsTable> {
+  $$PlannedVisitsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get uuid => $composableBuilder(
+      column: $table.uuid, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get inspectorUsername => $composableBuilder(
+      column: $table.inspectorUsername,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<DateTime> get plannedFor => $composableBuilder(
+      column: $table.plannedFor, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get facilityName => $composableBuilder(
+      column: $table.facilityName, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get facilityAddress => $composableBuilder(
+      column: $table.facilityAddress,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get facilityPhone => $composableBuilder(
+      column: $table.facilityPhone, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get commodity => $composableBuilder(
+      column: $table.commodity, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get note => $composableBuilder(
+      column: $table.note, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get startedVisitUuid => $composableBuilder(
+      column: $table.startedVisitUuid,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get scheduledByOffice => $composableBuilder(
+      column: $table.scheduledByOffice,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get scheduledBy => $composableBuilder(
+      column: $table.scheduledBy, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get removed => $composableBuilder(
+      column: $table.removed, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get isUploaded => $composableBuilder(
+      column: $table.isUploaded, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+      column: $table.createdAt, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+      column: $table.updatedAt, builder: (column) => ColumnFilters(column));
+}
+
+class $$PlannedVisitsTableOrderingComposer
+    extends Composer<_$LocalDatabase, $PlannedVisitsTable> {
+  $$PlannedVisitsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get uuid => $composableBuilder(
+      column: $table.uuid, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get inspectorUsername => $composableBuilder(
+      column: $table.inspectorUsername,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<DateTime> get plannedFor => $composableBuilder(
+      column: $table.plannedFor, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get facilityName => $composableBuilder(
+      column: $table.facilityName,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get facilityAddress => $composableBuilder(
+      column: $table.facilityAddress,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get facilityPhone => $composableBuilder(
+      column: $table.facilityPhone,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get commodity => $composableBuilder(
+      column: $table.commodity, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get note => $composableBuilder(
+      column: $table.note, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get startedVisitUuid => $composableBuilder(
+      column: $table.startedVisitUuid,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get scheduledByOffice => $composableBuilder(
+      column: $table.scheduledByOffice,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get scheduledBy => $composableBuilder(
+      column: $table.scheduledBy, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get removed => $composableBuilder(
+      column: $table.removed, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get isUploaded => $composableBuilder(
+      column: $table.isUploaded, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+      column: $table.createdAt, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+      column: $table.updatedAt, builder: (column) => ColumnOrderings(column));
+}
+
+class $$PlannedVisitsTableAnnotationComposer
+    extends Composer<_$LocalDatabase, $PlannedVisitsTable> {
+  $$PlannedVisitsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get uuid =>
+      $composableBuilder(column: $table.uuid, builder: (column) => column);
+
+  GeneratedColumn<String> get inspectorUsername => $composableBuilder(
+      column: $table.inspectorUsername, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get plannedFor => $composableBuilder(
+      column: $table.plannedFor, builder: (column) => column);
+
+  GeneratedColumn<String> get facilityName => $composableBuilder(
+      column: $table.facilityName, builder: (column) => column);
+
+  GeneratedColumn<String> get facilityAddress => $composableBuilder(
+      column: $table.facilityAddress, builder: (column) => column);
+
+  GeneratedColumn<String> get facilityPhone => $composableBuilder(
+      column: $table.facilityPhone, builder: (column) => column);
+
+  GeneratedColumn<String> get commodity =>
+      $composableBuilder(column: $table.commodity, builder: (column) => column);
+
+  GeneratedColumn<String> get note =>
+      $composableBuilder(column: $table.note, builder: (column) => column);
+
+  GeneratedColumn<String> get startedVisitUuid => $composableBuilder(
+      column: $table.startedVisitUuid, builder: (column) => column);
+
+  GeneratedColumn<bool> get scheduledByOffice => $composableBuilder(
+      column: $table.scheduledByOffice, builder: (column) => column);
+
+  GeneratedColumn<String> get scheduledBy => $composableBuilder(
+      column: $table.scheduledBy, builder: (column) => column);
+
+  GeneratedColumn<bool> get removed =>
+      $composableBuilder(column: $table.removed, builder: (column) => column);
+
+  GeneratedColumn<bool> get isUploaded => $composableBuilder(
+      column: $table.isUploaded, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+}
+
+class $$PlannedVisitsTableTableManager extends RootTableManager<
+    _$LocalDatabase,
+    $PlannedVisitsTable,
+    PlannedVisit,
+    $$PlannedVisitsTableFilterComposer,
+    $$PlannedVisitsTableOrderingComposer,
+    $$PlannedVisitsTableAnnotationComposer,
+    $$PlannedVisitsTableCreateCompanionBuilder,
+    $$PlannedVisitsTableUpdateCompanionBuilder,
+    (
+      PlannedVisit,
+      BaseReferences<_$LocalDatabase, $PlannedVisitsTable, PlannedVisit>
+    ),
+    PlannedVisit,
+    PrefetchHooks Function()> {
+  $$PlannedVisitsTableTableManager(
+      _$LocalDatabase db, $PlannedVisitsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$PlannedVisitsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$PlannedVisitsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$PlannedVisitsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<String> uuid = const Value.absent(),
+            Value<String> inspectorUsername = const Value.absent(),
+            Value<DateTime> plannedFor = const Value.absent(),
+            Value<String> facilityName = const Value.absent(),
+            Value<String> facilityAddress = const Value.absent(),
+            Value<String> facilityPhone = const Value.absent(),
+            Value<String> commodity = const Value.absent(),
+            Value<String> note = const Value.absent(),
+            Value<String> startedVisitUuid = const Value.absent(),
+            Value<bool> scheduledByOffice = const Value.absent(),
+            Value<String> scheduledBy = const Value.absent(),
+            Value<bool> removed = const Value.absent(),
+            Value<bool> isUploaded = const Value.absent(),
+            Value<DateTime> createdAt = const Value.absent(),
+            Value<DateTime> updatedAt = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              PlannedVisitsCompanion(
+            uuid: uuid,
+            inspectorUsername: inspectorUsername,
+            plannedFor: plannedFor,
+            facilityName: facilityName,
+            facilityAddress: facilityAddress,
+            facilityPhone: facilityPhone,
+            commodity: commodity,
+            note: note,
+            startedVisitUuid: startedVisitUuid,
+            scheduledByOffice: scheduledByOffice,
+            scheduledBy: scheduledBy,
+            removed: removed,
+            isUploaded: isUploaded,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            rowid: rowid,
+          ),
+          createCompanionCallback: ({
+            required String uuid,
+            Value<String> inspectorUsername = const Value.absent(),
+            required DateTime plannedFor,
+            Value<String> facilityName = const Value.absent(),
+            Value<String> facilityAddress = const Value.absent(),
+            Value<String> facilityPhone = const Value.absent(),
+            Value<String> commodity = const Value.absent(),
+            Value<String> note = const Value.absent(),
+            Value<String> startedVisitUuid = const Value.absent(),
+            Value<bool> scheduledByOffice = const Value.absent(),
+            Value<String> scheduledBy = const Value.absent(),
+            Value<bool> removed = const Value.absent(),
+            Value<bool> isUploaded = const Value.absent(),
+            required DateTime createdAt,
+            required DateTime updatedAt,
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              PlannedVisitsCompanion.insert(
+            uuid: uuid,
+            inspectorUsername: inspectorUsername,
+            plannedFor: plannedFor,
+            facilityName: facilityName,
+            facilityAddress: facilityAddress,
+            facilityPhone: facilityPhone,
+            commodity: commodity,
+            note: note,
+            startedVisitUuid: startedVisitUuid,
+            scheduledByOffice: scheduledByOffice,
+            scheduledBy: scheduledBy,
+            removed: removed,
+            isUploaded: isUploaded,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            rowid: rowid,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$PlannedVisitsTableProcessedTableManager = ProcessedTableManager<
+    _$LocalDatabase,
+    $PlannedVisitsTable,
+    PlannedVisit,
+    $$PlannedVisitsTableFilterComposer,
+    $$PlannedVisitsTableOrderingComposer,
+    $$PlannedVisitsTableAnnotationComposer,
+    $$PlannedVisitsTableCreateCompanionBuilder,
+    $$PlannedVisitsTableUpdateCompanionBuilder,
+    (
+      PlannedVisit,
+      BaseReferences<_$LocalDatabase, $PlannedVisitsTable, PlannedVisit>
+    ),
+    PlannedVisit,
+    PrefetchHooks Function()>;
 
 class $LocalDatabaseManager {
   final _$LocalDatabase _db;
@@ -72778,4 +74906,6 @@ class $LocalDatabaseManager {
       $$RawRmpInspectionsTableTableManager(_db, _db.rawRmpInspections);
   $$RawRmpDirectionsTableTableManager get rawRmpDirections =>
       $$RawRmpDirectionsTableTableManager(_db, _db.rawRmpDirections);
+  $$PlannedVisitsTableTableManager get plannedVisits =>
+      $$PlannedVisitsTableTableManager(_db, _db.plannedVisits);
 }

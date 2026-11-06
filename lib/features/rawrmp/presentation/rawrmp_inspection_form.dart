@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/address_search_field.dart';
 import '../../../core/widgets/responsive.dart';
 import 'package:uuid/uuid.dart';
 
@@ -24,7 +25,9 @@ import '../../poultry/presentation/poultry_form_widgets.dart';
 import '../data/rawrmp_repository.dart';
 import '../../seizures/presentation/record_seizure.dart';
 import '../domain/composition_checklist.dart';
+import '../domain/raw_product_classes.dart';
 import '../domain/raw_record_kind.dart';
+import '../../../core/widgets/picker_menu_field.dart';
 import '../../../core/data/sample_number.dart';
 import '../../visits/domain/visit_prefill.dart';
 import '../../visits/domain/facility_type_match.dart';
@@ -36,7 +39,7 @@ import '../../../core/widgets/correct_by_date_field.dart';
 /// New Raw Red Meat Product Inspection.
 ///
 /// Field captions and section order are the original's, verbatim — including
-/// "Request Calcuim Content Test (for MRM only)". The tick-list is five
+/// "Request Calcium Content Test (for MRM only)". The tick-list is five
 /// sections, each behind its own "... Present" switch — a section that is not
 /// present contributes nothing, because the requirement does not arise.
 /// Switching a section off clears its ticks, so compliance nobody assessed is
@@ -122,9 +125,17 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   /// True when the reason chosen at the door settled [_reasonId].
   bool _reasonFromVisit = false;
   int? _storageTypeId;
+
+  /// The product's class as APS files it (Ethan, 2026-10-04): one of
+  /// [rawProductClasses]. Optional — nothing else on the form changes.
+  String? _productClass;
   int? _laboratoryId;
 
   /// Every testing category the sample goes for.
+  /// The testing categories a record captured before 2026-10-23 carries.
+  /// No question sets this any more — it is loaded and written back
+  /// untouched, so resuming an older record does not wipe what the
+  /// inspector chose at the time.
   final _sampleCategoryIds = <int>{};
   int? _remarkTypeId;
 
@@ -168,11 +179,22 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   final _clientEmail2 = TextEditingController();
   final _generalComments = TextEditingController();
 
-  /// SOP-APS-RAW-003 — the compositional requirements checklist: the site
-  /// representative's position, nine deviation answers with their
-  /// contribution in grams and remarks, and the comments/actions under them.
+  /// SOP-APS-RAW-003 — the compositional requirements checklist: seven
+  /// deviation answers with their contribution in grams and remarks, and the
+  /// comments/actions under them. The representative's position is no
+  /// longer asked — the group names the representative — and is kept only
+  /// for a record that was asked it.
   final _representativePosition = TextEditingController();
   final _compositionComments = TextEditingController();
+
+  /// The checklist's one remark, at the bottom (Ethan, 2026-09-30). The
+  /// rows' own remarks are no longer asked; a record that has them keeps
+  /// them.
+  final _compositionRemark = TextEditingController();
+
+  /// The unit the amounts are typed in: kg, or grams on a record captured
+  /// before the change (Ethan, 2026-10-01).
+  String _compositionUnit = CompositionChecklist.kg;
   List<CompositionAnswer> _composition = CompositionChecklist.blank();
   final _compositionGrams = List.generate(
       CompositionChecklist.items.length, (_) => TextEditingController());
@@ -180,7 +202,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   /// Total Meat Content: the meat and all the other ingredients, in
   /// grams. The percentage is worked out from them, not typed.
   final _meatGrams = TextEditingController();
-  final _otherGrams = TextEditingController();
   final _compositionRemarks = List.generate(
       CompositionChecklist.items.length, (_) => TextEditingController());
 
@@ -205,8 +226,17 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   bool _isSampled = false;
   late RawRecordKind _kind = widget.recordKind;
   bool _calciumTestRequired = false;
+  // What the sample is tested for, as the office's web app asks it (Ethan,
+  // 2026-10-06). Calcium is _calciumTestRequired above.
+  bool _testFat = false;
+  bool _testProtein = false;
+  bool _testDna = false;
+  bool _testSoya = false;
+  bool _testStarch = false;
   bool _isCouriered = false;
-  bool _labInfoComplete = false;
+
+  /// Whether the categories dropdown is open.
+
   bool _saving = false;
 
   /// Set once and restored on resume, so touching a draft does not move it
@@ -273,6 +303,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       _locationId = saved.locationId;
       _reasonId = saved.reasonId;
       _storageTypeId = saved.storageTypeId;
+      _productClass = saved.productClass.isEmpty ? null : saved.productClass;
       _laboratoryId = saved.laboratoryId;
       _sampleCategoryIds
         ..clear()
@@ -323,6 +354,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       _generalComments.text = saved.generalComments;
       _representativePosition.text = saved.representativePosition;
       _compositionComments.text = saved.compositionComments;
+      _compositionRemark.text =
+          CompositionChecklist.remarksOf(saved.compositionChecklistJson);
+      _compositionUnit =
+          CompositionChecklist.unitOf(saved.compositionChecklistJson);
       _composition =
           CompositionChecklist.decode(saved.compositionChecklistJson);
       for (var i = 0; i < _composition.length; i++) {
@@ -332,7 +367,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       {
         final total = _composition[CompositionChecklist.totalMeatIndex];
         _meatGrams.text = total.meatGrams;
-        _otherGrams.text = total.otherGrams;
       }
       _markingPresent = saved.markingLabelsPresent;
       _scalePresent = saved.scaleLabelsPresent;
@@ -344,8 +378,12 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       _isSampled = saved.isSampled;
       _kind = RawRecordKind.of(saved.recordKind);
       _calciumTestRequired = saved.calciumTestRequired;
+      _testFat = saved.testFat;
+      _testProtein = saved.testProtein;
+      _testDna = saved.testDna;
+      _testSoya = saved.testSoya;
+      _testStarch = saved.testStarch;
       _isCouriered = saved.isCouriered;
-      _labInfoComplete = saved.labInfoComplete;
       _productNameAbsent = saved.productNameAbsent;
       _seizureDecision = SeizureDecision.of(saved.seizureDecision);
       _seizureAsked = _seizureDecision != null;
@@ -432,10 +470,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       _generalComments,
       _representativePosition,
       _compositionComments,
+      _compositionRemark,
       ..._compositionGrams,
       ..._compositionRemarks,
       _meatGrams,
-      _otherGrams,
     ]) {
       c.dispose();
     }
@@ -458,16 +496,16 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   List<CompositionAnswer> _compositionSnapshot() => [
         for (var i = 0; i < CompositionChecklist.items.length; i++)
           CompositionAnswer(
-            deviation: _composition[i].deviation,
+            // Total Meat Content is not judged; it is only worked out.
+            deviation: i == CompositionChecklist.totalMeatIndex
+                ? null
+                : _composition[i].deviation,
             contributionGrams: i == CompositionChecklist.totalMeatIndex
                 ? _totalMeatText
                 : _compositionGrams[i].text.trim(),
             remarks: _compositionRemarks[i].text.trim(),
             meatGrams: i == CompositionChecklist.totalMeatIndex
                 ? _meatGrams.text.trim()
-                : '',
-            otherGrams: i == CompositionChecklist.totalMeatIndex
-                ? _otherGrams.text.trim()
                 : '',
           ),
       ];
@@ -481,28 +519,64 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: Text(
-            'Not part of sampling — this is the compositional standard the '
-            'product is sold against (Reg. 5 of R.2410, SOP-APS-RAW-003). '
-            'Answer a row only where you are judging that requirement, and '
-            'give the Contribution in grams where the row has a quantity to '
-            'it. The Compositional Checklist document is written from what '
-            'you put here. Leave the whole block untouched if you are not '
-            'assessing composition — nothing is required and no document is '
-            'produced.',
+            'The compositional standard the product is sold against '
+            '(Reg. 5 of R.2410, SOP-APS-RAW-003). Every field is required — '
+            'if there is no value, put 0. Slide each row to Compliant or '
+            'Deviation, and give its Contribution in grams and a remark. The '
+            'Compositional Checklist document is written from what you put '
+            'here.',
             style:
                 TextStyle(fontSize: 12.5, color: AppColors.muted, height: 1.35),
           ),
         ),
-        poultryField(_representativePosition, 'Position of Representative'),
+        // The unit the amounts are typed in, and the document prints: kg or
+        // grams, as the inspector weighs (Ethan, 2026-10-01).
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text('Amounts in',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+              ),
+              TwoWaySlider(
+                leftLabel: 'KG',
+                rightLabel: 'GRAMS',
+                leftOn: _compositionUnit == CompositionChecklist.kg,
+                // Neither is a finding, so neither is red.
+                rightColor: AppColors.brandPrimary,
+                onChanged: (kg) => setState(() => _compositionUnit =
+                    kg ? CompositionChecklist.kg : CompositionChecklist.grams),
+              ),
+            ],
+          ),
+        ),
         for (var i = 0; i < CompositionChecklist.items.length; i++)
           ..._compositionRow(i),
-        poultryField(_compositionComments, 'Comments/Actions', lines: 3),
+        _anchor(
+            'comp:remarks',
+            poultryField(_compositionRemark, 'Remarks',
+                lines: 3, required: _compositionRequired, helper: _putZero)),
+        _anchor(
+            'comp:comments',
+            poultryField(_compositionComments, 'Comments/Actions',
+                lines: 3, required: _compositionRequired, helper: _putZero)),
       ];
+
+  /// Every field of the compositional checklist is required wherever it is
+  /// shown (Ethan, 2026-09-29, 2026-09-30); a field with no value takes 0.
+  bool get _compositionRequired => _kind.showsComposition;
+
+  static const _putZero = 'If there is no value, put 0.';
 
   /// One requirement, in the form's own furniture: the same choice chips
   /// the Sampling question uses for Deviation Yes/No, then the percentage
   /// and remark as ordinary labelled fields.
   List<Widget> _compositionRow(int i) {
+    // Total Meat Content is not a requirement to judge: no number, no
+    // Compliant/Deviation slide — just the percentage (Ethan, 2026-10-01).
+    if (i == CompositionChecklist.totalMeatIndex) return _totalMeatFields();
     final answer = _composition[i];
     void setDeviation(bool? value) {
       setState(() {
@@ -520,6 +594,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       // A compositional deviation is one Annexure A seizes on.
       unawaited(_applySop());
     }
+
     return [
       // The same Compliant/Deviation slide every other checklist in the app
       // uses. This block asked the identical question through a different
@@ -545,42 +620,52 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           ],
         ),
       ),
-      if (i == CompositionChecklist.totalMeatIndex)
-        ..._totalMeatFields()
-      else
-        poultryField(_compositionGrams[i], 'Contribution (g)',
-            keyboard: const TextInputType.numberWithOptions(decimal: true)),
-      poultryField(_compositionRemarks[i], 'Remarks'),
+      _anchor(
+          'comp:$i:grams',
+          poultryField(_compositionGrams[i], 'Contribution ($_compositionUnit)',
+              required: _compositionRequired,
+              helper: _putZero,
+              // Rows 1 to 6 feed Total Meat Content, worked out below.
+              onChanged: (_) => setState(() {}),
+              keyboard: const TextInputType.numberWithOptions(decimal: true))),
     ];
   }
 
   /// The worked-out total meat content, or empty until both amounts are in.
   String get _totalMeatText {
-    final percent = CompositionChecklist.totalMeatPercent(
-        _meatGrams.text, _otherGrams.text);
+    final percent = CompositionChecklist.totalMeatPercent(_rowsForTotal());
     return percent == null ? '' : CompositionChecklist.percentText(percent);
   }
 
-  /// Total Meat Content is worked out rather than typed, the way inspectors
-  /// did it by hand: meat ÷ (meat + all other ingredients) × 100.
+  /// The amounts as typed, for working the total out.
+  List<CompositionAnswer> _rowsForTotal() => [
+        for (var i = 0; i < CompositionChecklist.items.length; i++)
+          CompositionAnswer(contributionGrams: _compositionGrams[i].text),
+      ];
+
+  /// Total Meat Content is neither judged nor typed: it is the meat (row
+  /// 1) as a share of the whole (rows 1 to 6), × 100, shown as one
+  /// percentage under the six rows (Ethan, 2026-10-01). A dash until the
+  /// amounts are in.
   List<Widget> _totalMeatFields() {
-    const grams = TextInputType.numberWithOptions(decimal: true);
     final result = _totalMeatText;
     return [
-      poultryField(_meatGrams, 'Meat (g)',
-          keyboard: grams, onChanged: (_) => setState(() {})),
-      poultryField(_otherGrams, 'All other ingredients (g)',
-          keyboard: grams, onChanged: (_) => setState(() {})),
       Padding(
-        padding: const EdgeInsets.only(top: 2, bottom: 10),
-        child: Text(
-          result.isEmpty
-              ? 'Total meat content = meat ÷ (meat + all other ingredients) '
-                  '× 100. Enter both amounts to work it out.'
-              : 'Total meat content: $result',
-          style: result.isEmpty
-              ? TextStyle(fontSize: 12.5, color: AppColors.muted, height: 1.35)
-              : const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            const Expanded(
+              child:
+                  Text('Total meat content', style: TextStyle(fontSize: 13.5)),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              result.isEmpty ? '—' : result,
+              style: result.isEmpty
+                  ? TextStyle(fontSize: 15, color: AppColors.muted)
+                  : const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            ),
+          ],
         ),
       ),
     ];
@@ -622,6 +707,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         batchNumber: Value(BatchNumber.forRecord(_batchNumber.text)),
         manufacturedPackedDate: Value(_manuPackedDate.text.trim()),
         storageTypeId: Value(_storageTypeId),
+        productClass: Value(_productClass ?? ''),
         recordKind: Value(_kind.stored),
         // A compositional record carries no labelling or sampling answers,
         // so nothing downstream reads it as a labelling inspection: no
@@ -648,13 +734,23 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             Value(_sampleCategoryIds.isEmpty ? null : _sampleCategoryIds.first),
         sampleCategoryIds: Value(_sampleCategoryIds.join(',')),
         calciumTestRequired: Value(_calciumTestRequired),
+        testFat: Value(_testFat),
+        testProtein: Value(_testProtein),
+        testDna: Value(_testDna),
+        testSoya: Value(_testSoya),
+        testStarch: Value(_testStarch),
         isCouriered: Value(_isCouriered),
-        labInfoComplete: Value(_labInfoComplete),
+        // No switch to say so (Ethan, 2026-10-01): a sampled inspection
+        // that is finished has its lab information in.
+        labInfoComplete: Value(_isSampled && completed),
         waybill: Value(_waybill),
         directionRemarkTypeId: Value(_remarkTypeId),
         directionRemarks: Value(_addedRemarks.join('\n')),
         correctByDate: Value(_correctBy),
-        nonConformanceComments: Value(_nonConformanceComments.text.trim()),
+        // Only with a deviation (Ethan, 2026-09-30).
+        nonConformanceComments: Value(_directionPresent(await _reference)
+            ? _nonConformanceComments.text.trim()
+            : ''),
         // From the visit where there is one, so the invoice and the office
         // record read the same kilometres however the visit was captured.
         distanceTravelledKm: Value(
@@ -668,8 +764,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         clientEmail2: Value(_clientEmail2.text.trim()),
         noClientSignaturePresent: Value(declined),
         generalComments: Value(_generalComments.text.trim()),
-        compositionChecklistJson:
-            Value(CompositionChecklist.encode(_compositionSnapshot())),
+        compositionChecklistJson: Value(CompositionChecklist.encode(
+            _compositionSnapshot(),
+            remarks: _compositionRemark.text.trim(),
+            unit: _compositionUnit)),
         compositionComments: Value(_compositionComments.text.trim()),
         representativePosition: Value(_representativePosition.text.trim()),
       ),
@@ -680,70 +778,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   ///
   /// Nothing is validated on the way out — a half-filled record is exactly
   /// what a draft is for, and the visit offers it back as "continue".
-  /// The chosen categories' names, one a line, or null while none is.
-  String? _categoryNames(_Reference reference) {
-    final names = [
-      for (final c in reference.sampleCategories)
-        if (_sampleCategoryIds.contains(c.id)) c.name,
-    ];
-    return names.isEmpty ? null : names.join('\n');
-  }
-
-  /// The original's category list, but ticked rather than picked: a sample
-  /// can go for more than one category (Ethan, 2026-09-25). Cancel keeps
-  /// what was ticked before.
-  Future<void> _pickTestCategory(_Reference reference) async {
-    final chosen = <int>{..._sampleCategoryIds};
-    final picked = await showDialog<Set<int>>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Select Test Categories'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final category in reference.sampleCategories)
-                  CheckboxListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    activeColor: AppColors.brandPrimary,
-                    value: chosen.contains(category.id),
-                    onChanged: (on) => setDialogState(() {
-                      if (on ?? false) {
-                        chosen.add(category.id);
-                      } else {
-                        chosen.remove(category.id);
-                      }
-                    }),
-                    title: Text(category.name,
-                        style: const TextStyle(fontSize: 15, height: 1.35)),
-                  ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('CANCEL'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(chosen),
-              child: const Text('DONE'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (picked != null && mounted) {
-      setState(() => _sampleCategoryIds
-        ..clear()
-        ..addAll(picked));
-    }
-  }
-
   /// Fills in the internal sample number the first time the consignment
   /// is sampled; a number already on the record stays.
   Future<void> _numberTheSample() async {
@@ -794,19 +828,83 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       batch = BatchNumber.missing(_batchNumber.text);
       primary = _primarySizeIssue();
     } else {
-      batch = _batchNumber.text.trim().isEmpty
-          ? 'Batch Number is required.'
-          : null;
+      batch =
+          _batchNumber.text.trim().isEmpty ? 'Batch Number is required.' : null;
       primary = _primarySampleSize.text.trim().isEmpty
           ? 'Primary Sample Size (g) is required.'
           : null;
     }
     // Shown only on the labelling inspection, while sampled.
     final lab = _labelling ? _labSizeIssue() : null;
+    bool blank(TextEditingController c) => c.text.trim().isEmpty;
     return [
+      // The product being inspected must be named, so the record and its
+      // checklist say what was looked at (Ethan, 2026-10-14). The only way out
+      // is the inspector marking the product name as not shown on the label —
+      // the deviation the dialog records as [_productNameAbsent].
+      if (!_productNameAbsent &&
+          blank(_productItem) &&
+          blank(_newProductItem))
+        (
+          id: 'productName',
+          message: 'Product Name is required — choose or add the product, or '
+              'mark the product name as not shown on the label.',
+        ),
       if (batch != null) (id: 'batchNumber', message: batch),
       if (primary != null) (id: 'primarySampleSize', message: primary),
+      // The laboratory the sample is going to. Left optional, ten of the
+      // 109 samples in the 11-16 October lab report reached the office with
+      // no laboratory against them.
+      if (_labelling && _isSampled && _laboratoryId == null)
+        (
+          id: 'laboratory',
+          message: 'Laboratory is required — choose where the sample is '
+              'being sent.',
+        ),
       if (lab != null) (id: 'testSampleSize', message: lab),
+      // A sampled inspection must say what the sample is being tested for,
+      // the same requirement the APS web app enforces (Ethan, 2026-10-06).
+      if (_labelling &&
+          _isSampled &&
+          !_testFat &&
+          !_testProtein &&
+          !_calciumTestRequired &&
+          !_testDna &&
+          !_testSoya &&
+          !_testStarch)
+        (
+          id: 'testTypes',
+          message: 'Choose at least one test the sample is for '
+              '(Fat, Protein, Calcium, DNA, Soya or Starch).',
+        ),
+      // The Compositional Checklist: every field (Ethan, 2026-09-29).
+      if (_compositionRequired) ...[
+        for (var i = 0; i < CompositionChecklist.items.length; i++) ...[
+          if (i != CompositionChecklist.totalMeatIndex &&
+              blank(_compositionGrams[i]))
+            (
+              id: 'comp:$i:grams',
+              message: 'Row ${i + 1}: Contribution ($_compositionUnit) is '
+                  'required — '
+                  'if there is no value, put 0.',
+            ),
+        ],
+        if (blank(_compositionRemark))
+          (
+            id: 'comp:remarks',
+            message: 'Remarks are required — if there is no value, put 0.',
+          ),
+        if (blank(_compositionComments))
+          (id: 'comp:comments', message: 'Comments/Actions are required.'),
+        // A rejection the checklist raises carries its remarks, which are
+        // printed on the checklist.
+        if (_compositionFailed && _addedRemarks.isEmpty)
+          (
+            id: 'rejectionRemarks',
+            message: 'Add at least one rejection remark to the Rejection '
+                'Form.',
+          ),
+      ],
     ];
   }
 
@@ -884,7 +982,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   }
 
   Future<void> _save(_Reference reference, {required bool completed}) async {
-    if (completed) {
+    // Seized, the rest of the checklist is not asked for — only the
+    // photographs (Ethan, 2026-09-30).
+    final seized = _seizureDecision == SeizureDecision.seize;
+    if (completed && !seized) {
       // Marks whatever is on screen red; the list below finds the rest.
       final formValid = _formKey.currentState?.validate() ?? false;
       final missing = _missingRequired();
@@ -909,10 +1010,12 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(SnackBar(
-          content: Text(
-            'Take the front and back product photographs before finishing '
-            '— $_photoCount of $_requiredProductPhotos taken.',
-          ),
+          content: Text(seized
+              ? seizurePhotosOwed('the front and back product photographs '
+                  '— $_photoCount of $_requiredProductPhotos taken')
+              : 'Take the front and back product photographs before '
+                  'finishing — $_photoCount of $_requiredProductPhotos '
+                  'taken.'),
         ));
       await _missing.flag(
         context,
@@ -940,6 +1043,13 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
     if (completed && findings.isNotEmpty) {
       await _spawnDirection(reference, findings);
       if (!mounted) return;
+    }
+
+    // Seized: said so, and back to where the inspection was opened from.
+    if (completed && seized) {
+      announceSeizureDone(context);
+      Navigator.of(context).pop(true);
+      return;
     }
 
     // Inside a grouped inspection there is nothing to announce — the record
@@ -981,8 +1091,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
 
   bool get _checklistUnlocked =>
       !RawRmpRules.photographsOutstanding(_photoCount);
-
-  static bool _batchEntryValid(String text) => BatchNumber.valid(text);
 
   /// Leaving the box empty fills in N/A, as it does on the egg form.
   void _normaliseBatch() {
@@ -1105,10 +1213,9 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         'counted from the inspection date.';
   }
 
-  /// The seizure decision, once taken, stated on the form.
+  /// A seizure, once recorded, stated on the form.
   Widget _seizureNotice() {
-    final seized = _seizureDecision == SeizureDecision.seize;
-    final colour = seized ? AppColors.brandRed : AppColors.inkSoft;
+    const colour = AppColors.brandRed;
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
@@ -1117,12 +1224,9 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         border: Border.all(color: colour.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Text(
-        seized
-            ? 'Seizure under section 8 of the APS Act recorded for this '
-                'consignment (FSA-SOP-APS-001 Annexure A).'
-            : 'Seizure declined on the premises; the rejection stands and is '
-                'to be put right immediately.',
+      child: const Text(
+        'Seizure under section 8 of the APS Act recorded for this '
+        'consignment (FSA-SOP-APS-001 Annexure A).',
         style: TextStyle(color: colour, fontSize: 13, height: 1.4),
       ),
     );
@@ -1130,6 +1234,10 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
 
   /// Whether the question has been put on this visit to the form.
   bool _seizureAsked = false;
+
+  /// The findings the last answer to the seizure question covered; null
+  /// until known (a resumed record takes what stands when first checked).
+  Set<String>? _answeredFindings;
   SeizureDecision? _seizureDecision;
 
   /// Puts the seizure question, once, the moment the findings raise it.
@@ -1139,9 +1247,31 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
   /// an ordinary direction. FSA-SOP-APS-001 makes it a decision the
   /// inspector takes on the premises, so it is asked rather than announced.
   Future<void> _askAboutSeizureIfNeeded() async {
-    if (_seizureAsked) return;
     final reference = await _reference;
-    if (!mounted || !_seizureRequired(reference)) return;
+    if (!mounted) return;
+    if (!_seizureRequired(reference)) {
+      _forgetSeizureQuestion();
+      return;
+    }
+    // A finding the last answer did not cover is asked about afresh: a
+    // second omission is a second reason to seize. A seizure already
+    // recorded covers the consignment, whatever else is found.
+    final findings = {
+      if (_compositionFailed) 'composition',
+      if (_labelling)
+        for (final r in RawRmpRules.seizureFindings(
+          items: reference.checklist,
+          present: _presentSections,
+          compliantItemIds: _compliant,
+          productNameAbsent: _productNameAbsent,
+        ))
+          '${r.id}',
+    };
+    if (_seizureDecision == SeizureDecision.seize) return;
+    if (_seizureAsked &&
+        (_answeredFindings ??= findings).containsAll(findings)) {
+      return;
+    }
     _seizureAsked = true;
     final answer =
         await askAboutSeizure(context, reason: _seizureReason(reference));
@@ -1149,6 +1279,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
       _seizureAsked = false;
       return;
     }
+    _answeredFindings = findings;
     setState(() => _seizureDecision = answer);
     // Seized: the Annexure E sheet is drawn up here, on the premises.
     if (answer == SeizureDecision.seize) {
@@ -1173,13 +1304,32 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           productName: _newProductItem.text.trim().isNotEmpty
               ? _newProductItem.text
               : _productItem.text,
-          productClass: reference.sampleCategories
-              .where((c) => _sampleCategoryIds.contains(c.id))
-              .map((c) => c.name)
-              .join(', '),
+          // The product's own class, as picked on this form. It used to
+          // be the testing categories' names, which described what the
+          // laboratory was asked for rather than what was seized.
+          productClass: _productClass ?? '',
           receiverName: _managerName.text,
         ),
       );
+      // Seized: the product is taken, so the inspection ends here — only
+      // its photographs are still asked for (Ethan, 2026-09-30).
+      if (mounted) await _save(reference, completed: true);
+    }
+  }
+
+  /// The findings no longer call for a seizure — a row was marked back
+  /// compliant — so the answer given to them lapses and the question is put
+  /// again should a finding return (Ethan, 2026-09-29). A seizure actually
+  /// recorded stands: its sheet has been drawn up.
+  void _forgetSeizureQuestion() {
+    if (_seizureDecision == SeizureDecision.seize) return;
+    if (!_seizureAsked && _seizureDecision == null) return;
+    _seizureAsked = false;
+    _answeredFindings = null;
+    if (mounted) {
+      setState(() => _seizureDecision = null);
+    } else {
+      _seizureDecision = null;
     }
   }
 
@@ -1499,7 +1649,7 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           const DirectoryField(label: 'Trading name', key: 'tradingName'),
           const DirectoryField(label: 'Address', key: 'address'),
           const DirectoryField(
-              label: 'Telephone / cellphone',
+              label: 'Telephone/cellphone',
               key: 'telephone',
               keyboardType: TextInputType.phone),
         ]);
@@ -1611,47 +1761,6 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
         ),
         children: [
           poultrySection('Inspection Details'),
-          // Photographed first: at a raw processed meat inspection the pack
-          // is photographed before it is sampled, so the photographs open
-          // the page rather than wait on the storage method as the original
-          // made them (Henry, 2026-09-29). The checklist still opens only
-          // once the front and back shots exist.
-          _anchor(
-            'photos',
-            framed: true,
-            PoultryEvidenceSection(
-            repository: widget.captureRepository,
-            recordUuid: _clientUuid,
-            kind: 'rawrmp',
-            photosTitle: 'Product Photos',
-            captureLabel: 'Take Product Photos',
-            guidance: 'Two views of the product: the front of the pack with '
-                'the product name legible, and the back with the '
-                'ingredients, the manufacturer and the batch code. A third '
-                'is optional.',
-            showSignatures: false,
-            // The original stops before each of the first two shots and
-            // says which view it wants; a third is allowed and optional.
-            maxPhotos: 3,
-            minPhotos: _requiredProductPhotos,
-            captureNotes: const [
-              (
-                title: 'Front Photo Note',
-                message: 'Please take a FRONT view photo of the product.'
-                    '\nOnly 1 photo is required.',
-              ),
-              (
-                title: 'Rear Photo Note',
-                message: 'Please take a REAR view photo of the product.'
-                    '\nOnly 1 photo is required.',
-              ),
-            ],
-            onChanged: () {
-              unawaited(_persist(completed: false));
-              unawaited(_refreshPhotoCount());
-            },
-          ),
-          ),
           // Inside a grouped inspection the door has already asked both, so
           // they are not asked again here (Ethan, 2026-09-24).
           if (widget.visit == null && !_reasonFromVisit)
@@ -1704,14 +1813,20 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               'Trading Name',
               helper: 'Only if the facility trades under a different name.',
             ),
-            poultryField(_facilityAddress, 'Facility Address', lines: 2),
+            // Searchable by facility name; a plain typed box with no
+            // signal or no key (Ethan, 2026-10-08).
+            AddressSearchField(
+              controller: _facilityAddress,
+              tokenProvider: widget.repository.storedToken,
+              child: poultryField(_facilityAddress, 'Facility Address', lines: 2),
+            ),
             poultryField(
               _facilityTelephone,
-              'Facility Primary Contact Telephone / Cellphone Number',
+              'Facility Primary Contact Telephone/Cellphone Number',
               keyboard: TextInputType.phone,
             ),
             poultryField(
-                _contactPerson, 'Representative Name / Person in Charge'),
+                _contactPerson, 'Representative Name/Person in Charge'),
             poultryField(
               _contactEmail,
               'Representative Name Email Address',
@@ -1720,31 +1835,76 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           ],
 
           poultrySection('Producer and Product'),
-          // Named once on the visit (Ethan, 2026-09-25); asked here only
-          // when the visit did not name one.
-          if (!_producerFromVisit)
-            SearchPickerField<RawRmpRef>(
-              label: 'Producer',
-              controller: _producerName,
-              options: reference.producers,
-              optionLabel: (p) => p.name,
-              minQueryLength: 1,
-              onSelected: (p) => setState(() => _producerName.text = p.name),
-              emptyHint: 'No producers on this device yet. Sync to download '
-                  'the directory, or add one here.',
-              addNewLabel: 'Add new producer',
-              onAddNew: _addProducer,
-            ),
+          // Named once on the visit (Ethan, 2026-09-25) and filled in here,
+          // so it is never typed twice — but shown, because one visit may
+          // cover products from different producers. It was hidden outright
+          // whenever the visit named one, which stamped that producer on
+          // every commodity: a butchery's beef mince, boerewors, patties
+          // and chicken patties all went out naming the egg producer, and
+          // the office could not approve the visit (Maders Slaghuis, group
+          // 4152, Cinga 2026-10-26). The visit screen has promised all
+          // along that "a product from a different producer can still be
+          // changed on its own form"; this is that form.
           SearchPickerField<RawRmpRef>(
-            label: 'Certain Raw Processed Meat Product Name',
-            controller: _productItem,
-            options: reference.products,
+            label: 'Producer',
+            controller: _producerName,
+            options: reference.producers,
             optionLabel: (p) => p.name,
             minQueryLength: 1,
-            onSelected: (p) => setState(() => _productItem.text = p.name),
-            emptyHint: 'No product directory on this device yet.',
-            addNewLabel: 'Add new product',
-            onAddNew: _addProduct,
+            onSelected: (p) => setState(() => _producerName.text = p.name),
+            emptyHint: 'No producers on this device yet. Sync to download '
+                'the directory, or add one here.',
+            addNewLabel: 'Add new producer',
+            onAddNew: _addProducer,
+          ),
+          if (_producerFromVisit)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 10),
+              child: Text(
+                'Filled in from the visit. Change it here if this product '
+                'came from a different producer.',
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+              ),
+            ),
+          _anchor(
+            'productName',
+            listenable: Listenable.merge([_productItem, _newProductItem]),
+            SearchPickerField<RawRmpRef>(
+              label: 'Certain Raw Processed Meat Product Name',
+              controller: _productItem,
+              options: reference.products,
+              optionLabel: (p) => p.name,
+              minQueryLength: 1,
+              onSelected: (p) => setState(() => _productItem.text = p.name),
+              emptyHint: 'No product directory on this device yet.',
+              addNewLabel: 'Add new product',
+              onAddNew: _addProduct,
+            ),
+          ),
+          // Asked right after the product it is for (Ethan, 2026-10-04);
+          // the checklist itself comes at the end, after the whole
+          // inspection.
+          if (_kind != RawRecordKind.composition)
+            poultrySwitch(
+              label: 'Do the Compositional Checklist for this product as well?',
+              value: _kind == RawRecordKind.both,
+              onChanged: (v) => setState(() =>
+                  _kind = v ? RawRecordKind.both : RawRecordKind.inspection),
+              helper: 'Yes adds it at the end of this inspection.',
+            ),
+          // The class APS files the product under (Ethan, 2026-10-04): the
+          // office's own Raw list, so the record lands in its dropdown.
+          PickerMenuField<String>(
+            label: 'Product Class',
+            value: _productClass,
+            hint: 'Select a class',
+            options: [
+              for (final c in rawProductClasses) (value: c, text: c),
+            ],
+            onChanged: (v) {
+              setState(() => _productClass = v);
+              unawaited(_persist(completed: false));
+            },
           ),
           // A product not on the list is added through the picker's own
           // "Add new product" offer, which asks for the name, size and
@@ -1760,9 +1920,9 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               'Batch Number',
               required: true,
               focusNode: _batchFocus,
-              helper: _batchEntryValid(_batchNumber.text)
-                  ? 'The number off the pack, or N/A if it has none.'
-                  : 'A number, or N/A — nothing else counts as a batch.',
+              // Whatever the pack carries counts (Ethan, 2026-10-02).
+              helper: 'The batch number or code off the pack, or N/A if it '
+                  'has none.',
               onChanged: (_) => setState(() {}),
             ),
           ),
@@ -1783,9 +1943,8 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             listenable: _primarySampleSize,
             poultryField(_primarySampleSize, 'Primary Sample Size (g)',
                 required: true,
-                keyboard:
-                    const TextInputType.numberWithOptions(decimal: true),
-                helper: 'Sample size / quantity looked at, in grams.'),
+                keyboard: const TextInputType.numberWithOptions(decimal: true),
+                helper: 'Sample size/quantity looked at, in grams.'),
           ),
           poultryDropdown(
             label: 'Storage Method',
@@ -1797,31 +1956,64 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
           // "Follow Up Rejection Particulars" is no longer asked
           // (Ethan, 2026-09-24); a draft that held one keeps it.
 
-
+          // The product photographs, after the product they are of rather
+          // than at the top of the page (Ethan, 2026-09-29). Still before
+          // the checklist and the sampling — the pack is photographed before
+          // it is sampled (Henry, 2026-09-29) — and the checklist still opens
+          // only once the front and back shots exist.
+          _anchor(
+            'photos',
+            framed: true,
+            PoultryEvidenceSection(
+              repository: widget.captureRepository,
+              recordUuid: _clientUuid,
+              kind: 'rawrmp',
+              photosTitle: 'Product Photos',
+              captureLabel: 'Take Product Photos',
+              // Said once, plainly, on the page — not in a pop-up before each
+              // shot that has to be dismissed (Ethan, 2026-09-29).
+              guidance: 'Take 2 photos of the product:\n'
+                  '1. Front of the pack: the product name must be readable.\n'
+                  '2. Back of the pack: the ingredients, the manufacturer and '
+                  'the batch code must be readable.\n'
+                  'A 3rd photo is optional.',
+              shots: const ['Front of the pack', 'Back of the pack', 'Extra'],
+              showSignatures: false,
+              // Front, then back, then an optional third: the button says
+              // which is next, so the original's "Front Photo Note" and "Rear
+              // Photo Note" pop-ups are no longer needed.
+              maxPhotos: 3,
+              minPhotos: _requiredProductPhotos,
+              onChanged: () {
+                unawaited(_persist(completed: false));
+                unawaited(_refreshPhotoCount());
+              },
+            ),
+          ),
           if (_labelling) ...[
             poultrySection('Mark/Label Checklist'),
             // Red while the front and back photographs are still owed, green
             // once both are in — kept on screen then, so the inspector sees
             // the checklist opened because the count was met.
             Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text(
-                  _checklistUnlocked
-                      ? 'Front and back product photographs taken — '
-                          '$_photoCount of $_requiredProductPhotos. The '
-                          'checklist is open.'
-                      : 'Take the front and back product photographs above '
-                          'to open the checklist — $_photoCount of '
-                          '$_requiredProductPhotos taken.',
-                  style: TextStyle(
-                    color: _checklistUnlocked
-                        ? const Color(0xFF2E7D32)
-                        : AppColors.brandRed,
-                    fontWeight: FontWeight.w600,
-                    height: 1.35,
-                  ),
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                _checklistUnlocked
+                    ? 'Front and back product photographs taken — '
+                        '$_photoCount of $_requiredProductPhotos. The '
+                        'checklist is open.'
+                    : 'Take the front and back product photographs above '
+                        'to open the checklist — $_photoCount of '
+                        '$_requiredProductPhotos taken.',
+                style: TextStyle(
+                  color: _checklistUnlocked
+                      ? const Color(0xFF2E7D32)
+                      : AppColors.brandRed,
+                  fontWeight: FontWeight.w600,
+                  height: 1.35,
                 ),
               ),
+            ),
             IgnorePointer(
               ignoring: !_checklistUnlocked,
               child: Opacity(
@@ -1893,7 +2085,9 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             ),
           ],
 
-          if (_kind.showsComposition) ..._compositionFields(),
+          // A compositional checklist on its own; with the inspection it
+          // sits underneath it, below.
+          if (_kind == RawRecordKind.composition) ..._compositionFields(),
 
           if (_labelling) ...[
             poultrySection('Sample Details'),
@@ -1908,11 +2102,18 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
             ),
             if (_isSampled) ...[
               poultrySection('Laboratory Details'),
-              poultryDropdown(
-                label: 'Laboratory',
-                value: _laboratoryId,
-                items: _asRefs(reference.laboratories),
-                onChanged: (v) => setState(() => _laboratoryId = v),
+              // Required once the record says a sample was taken: a sample
+              // that reaches the office without a laboratory cannot be
+              // traced to where it went (Chrisna, 2026-10-20).
+              _anchor(
+                'laboratory',
+                poultryDropdown(
+                  label: 'Laboratory',
+                  value: _laboratoryId,
+                  items: _asRefs(reference.laboratories),
+                  onChanged: (v) => setState(() => _laboratoryId = v),
+                  required: true,
+                ),
               ),
               // Made up by the app, not typed (Ethan, 2026-09-25): one
               // number per sample this inspector takes today, for the bag
@@ -1931,37 +2132,61 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
                     keyboard:
                         const TextInputType.numberWithOptions(decimal: true)),
               ),
-              // The original opens a "Select Test Category" list rather than
-              // a dropdown, each line bullet-prefixed, with Cancel to leave it
-              // unset. Same list, same way out.
-              LabelledField(
-                label: 'Laboratory Testing Category',
-                child: InkWell(
-                  onTap: () => _pickTestCategory(reference),
-                  borderRadius: BorderRadius.circular(4),
-                  child: InputDecorator(
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      isDense: true,
+              // The testing category used to be asked here as well, and
+              // it asked the same thing as the question below in
+              // different words: "Category A - Meat (Protein) & Fat
+              // Content" against Fat and Protein. The two could
+              // disagree, and the category quietly won - an inspector
+              // who ticked Fat alone but chose Category A was invoiced
+              // for protein he never ordered (Kabelo, N1 Factory
+              // Clayville, 2026-10-23). One question now, and soya and
+              // starch moved into it so nothing is lost with the
+              // category (Ethan, 2026-10-23).
+              // What the sample is being tested for (Ethan, 2026-10-06): an
+              // in-place dropdown like the category picker. At least one on.
+              _anchor(
+                'testTypes',
+                PoultryTestDropdown(
+                  label: 'What are you testing for?',
+                  options: [
+                    (
+                      label: 'Fat',
+                      selected: _testFat,
+                      onToggle: () => setState(() => _testFat = !_testFat),
                     ),
-                    child: Text(
-                      _categoryNames(reference) ?? 'Select Test Categories',
-                      style: TextStyle(
-                        fontSize: 14,
-                        height: 1.35,
-                        color: _sampleCategoryIds.isEmpty
-                            ? AppColors.muted
-                            : AppColors.ink,
-                      ),
+                    (
+                      label: 'Protein',
+                      selected: _testProtein,
+                      onToggle: () =>
+                          setState(() => _testProtein = !_testProtein),
                     ),
-                  ),
+                    (
+                      label: 'Calcium',
+                      selected: _calciumTestRequired,
+                      onToggle: () => setState(
+                          () => _calciumTestRequired = !_calciumTestRequired),
+                    ),
+                    (
+                      label: 'Dna',
+                      selected: _testDna,
+                      onToggle: () => setState(() => _testDna = !_testDna),
+                    ),
+                    // Previously only reachable through "Category B - Soya
+                    // Protein & Starch Content"; the tariff bills them as
+                    // two separate lines, so they are two answers here.
+                    (
+                      label: 'Soya',
+                      selected: _testSoya,
+                      onToggle: () => setState(() => _testSoya = !_testSoya),
+                    ),
+                    (
+                      label: 'Starch',
+                      selected: _testStarch,
+                      onToggle: () =>
+                          setState(() => _testStarch = !_testStarch),
+                    ),
+                  ],
                 ),
-              ),
-              poultrySwitch(
-                // The original's caption, typo and all.
-                label: 'Request Calcuim Content Test (for MRM only)',
-                value: _calciumTestRequired,
-                onChanged: (v) => setState(() => _calciumTestRequired = v),
               ),
               // The original names both states under one caption rather than
               // asking a single "Hand Delivered" question: the sample either
@@ -1973,13 +2198,13 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
                 selectedIndex: _isCouriered ? 1 : 0,
                 onChanged: (i) => setState(() => _isCouriered = i == 1),
               ),
-              poultrySwitch(
-                label: 'Lab info is complete',
-                value: _labInfoComplete,
-                onChanged: (v) => setState(() => _labInfoComplete = v),
-              ),
             ],
           ],
+
+          // Underneath the inspection: the compositional checklist for the
+          // same product, on this form, when asked for at the top (Ethan,
+          // 2026-10-01; question moved up 2026-10-04).
+          if (_kind == RawRecordKind.both) ..._compositionFields(),
 
           if (widget.visit == null)
             PoultryEvidenceSection(
@@ -2061,36 +2286,40 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
                 ),
               ),
             ),
-            LabelledField(
-              label: 'List of Added Remarks',
-              child: Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceAlt,
-                  border: Border.all(color: AppColors.border),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: _addedRemarks.isEmpty
-                    ? Text(
-                        'None added yet.',
-                        style: TextStyle(fontSize: 13, color: AppColors.muted),
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final remark in _addedRemarks)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Text('• $remark',
-                                  style: const TextStyle(
-                                      fontSize: 13.5, height: 1.35)),
-                            ),
-                        ],
-                      ),
-              ),
-            ),
+            _anchor(
+                'rejectionRemarks',
+                framed: true,
+                LabelledField(
+                  label: 'Added Remarks',
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceAlt,
+                      border: Border.all(color: AppColors.border),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: _addedRemarks.isEmpty
+                        ? Text(
+                            'None added yet.',
+                            style:
+                                TextStyle(fontSize: 13, color: AppColors.muted),
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final remark in _addedRemarks)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text('• $remark',
+                                      style: const TextStyle(
+                                          fontSize: 13.5, height: 1.35)),
+                                ),
+                            ],
+                          ),
+                  ),
+                )),
             Row(
               children: [
                 Expanded(
@@ -2127,7 +2356,9 @@ class _RawRmpInspectionFormState extends State<RawRmpInspectionForm> {
               helperText: _periodHelper(reference),
               onChanged: _correctByChanged,
             ),
-            if (_seizureDecision != null) _seizureNotice(),
+            // A seizure declined says nothing here: the rejection above stands
+            // as it is (Ethan, 2026-09-30).
+            if (_seizureDecision == SeizureDecision.seize) _seizureNotice(),
             poultryField(
               _nonConformanceComments,
               'Non-Conformance Comments',

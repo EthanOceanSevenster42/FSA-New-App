@@ -44,9 +44,23 @@ class _RawRmpInspectionSummaryPageState
     _category = _loadCategory();
   }
 
+  /// What the sample is being tested for.
+  ///
+  /// Reads the inspector's own answer. A record captured before that
+  /// question existed carries a testing category instead, so that is shown
+  /// for those rather than leaving the row blank (Ethan, 2026-10-23).
   Future<String> _loadCategory() async {
     final i = widget.inspection;
     if (!i.isSampled) return 'Not Applicable';
+    final ticked = [
+      if (i.testFat) 'Fat',
+      if (i.testProtein) 'Protein',
+      if (i.calciumTestRequired) 'Calcium',
+      if (i.testDna) 'DNA',
+      if (i.testSoya) 'Soya',
+      if (i.testStarch) 'Starch',
+    ];
+    if (ticked.isNotEmpty) return ticked.join(', ');
     final categories = await widget.repository.sampleCategories();
     final ids = {
       for (final s in i.sampleCategoryIds.split(','))
@@ -134,7 +148,7 @@ class _RawRmpInspectionSummaryPageState
                     value: i.isSampled ? 'Yes' : 'No',
                   ),
                   SummaryField(
-                    label: 'Lab Testing Category',
+                    label: 'Tested For',
                     value: category,
                   ),
                 ],

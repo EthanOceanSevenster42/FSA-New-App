@@ -54,23 +54,43 @@ abstract final class DirectionPdf {
     String authorisedPersonSignaturePath = '',
     String pleaseNote = '',
     DateTime? generatedAt,
+
+    /// The regulation shown under NATURE OF INSPECTION (e.g. "R.345 of 20
+    /// March 2020"). Empty falls back to nothing.
+    String regulation = '',
+
+
+    /// Photographs of the non-conformity, shown under their own section at
+    /// the end, the same as the seizure and the checklists
+    /// (Ethan, 2026-10-08).
+    ///
+    /// Required, and deliberately so: it was optional, and the egg rejection
+    /// simply never passed it — the sheet read "underweight — 6 of 12 eggs"
+    /// with not one of the six photographs on it, and nothing anywhere said
+    /// so. A caller with nothing to show now has to say `const []` and mean
+    /// it, rather than lose the evidence by omission (Ethan, 2026-10-08).
+    required List<String> photoPaths,
   }) async {
     final a = await FsaForm.assets();
-    final inspectorSignature = await FsaForm.image(inspectorSignaturePath);
+    final inspectorSignature = await FsaForm.signature(inspectorSignaturePath);
     final authorisedSignature =
-        await FsaForm.image(authorisedPersonSignaturePath);
+        await FsaForm.signature(authorisedPersonSignaturePath);
+    final photos = <pw.MemoryImage>[
+      for (final path in photoPaths)
+        if (await FsaForm.image(path) case final image?) image,
+    ];
     final doc = pw.Document();
 
-    String two(int v) => v.toString().padLeft(2, '0');
-    final visit = '${two(dateOfVisit.day)}/${two(dateOfVisit.month)}/'
-        '${dateOfVisit.year}';
+    final visit = fsaDateLong(dateOfVisit);
 
     // Portrait: two columns inside 551pt, so a label and its box together
     // must stay under half the width or the box runs off the sheet.
+    // No field is left blank — an empty value prints "N/A" (Ethan, 2026-10-08).
+    String na(String v) => v.trim().isEmpty ? 'N/A' : v;
     pw.Widget pair(String label, String value) =>
-        FsaForm.field(label, value, a, labelWidth: 110, boxWidth: 150);
+        FsaForm.field(label, na(value), a, labelWidth: 110, boxWidth: 150);
     pw.Widget wide(String label, String value) =>
-        FsaForm.field(label, value, a, labelWidth: 110, boxWidth: 410);
+        FsaForm.field(label, na(value), a, labelWidth: 110, boxWidth: 410);
 
     // The deviations table is the body of a direction: numbered so the
     // facility and the office can refer to a point by number when it is
@@ -96,27 +116,40 @@ abstract final class DirectionPdf {
           for (var i = 0; i < deviations.length; i++)
             pw.TableRow(children: [
               body('${i + 1}'),
-              body(deviations[i].product),
-              body(deviations[i].nature),
-              body(deviations[i].regulation),
+              body(na(deviations[i].product)),
+              body(na(deviations[i].nature)),
+              body(na(deviations[i].regulation)),
             ]),
           // A direction with nothing on it is not served, but the sheet must
           // still rule a row rather than collapse the table.
           if (deviations.isEmpty)
-            pw.TableRow(children: [body(''), body(''), body(''), body('')]),
+            pw.TableRow(
+                children: [body('N/A'), body('N/A'), body('N/A'), body('N/A')]),
         ],
       );
     }
 
+    // A section travels whole: its grey bar and the rows under it stay on one
+    // page. MultiPage breaks between its top-level children and pw.Column is
+    // a SpanningWidget, so laying a section out as loose children let a break
+    // fall inside it — which stranded "Batch Number" alone at the top of the
+    // next page, away from the rest of PRODUCT DETAILS (Ethan, 2026-10-08).
+    pw.Widget section(List<pw.Widget> children) => pw.Inseparable(
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: children,
+          ),
+        );
+
     doc.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14),
-        build: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            FsaForm.header(a, control),
-            FsaForm.heading('Producer/Importer/Butcher/Retailer Facility', a),
+      pw.MultiPage(
+        pageTheme: FsaForm.letterhead(a, PdfPageFormat.a4.landscape,
+            margin: const pw.EdgeInsets.fromLTRB(22, 20, 22, 14)),
+        build: (context) => [
+          FsaForm.header(a, control),
+          section([
+            FsaForm.heading(
+                'DETAILS: PRODUCER/IMPORTER/BUTCHER/RETAILER FACILITY', a),
             pw.Row(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
@@ -125,7 +158,7 @@ abstract final class DirectionPdf {
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                       pair('Facility', facilityName),
-                      pair('Owner / Manager / Representative',
+                      pair('Owner/Manager/Representative',
                           ownerOrRepresentative),
                       pair('Physical Address', physicalAddress),
                     ],
@@ -143,6 +176,7 @@ abstract final class DirectionPdf {
                 ),
               ],
             ),
+            pw.SizedBox(height: 6),
             pw.Row(
               children: [
                 pw.Expanded(
@@ -151,25 +185,45 @@ abstract final class DirectionPdf {
                     child: pair('Original Reference No.', originalReference)),
               ],
             ),
+          ]),
+          // The commodity and the regulation read as one sentence rather than
+          // as two stacked lines (Ethan, 2026-10-08).
+          section([
             FsaForm.heading('NATURE OF INSPECTION', a),
-            pw.Text(natureOfInspection, style: a.text(size: 8)),
-            if (subjectFields.isNotEmpty) ...[
-              FsaForm.heading(natureOfInspection.toUpperCase(), a),
-              for (final f in subjectFields) wide(f.label, f.value),
-            ],
-            FsaForm.heading('DEVIATIONS (NON-CONFORMITIES)', a),
-            deviationTable(),
-            pw.Padding(
-              padding: const pw.EdgeInsets.only(top: 7, bottom: 3),
-              child: pw.Row(children: [
-                pw.Text(
-                  'Rectify the non-conformity as mentioned below before or on ',
-                  style: a.text(size: 7.5),
-                ),
-                FsaForm.box(correctByDate, a, width: 90),
-              ]),
+            pw.Text(
+              regulation.trim().isEmpty
+                  ? natureOfInspection
+                  : '$natureOfInspection: As per the Regulation No. '
+                      '${regulation.trim()}',
+              style: a.text(size: 8),
             ),
-            FsaForm.heading('ACTIONS AND REMARK', a),
+          ]),
+          // No FINDINGS section: nothing on the handset captures one, so it
+          // printed an empty box on every real rejection. The deviations
+          // table below is what carries each contravention, with the
+          // regulation it offends (Ethan, 2026-10-08).
+          if (subjectFields.isNotEmpty)
+            section([
+              FsaForm.heading('PRODUCT DETAILS', a),
+              for (final f in subjectFields) wide(f.label, f.value),
+            ]),
+          // The deviations keep their heading, but the table itself is left
+          // free to span: a direction with many non-conformities must be
+          // allowed to run onto the next page rather than be forced onto one.
+          FsaForm.heading('DEVIATIONS (NON-CONFORMITIES)', a),
+          deviationTable(),
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(top: 10, bottom: 3),
+            child: pw.Row(children: [
+              pw.Text(
+                'Rectify the non-conformity as mentioned below before or on ',
+                style: a.text(size: 7.5),
+              ),
+              FsaForm.box(na(correctByDate), a, width: 90),
+            ]),
+          ),
+          section([
+            FsaForm.heading('COMMENTS AND REMARKS', a),
             FsaForm.ruledLines(
               actionsAndRemark.isEmpty ? const [] : [actionsAndRemark],
               a,
@@ -181,48 +235,45 @@ abstract final class DirectionPdf {
                 child: pw.Text('Please note:  $pleaseNote',
                     style: a.text(size: 7)),
               ),
-            pw.Spacer(),
-            FsaForm.heading('SIGNATURES', a),
-            pw.Row(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                for (final side in [
-                  (
-                    caption: 'INSPECTOR:',
-                    name: inspectorName,
-                    signature: inspectorSignature
-                  ),
-                  (
-                    caption: 'MANAGER:',
-                    name: authorisedPersonName,
-                    signature: authorisedSignature
-                  ),
-                ])
-                  pw.Expanded(
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(side.caption,
-                            style: a.text(isBold: true, size: 7)),
-                        pw.SizedBox(height: 2),
-                        FsaForm.signatureLine(a,
-                            signature: side.signature, width: 200),
-                        pw.SizedBox(height: 3),
-                        pw.Text('NAME & SURNAME',
-                            style: a.text(isBold: true, size: 6.5)),
-                        pw.SizedBox(
-                          width: 200,
-                          child: pw.Text(side.name, style: a.text(size: 7.5)),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
+          ]),
+          // Generic signature block, the same across every report
+          // (Ethan, 2026-10-08).
+          section([
+            pw.SizedBox(height: 18),
+            FsaForm.heading('SIGNATURE CONTROLS', a),
+            FsaForm.signedBlock(
+              a,
+              inspectorName: inspectorName,
+              authorisedPersonName: authorisedPersonName,
+              inspectorSignature: inspectorSignature,
+              authorisedPersonSignature: authorisedSignature,
             ),
-            pw.SizedBox(height: 4),
-            FsaForm.footer(a),
-          ],
-        ),
+          ]),
+          // Photographs close the sheet, framed and numbered, the same as
+          // the seizure and the checklists (Ethan, 2026-10-08).
+          //
+          // One child, not a spread: MultiPage breaks between its top-level
+          // children, so spreading the bar and the pictures left the bar
+          // stranded at the foot of one page and the pictures alone on the
+          // next.
+          if (photos.isNotEmpty)
+            // pw.Inseparable keeps the bar and the pictures on one page.
+            // pw.Column is a SpanningWidget, so MultiPage will split it and
+            // strand the bar at the foot of one page with the pictures alone
+            // on the next; neither a bare Container nor a Padding stops that,
+            // because MultiPage asks the child itself whether it may span
+            // (Ethan, 2026-10-08).
+            pw.Inseparable(
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+                children: [
+                  FsaForm.heading('PHOTOGRAPHS', a),
+                  // Sized to the room the page has, not a fixed thumbnail.
+                  FsaForm.photoGrid(photos.toList(), a),
+                ],
+              ),
+            ),
+        ],
       ),
     );
 
