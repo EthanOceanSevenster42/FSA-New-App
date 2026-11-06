@@ -88,6 +88,7 @@ void main() {
         eggs: EggsRepository(database: db, baseUrl: ''),
         invoices: InvoiceRepository(db, visits),
         database: db,
+        inspectorName: 'ethan',
       ),
     ));
     await settle(tester);

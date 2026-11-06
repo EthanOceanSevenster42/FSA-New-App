@@ -152,7 +152,7 @@ void main() {
       await settle(tester);
     }
 
-    testWidgets('proceeding with a seizure asks the particulars and records it',
+    testWidgets('proceeding with a seizure asks only how much was taken',
         (tester) async {
       await open(tester);
       await yes(tester, 'Marking Label Present');
@@ -161,29 +161,72 @@ void main() {
       await tester.tap(find.text('Proceed with seizure'));
       await settle(tester);
 
-      expect(find.text('Seizure particulars'), findsOneWidget);
-      // Nothing is recorded without a quantity.
-      await tester.tap(find.text('Record seizure'));
-      await settle(tester);
-      expect(find.textContaining('Say how much is seized'), findsOneWidget);
-      expect(await db.select(db.seizures).get(), isEmpty);
-
-      await tester.enterText(
-          find.byKey(const Key('seizure-quantity')), '5 packs (2.106 kg)');
-      await tester.enterText(
-          find.byKey(const Key('seizure-receiver-id')), '0747676100');
-      await tester.tap(find.text('Record seizure'));
-      await settle(tester);
+      // Still no particulars mid-inspection (Ethan, 2026-09-29): the sheet
+      // fills from the inspection at the end. The quantity is the one
+      // exception — it is counted off the shelf and cannot be recovered
+      // later, and the client signs for it on the same page (Cinga,
+      // 2026-10-26).
       expect(find.text('Seizure particulars'), findsNothing);
+      expect(find.text('How much was seized?'), findsOneWidget);
+      // Counted by the unit unless the inspector switches to weight.
+      expect(find.text('Number of products removed'), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('seizure-amount')), '12');
+      await tester.tap(find.text('Record seizure'));
+      await settle(tester);
 
       final seizure = (await db.select(db.seizures).get()).single;
       expect(seizure.recordKind, 'pmp');
-      expect(seizure.quantity, '5 packs (2.106 kg)');
-      expect(seizure.receiverIdNumber, '0747676100');
+      expect(seizure.quantity, '12 products');
+      expect(seizure.receiverName, isEmpty,
+          reason: 'who signs is not known yet');
       expect(seizure.regulation, 'R.1283 of 4 October 2019');
       expect(seizure.natureOfDeviation, contains('no batch code'));
       expect(seizure.inspectorUsername, 'ethan');
       expect(find.textContaining('Seizure under section 8'), findsOneWidget);
+    });
+
+    testWidgets('the quantity is required: nothing is seized without it',
+        (tester) async {
+      await open(tester);
+      await yes(tester, 'Marking Label Present');
+      await untick(tester, 'Date Marking/Batch Identification');
+      await tester.tap(find.text('Proceed with seizure'));
+      await settle(tester);
+
+      // Pressing on with it blank is refused rather than raising a notice
+      // that does not say what was taken.
+      await tester.tap(find.text('Record seizure'));
+      await settle(tester);
+      expect(find.text('How many products were removed?'), findsOneWidget);
+      expect(await db.select(db.seizures).get(), isEmpty);
+
+      await tester.enterText(find.byKey(const Key('seizure-amount')), '1');
+      await tester.tap(find.text('Record seizure'));
+      await settle(tester);
+      expect((await db.select(db.seizures).get()).single.quantity, '1 product',
+          reason: 'one product, not "1 products"');
+    });
+
+    testWidgets('switching to weight asks for kilograms instead',
+        (tester) async {
+      await open(tester);
+      await yes(tester, 'Marking Label Present');
+      await untick(tester, 'Date Marking/Batch Identification');
+      await tester.tap(find.text('Proceed with seizure'));
+      await settle(tester);
+
+      // The slide is the same one the forms use for every either/or.
+      tester
+          .widget<TwoWaySlider>(find.byKey(const Key('seizure-measure')))
+          .onChanged!(false);
+      await settle(tester);
+      expect(find.text('Weight removed (kg)'), findsOneWidget);
+      expect(find.text('Number of products removed'), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('seizure-amount')), '2.106');
+      await tester.tap(find.text('Record seizure'));
+      await settle(tester);
+      expect((await db.select(db.seizures).get()).single.quantity, '2.106 kg');
     });
   });
 }

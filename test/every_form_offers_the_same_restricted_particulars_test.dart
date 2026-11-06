@@ -47,22 +47,24 @@ void main() {
   });
   tearDown(() => db.close());
 
-  test('the catalogue is every list once, in office order, Other last',
+  test('the catalogue is every list once, in office order, without Other',
       () async {
+    // "Other" is not offered (Ethan, 2026-10-03): one the lists do not
+    // have is typed in.
     expect(await RestrictedParticularsCatalogue.names(db), [
       'Grain Fed',
       'Free Range',
       'Free Range/Vryloop',
       'Organic',
-      'Other',
     ]);
   });
 
-  test('merging keeps the first spelling and drops blanks', () {
+  test('merging keeps the first spelling, drops blanks and leaves Other out',
+      () {
     expect(
         RestrictedParticularsCatalogue.merge(
             ['Other', 'Free Range', ' ', 'free range', 'Extra', 'OTHER']),
-        ['Free Range', 'Extra', 'Other']);
+        ['Free Range', 'Extra']);
   });
 
   group('the picker', () {
@@ -82,8 +84,9 @@ void main() {
           body: StatefulBuilder(
             builder: (context, setState) =>
                 RestrictedParticularsPicker<({int id, String name})>(
-              // A raw form: its own list is "Other" alone.
-              options: const [(id: 1, name: 'Other')],
+              // A raw form whose office list still carries "Other", and one
+              // row of its own.
+              options: const [(id: 1, name: 'Other'), (id: 2, name: 'Halaal')],
               optionId: (o) => o.id,
               optionLabel: (o) => o.name,
               selected: selected,
@@ -103,10 +106,11 @@ void main() {
     }
 
     testWidgets('offers its own list, then the shared names once, then '
-        'the typing entry', (tester) async {
+        'the typing entry — never Other', (tester) async {
       await pump(tester, typedSet: typed);
       await openMenu(tester);
-      expect(find.text('Other'), findsOneWidget);
+      expect(find.text('Other'), findsNothing);
+      expect(find.text('Halaal'), findsOneWidget);
       expect(find.text('Free Range'), findsOneWidget);
       expect(find.text('free range'), findsNothing);
       expect(find.text(RestrictedParticularsPicker.typeItInLabel),
@@ -128,13 +132,13 @@ void main() {
       expect(chip.avatar, isNull);
     });
 
-    testWidgets('a shared name the form lists itself is that option',
+    testWidgets('a name the form lists itself is that option',
         (tester) async {
       await pump(tester, typedSet: typed);
       await openMenu(tester);
-      await tester.tap(find.text('Other'));
+      await tester.tap(find.text('Halaal'));
       await tester.pumpAndSettle();
-      expect(selected, {1});
+      expect(selected, {2});
       expect(typed, isEmpty);
     });
 
@@ -142,7 +146,8 @@ void main() {
         (tester) async {
       await pump(tester, typedSet: null);
       await openMenu(tester);
-      expect(find.text('Other'), findsOneWidget);
+      expect(find.text('Halaal'), findsOneWidget);
+      expect(find.text('Other'), findsNothing);
       expect(find.text('Free Range'), findsNothing);
       expect(find.text(RestrictedParticularsPicker.typeItInLabel),
           findsNothing);

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fsa_app/core/data/local_database.dart';
+import 'package:fsa_app/core/widgets/required_label.dart';
 import 'package:fsa_app/features/poultry/data/poultry_capture_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_repository.dart';
 import 'package:fsa_app/features/poultry/presentation/poultry_label_checklist_form.dart';
@@ -56,6 +57,22 @@ void main() {
 
   testWidgets('refuses to complete until both are taken', (tester) async {
     await open(tester);
+    // The Product Name is checked before the photographs are, so without it
+    // the form stops there and the photograph gate is never reached. It sits
+    // well down a long list, so it has to be scrolled to before it is built.
+    final productLabel = find.byWidgetPredicate(
+        (w) => w is RequiredLabel && w.label == 'Product Name');
+    await tester.scrollUntilVisible(productLabel, 200,
+        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.ancestor(of: productLabel, matching: find.byType(LabelledField)),
+        matching: find.byType(TextField),
+      ),
+      'Whole frozen chicken',
+    );
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('Complete'), 200,
         scrollable: find.byType(Scrollable).first);
     // scrollUntilVisible stops at the first partly-visible pixel; the button
@@ -66,6 +83,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('0 of 2 taken'), findsOneWidget);
-    expect(await db.select(db.poultryLabelInspections).get(), isEmpty);
+    // Typing starts a draft — the forms autosave so an install cannot lose
+    // one — so what matters is that nothing was COMPLETED, not that nothing
+    // was written at all.
+    final saved = await db.select(db.poultryLabelInspections).get();
+    expect(
+      saved.where((r) => r.status == 'completed' || r.status == 'ready'),
+      isEmpty,
+      reason: 'the checklist must not complete without both photographs',
+    );
   });
 }

@@ -12,6 +12,7 @@ EggRequirement row(int id, String kind, String description) => EggRequirement(
       kind: kind,
       description: description,
       regulation: '',
+      minLetteringHeight: '',
       screenLabel: '',
       sortOrder: id,
       isActive: true,
@@ -47,9 +48,10 @@ void main() {
       expect(action(packing), EggAction.rectifyNow);
     });
 
-    test('"Eggs" omitted is a seizure; shown but wrong is 30 days', () {
+    test('"Eggs" not shown is a seizure, however the row is answered', () {
+      // The packaging label's expression row (Ethan, 2026-10-03).
       expect(action(eggs, eggsAbsent: true), EggAction.seize);
-      expect(action(eggs), EggAction.rectify30Days);
+      expect(action(eggs), EggAction.seize);
     });
 
     test('best-before omitted is a seizure; shown but wrong is 30 days', () {

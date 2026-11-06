@@ -136,4 +136,54 @@ void main() {
     expect(find.text('SEIZURE SERVED'), findsOneWidget);
     expect(find.text('EDIT SEIZURE PARTICULARS'), findsNothing);
   });
+
+  test('an egg seizure fills from the inspection at the end', () async {
+    // Nothing typed on the seizure: no particulars pop-up any more.
+    final when = DateTime(2026, 9, 29, 9);
+    await db.into(db.eggSizes).insert(
+        EggSizesCompanion.insert(id: const Value(9), name: 'Large', minMassG: 51));
+    await db.into(db.eggGrades).insert(
+        EggGradesCompanion.insert(id: const Value(4), name: 'Grade 1', rank: 1));
+    await db.into(db.eggInspections).insert(EggInspectionsCompanion.insert(
+          clientUuid: 'egg-1',
+          inspectedAt: when,
+          updatedAt: when,
+          visitUuid: const Value('visit-1'),
+          declaredSizeId: const Value(9),
+          declaredGradeId: const Value(4),
+        ));
+    await db.into(db.eggDirections).insert(EggDirectionsCompanion.insert(
+          clientUuid: 'dir-1',
+          inspectionUuid: const Value('egg-1'),
+          issuedAt: when,
+          updatedAt: when,
+          quantityRemoved: const Value(24),
+        ));
+    await (db.update(db.storeVisits)..where((t) => t.uuid.equals('visit-1')))
+        .write(const StoreVisitsCompanion(managerName: Value('T. Dlamini')));
+    await SeizureRepository(database: db).record(SeizuresCompanion.insert(
+          clientUuid: 'seizure-egg',
+          recordUuid: 'egg-1',
+          recordKind: 'egg',
+          visitUuid: const Value('visit-1'),
+          issuedAt: when,
+          updatedAt: when,
+          productName: const Value('Eggs'),
+        ));
+
+    final sheet =
+        await SeizureRepository(database: db).currentForRecord('egg-1');
+    expect(sheet!.quantity, '24');
+    expect(sheet.productClass, 'Size: Large, Grade: Grade 1');
+    expect(sheet.receiverName, 'T. Dlamini');
+    expect(sheet.receiverDesignation, 'Manager');
+  });
+
+  test('particulars the inspector typed stand over the inspection', () async {
+    // seizure-1 was given its own quantity and receiver.
+    final sheet =
+        await SeizureRepository(database: db).currentForRecord('pmp-1');
+    expect(sheet!.quantity, '5 packs');
+    expect(sheet.receiverName, 'Manel');
+  });
 }

@@ -14,6 +14,7 @@ import 'package:fsa_app/features/pmp/data/pmp_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_capture_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_repository.dart';
 import 'package:fsa_app/features/rawrmp/data/rawrmp_repository.dart';
+import 'package:fsa_app/features/rawrmp/presentation/rawrmp_inspection_form.dart';
 import 'package:fsa_app/features/visits/data/visit_repository.dart';
 import 'package:fsa_app/features/visits/presentation/store_visit_pages.dart';
 
@@ -36,15 +37,26 @@ void main() {
   });
   tearDown(() => db.close());
 
-  test('no form under a visit asks for the producer again', () {
+  test('no form under a visit hides the producer it was given', () {
+    // It used to be hidden outright whenever the visit named one, which
+    // meant a visit covering several commodities stamped that one producer
+    // on all of them and the inspector could not say otherwise: a
+    // butchery's beef mince, boerewors, patties and chicken patties all
+    // went out naming the egg producer, and the office could not approve
+    // the visit (Maders Slaghuis, group 4152, Cinga 2026-10-26). Being
+    // named once means it is filled in, not that it cannot be corrected —
+    // which is what the visit screen has promised all along.
     for (final path in [
       'lib/features/rawrmp/presentation/rawrmp_inspection_form.dart',
       'lib/features/pmp/presentation/pmp_inspection_form.dart',
       'lib/features/eggs/presentation/egg_inspection_form.dart',
     ]) {
       final source = File(path).readAsStringSync();
-      expect(source.contains('if (!_producerFromVisit)'), isTrue,
-          reason: '$path must hide its producer when the visit named one');
+      expect(source.contains('if (!_producerFromVisit)'), isFalse,
+          reason: '$path must show its producer, prefilled, so a product '
+              'from a different producer can be corrected on its own form');
+      expect(source.contains('if (_producerFromVisit)'), isTrue,
+          reason: '$path must say where the prefilled producer came from');
     }
   });
 
@@ -105,7 +117,7 @@ void main() {
 
     // Drawn with the required star, so found by its label, not its text.
     Finder producerField() => find.byWidgetPredicate(
-        (w) => w is RequiredLabel && w.label == 'Producer / supplier');
+        (w) => w is RequiredLabel && w.label == 'Producer/supplier');
 
     testWidgets('not for a poultry-only visit', (tester) async {
       await openDoor(tester, poultry: 1);
@@ -119,8 +131,15 @@ void main() {
       expect(producerField(), findsOneWidget);
     });
 
-    testWidgets('and required there before an inspection starts',
+    testWidgets('but not required there — the form can name its own',
         (tester) async {
+      // The door stopped demanding a producer on 2026-10-12: a retailer's
+      // shelf carries stock from several producers and often names none,
+      // and demanding one here stopped a visit that had nothing to give.
+      // That was only safe because each form can be given its own on the
+      // day — which the forms then went on to prevent by hiding the field
+      // (see a_product_can_name_its_own_producer_test.dart). This pins the
+      // door half: a visit with no producer still starts.
       await db.into(db.storeVisits).insert(StoreVisitsCompanion.insert(
             uuid: 'visit-3',
             inspectorUsername: const Value('ethan'),
@@ -129,7 +148,12 @@ void main() {
             facilityType: const Value('Retailer'),
             inspectionReason: const Value('Inspection'),
             facilityAddress: const Value('1 Main Road'),
+            // Required before a start (Ethan, 2026-10-01), so only the
+            // producer is left missing here.
+            contactPerson: const Value('K. Kroon'),
             contactEmail: const Value('k@kroon.test'),
+            travelStart: const Value('07:30'),
+            travelEnd: const Value('08:15'),
             distanceTravelledKm: const Value(12),
             plannedRaw: const Value(1),
           ));
@@ -155,10 +179,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text(start));
       await tester.pumpAndSettle();
-      expect(
-          find.text('Fill in the producer / supplier before starting an '
-              'inspection.'),
-          findsOneWidget);
+      expect(find.textContaining('producer', findRichText: true), findsNothing,
+          reason: 'a missing producer must not hold the inspection up');
+      // The start went through: raw asks which of its two inspections this
+      // is, which is the next thing after the door lets go. The form then
+      // asks for the producer itself.
+      expect(find.text('Which raw inspection?'), findsOneWidget,
+          reason: 'the inspection must start without a producer at the door');
     });
 
     testWidgets('and for eggs', (tester) async {

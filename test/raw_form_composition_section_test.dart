@@ -11,7 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 /// The raw form carries the Regulation 5 compositional checklist
-/// (SOP-APS-RAW-003): nine requirements, each with a deviation answer, a
+/// (SOP-APS-RAW-003): seven requirements, each with a deviation answer, a
 /// contribution in grams and a remark, plus comments/actions.
 void main() {
   late LocalDatabase db;
@@ -42,23 +42,51 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('COMPOSITIONAL REQUIREMENTS CHECKLIST'), findsOneWidget);
-    expect(find.textContaining('9. Total Meat Content'), findsOneWidget);
+    // Total Meat Content is not a numbered requirement with a slide; it is
+    // one line showing the percentage (Ethan, 2026-10-01).
+    expect(find.textContaining('7. Total Meat Content'), findsNothing);
+    final total = find.text('Total meat content');
+    expect(total, findsOneWidget);
+    expect(
+        find.descendant(
+            of: find.ancestor(of: total, matching: find.byType(Row)).first,
+            matching: find.byType(ComplianceSlider)),
+        findsNothing);
     expect(find.textContaining('1. Manufactured from either meat'), findsOneWidget);
+    // The group names the representative; the checklist does not ask.
     expect(find.text('Position of Representative', findRichText: true),
-        findsOneWidget);
-    expect(find.text('Comments/Actions', findRichText: true), findsOneWidget);
-    // Eight rows take a contribution; Total Meat Content is worked out from
-    // the meat and the other ingredients instead.
-    expect(find.text('Contribution (g)', findRichText: true), findsNWidgets(8));
-    expect(find.text('Meat (g)', findRichText: true), findsOneWidget);
-    expect(find.text('All other ingredients (g)', findRichText: true),
-        findsOneWidget);
+        findsNothing);
+    expect(find.textContaining('Comments/Actions', findRichText: true), findsOneWidget);
+    // Eight rows take a contribution; Total Meat Content is worked out
+    // from the meat and the other ingredients instead. The count was last
+    // right at six rows — "Food stuff" (2026-10-04) and MDM (2026-10-19)
+    // have been added since.
+    expect(find.textContaining('Contribution (kg)', findRichText: true), findsNWidgets(8));
+    // The last row is only the result; no Meat box (Ethan, 2026-10-01).
+    expect(find.textContaining('Meat (kg)', findRichText: true), findsNothing);
+    // All other ingredients are the rows added up, not a box of their own.
+    expect(find.textContaining('All other ingredients (g)', findRichText: true),
+        findsNothing);
+
+    // Typed in kg or grams, as the inspector chooses (Ethan, 2026-10-01).
+    final unit = find.byWidgetPredicate(
+        (w) => w is TwoWaySlider && w.leftLabel == 'KG');
+    expect(unit, findsOneWidget);
+    tester.widget<TwoWaySlider>(unit).onChanged!(false);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Contribution (g)', findRichText: true),
+        findsNWidgets(8));
+    expect(find.textContaining('Meat (g)', findRichText: true), findsNothing);
+    tester.widget<TwoWaySlider>(unit).onChanged!(true);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Contribution (kg)', findRichText: true),
+        findsNWidgets(8));
 
     // One row, one answer, through the same Compliant/Deviation slide every
     // other checklist in the app uses — the block used to ask it with two
     // chips of its own, which made the same question look different here.
     // Scoped to the row: the form carries a slider for every checklist
-    // requirement, not only these nine.
+    // requirement, not only these seven.
     final row = find.ancestor(
       of: find.textContaining('1. Manufactured from either meat'),
       matching: find.byType(Row),

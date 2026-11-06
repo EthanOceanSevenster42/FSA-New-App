@@ -59,6 +59,16 @@ void main() {
     logo: pw.MemoryImage(await File('assets/images/FSA_Logo.png').readAsBytes()),
     letterhead: pw.MemoryImage(
         await File('assets/images/fsa_letterhead_logo.jpg').readAsBytes()),
+    letterheadLogo: pw.MemoryImage(
+        await File('assets/images/letterhead_logo.png').readAsBytes()),
+    letterheadIcons: pw.MemoryImage(
+        await File('assets/images/letterhead_icons.png').readAsBytes()),
+    letterheadFooter: pw.MemoryImage(
+        await File('assets/images/letterhead_footer.png').readAsBytes()),
+    // The seizure sheet is headed by the Department's arms; a renderer
+    // that is not given them prints the sheet without, silently.
+    departmentLogo: pw.MemoryImage(
+        await File('assets/images/dept_agriculture_logo.jpg').readAsBytes()),
     ));
 
     final db = LocalDatabase(NativeDatabase.memory());
@@ -259,7 +269,11 @@ void main() {
       ),
     ]);
     await check('Poultry QUID Determination Checklist',
-      () => poultry.buildQuidChecklist('doc-quid', into: out));
+      () => poultry.buildQuidChecklist('doc-quid',
+          into: out, injectorPosition: 1, onlyThisInjector: true));
+  await check('Poultry QUID Determination (injector 2)',
+      () => poultry.buildQuidChecklist('doc-quid',
+          into: out, injectorPosition: 2, onlyThisInjector: true));
     // The rejection served for it, which had no sheet at all.
     await check('Poultry QUID Rejection',
       () => poultry.buildQuidRejection('doc-quid', into: out));
@@ -374,6 +388,10 @@ void main() {
     // facility rather than invented names.
     final direction = await DirectionPdf.write(
     out: File('${out.path}/POULTRY-Direction.pdf'),
+    // Nothing photographed on this one, said rather than left out: the
+    // parameter is required so a rejection cannot lose its evidence by
+    // omission (Ethan, 2026-10-08).
+    photoPaths: const [],
     control: FsaDocuments.poultryDirection,
     natureOfInspection: 'Poultry Meat Classification and Grading',
     facilityName: 'Rainbow Chickens - Hammarsdale',
@@ -464,7 +482,7 @@ void main() {
       ('pmp', 'doc-pmp', 'Labelling Verification Checklist'),
       ('poultry', 'doc-grading', 'Poultry Grading Checklist'),
       ('poultry_label', 'doc-label', 'Poultry Labelling Checklist'),
-      ('quid', 'doc-quid', 'QUID Determination Checklist'),
+      ('quid', 'doc-quid', 'QUID Determination — Injector 1 - brine'),
     ]) {
       final offered = await documentsForRecord(db, kind, uuid);
       note('$kind offers: ${offered.map((d) => d.title).join(', ')}',

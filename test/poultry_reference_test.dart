@@ -43,7 +43,10 @@ void main() {
     expect(await repo.alternativeDesignationClasses(), hasLength(13));
     expect(await repo.inspectionReasons(), hasLength(2));
     expect(await repo.inspectionLocations(), hasLength(6));
-    expect(await repo.restrictedParticulars(), hasLength(4));
+    // Three, not four: "Other" was deactivated in the reference data on
+    // 2026-10-03 — a particular no list carries is typed in rather than
+    // filed as "Other" (see RestrictedParticularsCatalogue).
+    expect(await repo.restrictedParticulars(), hasLength(3));
   });
 
   test('the three tick-lists arrive intact', () async {
@@ -82,13 +85,17 @@ void main() {
       reason: 'the portions row now reads "specified"',
     );
 
-    // Portion and pack rows cite a regulation; grading rows do not.
+    // Every quality row cites its regulation. The grading rows printed an
+    // empty cell beside them until 2026-10-19, when Neo Noe asked for
+    // Regulation 3(1) of the Poultry Consolidated Regulations (page 4) —
+    // the standards those rows are judged against.
     final portion = items
         .firstWhere((i) => i.kind == PoultryChecklistKind.portion);
     expect(portion.regulationReference, isNotEmpty);
-    final grading = items
-        .firstWhere((i) => i.kind == PoultryChecklistKind.grading);
-    expect(grading.regulationReference, isEmpty);
+    for (final row
+        in items.where((i) => i.kind == PoultryChecklistKind.grading)) {
+      expect(row.regulationReference, '3(1)', reason: row.description);
+    }
   });
 
   test('the grading rules resolve against the real reference data', () async {

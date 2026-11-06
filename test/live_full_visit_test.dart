@@ -178,6 +178,8 @@ void main() {
           facilityPhone: const Value('031 736 2000'),
           contactPerson: const Value(manager),
           contactEmail: const Value(clientEmail),
+          travelStart: const Value('07:30'),
+          travelEnd: const Value('08:15'),
           managerName: const Value(manager),
           managerEmail: const Value('manager@rainbow.test'),
           additionalEmail1: const Value('headoffice@rainbow.test'),

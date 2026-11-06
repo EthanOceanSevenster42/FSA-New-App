@@ -93,7 +93,8 @@ void main() {
         repositoryAnswering([_serverVisit()], seen: (r) => asked = r.url);
     expect(await repository.pullFromServer(token: 'jwt'), 1);
     expect(asked!.queryParameters['detail'], '1');
-    expect(asked!.queryParameters['days'], '3');
+    expect(asked!.queryParameters['days'],
+        '${VisitRepository.localRetention.inDays}');
 
     final visit = (await db.select(db.storeVisits).get()).single;
     expect(visit.facilityName, 'Checkers Blueberry Square');
@@ -176,24 +177,28 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     final repository = repositoryAnswering([_serverVisit()]);
-    await tester.runAsync(() => repository.pullFromServer(token: 'jwt'));
+    await tester.runAsync(
+        () => repository.pullFromServer(token: 'jwt', owner: 'ethan'));
     await tester.pumpWidget(MaterialApp(
       home: InspectionManagementPage(
         visits: repository,
         eggs: EggsRepository(database: db, baseUrl: ''),
         invoices: InvoiceRepository(db, repository),
         database: db,
+        inspectorName: 'ethan',
       ),
     ));
     await settle(tester);
     expect(find.text('Checkers Blueberry Square'), findsOneWidget);
     expect(find.text('Seizure served'), findsOneWidget);
-    expect(find.text('From the server'), findsOneWidget);
+    // No "From the server" tag any more (Ethan, 2026-09-30).
+    expect(find.text('From the server'), findsNothing);
 
     await tester.tap(find.text('Checkers Blueberry Square'));
     await settle(tester);
     expect(find.text('SEIZURE SERVED'), findsOneWidget);
-    expect(find.textContaining('Brought down from the server'), findsOneWidget);
+    expect(find.textContaining('Brought down from the server'), findsNothing);
+    // Read-only: a visit captured elsewhere cannot be edited here.
     expect(find.text('EDIT VISIT DETAILS'), findsNothing);
   });
 }

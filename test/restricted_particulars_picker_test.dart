@@ -66,7 +66,9 @@ void main() {
     await open(tester);
     expect(find.byType(BottomSheet), findsNothing);
     expect(find.text('Free Range/Vryloop'), findsWidgets);
-    expect(find.text('Other'), findsWidgets);
+    // "Other" is never offered (Ethan, 2026-10-03): a particular no list
+    // carries is typed in rather than filed as "Other".
+    expect(find.text('Other'), findsNothing);
   });
 
   testWidgets('picking one lists it as a chip and resets the field',
@@ -101,10 +103,10 @@ void main() {
     final state = await pump(tester, onDuplicate: () async => refused++);
     for (var i = 0; i < 2; i++) {
       await open(tester);
-      await tester.tap(find.text('Other').last);
+      await tester.tap(find.text('Extra/Ekstra').last);
       await tester.pumpAndSettle();
     }
-    expect(state.selected, {4});
+    expect(state.selected, {3});
     expect(refused, 1);
     expect(find.byType(InputChip), findsOneWidget);
   });
@@ -151,7 +153,8 @@ void main() {
           .map((e) => (e.widget as Text).data)
           .toList();
       expect(menuTexts, isNot(contains('Grain fed')));
-      expect(menuTexts, hasLength(options.length + 1));
+      // The listed ones less "Other", plus the typing entry.
+      expect(menuTexts, hasLength(options.length));
     });
 
     testWidgets('typed the same as a listed one, it is the listed one',

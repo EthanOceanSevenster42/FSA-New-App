@@ -99,7 +99,7 @@ void main() {
       // A cellphone is as good as a landline for reaching the facility
       // (Ethan, 2026-09-24).
       'entryNewFacilityTelephone':
-          'Facility Primary Contact Telephone / Cellphone Number',
+          'Facility Primary Contact Telephone/Cellphone Number',
     };
     for (final entry in reworded.entries) {
       expect(
@@ -143,11 +143,10 @@ void main() {
 
     final source = form.readAsStringSync();
 
-    // "Classifcation" is the original's spelling of its own section heading.
-    // Correcting it would be the one change an inspector actually notices,
-    // and would leave the two systems reading differently.
+    // "Classifcation" is the original's spelling of its own section heading;
+    // the handset spells it correctly (Ethan, 2026-09-29).
     expect(legacy.readAsStringSync(), contains('Classifcation'));
-    expect(source, contains('Classifcation and Grading Checklist'));
+    expect(source, contains('Classification and Grading Checklist'));
   });
 
   test('the signature refusal keeps the original\'s caption', () {

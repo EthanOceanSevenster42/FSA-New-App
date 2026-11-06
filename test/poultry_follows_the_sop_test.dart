@@ -205,6 +205,82 @@ void main() {
       expect(find.textContaining('Seizure under section 8'), findsOneWidget);
       // Shown by the date field, with its weekday in front.
       expect(find.textContaining(dmy(DateTime.now())), findsOneWidget);
+      // Seized, only the photographs are still asked for.
+      expect(find.textContaining('Take the 2 label photographs'),
+          findsOneWidget);
+    });
+
+    testWidgets('what is typed is kept without leaving the form',
+        (tester) async {
+      // An app closed mid-way used to lose the labelling (Ethan, 2026-09-30).
+      await open(tester);
+      final box = find
+          .descendant(
+            of: find
+                .ancestor(
+                    of: find.textContaining('Product Name', findRichText: true),
+                    matching: find.byType(Column))
+                .first,
+            matching: find.byType(TextField),
+          )
+          .first;
+      await tester.enterText(box, 'Whole frozen chicken');
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+
+      final drafts = await db.select(db.poultryLabelInspections).get();
+      expect(drafts.single.productDetails, 'Whole frozen chicken');
+      expect(drafts.single.status, 'draft');
+    });
+
+    testWidgets('a seizure ends the inspection once its photos are taken',
+        (tester) async {
+      tester.view.physicalSize = const Size(1280, 6000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final when = DateTime.now();
+      // No product name and the rest unanswered: a seized product is not
+      // asked for them (Ethan, 2026-09-30).
+      await db.into(db.poultryLabelInspections).insert(
+          PoultryLabelInspectionsCompanion.insert(
+        clientUuid: 'label-seized',
+        inspectedAt: when,
+        updatedAt: when,
+        compliantItemIds: const Value('24,25,26,27,28,29,30,31,32,42,43'),
+      ));
+      for (var n = 0; n < 2; n++) {
+        await capture.addPhoto(PoultryPhotosCompanion.insert(
+          recordUuid: 'label-seized',
+          kind: 'label',
+          filePath: '/nowhere/label_$n.jpg',
+          capturedAt: when,
+        ));
+      }
+      await tester.pumpWidget(
+          const MaterialApp(home: Scaffold(body: Text('base'))));
+      final navigator = Navigator.of(tester.element(find.text('base')));
+      unawaited(navigator.push(MaterialPageRoute<void>(
+        builder: (_) => PoultryLabelChecklistForm(
+          repository:
+              PoultryRepository(database: db, baseUrl: 'http://example.test'),
+          captureRepository: capture,
+          inspectorName: 'ethan',
+          existingUuid: 'label-seized',
+        ),
+      )));
+      await tester.pumpAndSettle();
+
+      await untick(tester, 'Number and Code to Identify Production Lot');
+      await tester.tap(find.text('Proceed with seizure'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('base'), findsOneWidget, reason: 'the form closed');
+      expect(find.text('Seizure recorded — this inspection is done.'),
+          findsOneWidget);
+      final saved = await (db.select(db.poultryLabelInspections)
+            ..where((t) => t.clientUuid.equals('label-seized')))
+          .getSingle();
+      expect(saved.status, 'completed');
     });
 
     testWidgets('a packer deviation sets a 30-day correct-by date',
@@ -233,7 +309,8 @@ void main() {
           findsOneWidget);
       await tester.tap(find.text('Carry on inspecting'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Seizure declined'), findsOneWidget);
+      // Declined, and nothing on the form says so: the rejection stands.
+      expect(find.textContaining('Seizure declined'), findsNothing);
     });
 
     testWidgets('a completed checklist with deviations raises the rejection '
@@ -252,6 +329,8 @@ void main() {
         inspectedAt: when,
         updatedAt: when,
         compliantItemIds: const Value('24,25,26,27,28,29,30,31,32,42,43'),
+        // Required on the label form (Ethan, 2026-09-30).
+        productDetails: const Value('Whole chicken'),
       ));
       for (var n = 0; n < 2; n++) {
         await capture.addPhoto(PoultryPhotosCompanion.insert(

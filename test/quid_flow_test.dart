@@ -51,16 +51,20 @@ void main() {
     expect(quidWaterPickupPasses(''), isFalse);
   });
 
-  test('regulated QUID is 10% whole carcass, 15% cuts', () {
+  test('regulated QUID is 10% whole carcass, 15% portions', () {
+    // AFSQ reported the two crossed over; confirmed this way round
+    // (Ethan, 2026-10-08).
     expect(quidRegulatedPercent(isWholeCarcass: true), 10);
     expect(quidRegulatedPercent(isWholeCarcass: false), 15);
   });
 
   group('closing chilling', () {
-    test('water needs five carcasses weighed off the chiller', () {
-      final four = List.generate(4, (_) => carcass(waterFinal: '1020'));
+    test('water needs five carcasses weighed in, as air does', () {
+      // The weight off the water chiller is asked on the injector step
+      // (Ethan, 2026-10-04), so it is not what closes this one.
+      final four = List.generate(4, (_) => carcass());
       expect(quidChillingBlocked(four, isWaterChilled: true), isNotNull);
-      final five = [...four, carcass(waterFinal: '1020')];
+      final five = [...four, carcass()];
       expect(quidChillingBlocked(five, isWaterChilled: true), isNull);
     });
 

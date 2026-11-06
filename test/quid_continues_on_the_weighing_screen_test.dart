@@ -32,6 +32,8 @@ void main() {
           facilityName: const Value('QUID test'),
           facilityAddress: const Value('1 Test Road'),
           contactEmail: const Value('test@example.com'),
+          travelStart: const Value('07:30'),
+          travelEnd: const Value('08:15'),
           contactPerson: const Value('Tester'),
           facilityType: const Value('Abattoir'),
           inspectionReason: const Value('Inspection'),
@@ -96,7 +98,7 @@ void main() {
     expect(find.text('Which poultry inspection?'), findsNothing,
         reason: 'the question was answered when the set-up was made');
     // Its set-up came with it: the record was continued, not replaced.
-    expect(find.text('Whole Carcass'), findsOneWidget);
+    expect(find.text('Water'), findsOneWidget);
     final injectors = await capture.quidInjectors('quid-1');
     expect(injectors.map((i) => i.name), ['Brine 1']);
   });

@@ -124,23 +124,14 @@ void main() {
       expect(EggValidation.eggMass(52), isNull);
     });
 
-    test('the Haugh rule counts the sample, not the last egg typed', () {
+    test('the Haugh mean counts the sample, not the last egg typed', () {
       final good = EggRules.haughUnit(albumenHeightMm: 20, massG: 52.3);
       final poor = EggRules.haughUnit(albumenHeightMm: 3, massG: 52.3);
 
+      // One good egg among seven poor ones does not carry the average.
       expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [good, ...List.filled(7, poor)],
-          sampledCount: 8,
-        ),
-        greaterThan(0),
-      );
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: List.filled(8, good),
-          sampledCount: 8,
-        ),
-        0,
+        EggRules.meanHaughUnit([good, ...List.filled(7, poor)]),
+        lessThan(EggRules.meanHaughUnit(List.filled(8, good))!),
       );
     });
   });

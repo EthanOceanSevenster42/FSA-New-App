@@ -45,8 +45,11 @@ void main() {
       // Category A/B/C from the original, plus Category D added at the
       // FSA's request (2026-08-20).
       expect(await repo.sampleCategories(), hasLength(4));
-      expect(await repo.restrictedParticulars(), hasLength(1));
-      expect(await repo.directionRemarks(), hasLength(4));
+      // The original's one restricted particular was "Other", which is no
+      // longer offered (Ethan, 2026-10-03): a particular is typed in.
+      expect(await repo.restrictedParticulars(), isEmpty);
+      // The dispensation-route remark is retired (Ethan, 2026-09-29).
+      expect(await repo.directionRemarks(), hasLength(3));
     });
 
     test('the storage picker hides what the original seeds inactive',

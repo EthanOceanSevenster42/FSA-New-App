@@ -67,7 +67,7 @@ void main() {
     await open(tester);
     expect(find.text('Facility Address'), findsNothing);
     expect(find.text('Trading Name'), findsNothing);
-    expect(find.text('Representative Name / Person in Charge'), findsNothing);
+    expect(find.text('Representative Name/Person in Charge'), findsNothing);
   });
 
   testWidgets('it does not ask for the distance again', (tester) async {

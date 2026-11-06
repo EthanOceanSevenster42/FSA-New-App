@@ -34,10 +34,13 @@ void main() {
       expect(await repo.locations(), hasLength(4));
       expect(await repo.storageTypes(), hasLength(4));
       expect(await repo.subClassProducts(), hasLength(3));
-      expect(await repo.ingredients(), hasLength(7));
+      // Pork joined the list (Ethan, 2026-10-02).
+      expect(await repo.ingredients(), hasLength(8));
+      expect((await repo.ingredients()).map((i) => i.name), contains('Pork'));
       expect(await repo.laboratories(), hasLength(4));
       expect(await repo.restrictedParticulars(), hasLength(18));
-      expect(await repo.directionRemarks(), hasLength(4));
+      // The dispensation-route remark is retired (Ethan, 2026-09-29).
+      expect(await repo.directionRemarks(), hasLength(3));
     });
 
     test('the tick-list arrives sectioned as the screen shows it', () async {

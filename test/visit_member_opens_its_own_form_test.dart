@@ -37,6 +37,12 @@ void main() {
   tearDown(() async => db.close());
 
   Future<void> open(WidgetTester tester) async {
+    // Tall enough for the whole page: the captured rows sit under the door
+    // details, travel times included (Ethan, 2026-10-03), and a row half
+    // off the screen is one a tap misses.
+    tester.view.physicalSize = const Size(1080, 6000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
       home: StoreVisitPage(
         visitUuid: visitUuid,
@@ -70,7 +76,7 @@ void main() {
         ));
     await open(tester);
 
-    final row = find.text('Poultry QUID verification');
+    final row = find.text('Poultry QUID');
     await tester.scrollUntilVisible(row, 200,
         scrollable: find.byType(Scrollable).first);
     await tester.tap(row);
@@ -104,7 +110,7 @@ void main() {
         database: db,
         kind: 'quid',
         uuid: 'quid-2',
-        title: 'Poultry QUID verification',
+        title: 'Poultry QUID',
         uploaded: false,
         status: 'completed',
       ),
@@ -137,9 +143,9 @@ void main() {
     await open(tester);
 
     await tester.scrollUntilVisible(
-        find.text('Poultry QUID verification'), 200,
+        find.text('Poultry QUID'), 200,
         scrollable: find.byType(Scrollable).first);
-    expect(find.text('Poultry QUID verification'), findsOneWidget);
+    expect(find.text('Poultry QUID'), findsOneWidget);
 
     final minus = find
         .descendant(
@@ -162,7 +168,7 @@ void main() {
     await tester.tap(find.text('Discard'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Poultry QUID verification'), findsNothing);
+    expect(find.text('Poultry QUID'), findsNothing);
     expect(await db.select(db.poultryQuidInspections).get(), isEmpty);
   });
 
@@ -180,12 +186,65 @@ void main() {
         ));
     await open(tester);
 
-    final row = find.text('Label/Container inspection');
+    final row = find.text('Poultry Labelling');
     await tester.scrollUntilVisible(row, 200,
         scrollable: find.byType(Scrollable).first);
     await tester.tap(row);
     await tester.pumpAndSettle();
 
     expect(find.text('Label/Container Checklist'), findsOneWidget);
+  });
+
+  // A captured inspection can be opened and corrected until the visit is
+  // signed off (Ethan, 2026-09-29); before, its row could not be tapped.
+  Future<void> captureEgg() => db.into(db.eggInspections).insert(
+        EggInspectionsCompanion.insert(
+          clientUuid: 'egg-1',
+          inspectedAt: when,
+          updatedAt: when,
+          inspectorUsername: const Value('ethan'),
+          visitUuid: const Value(visitUuid),
+          facilityName: const Value('Rainbow Chickens - Hammarsdale'),
+          status: const Value('ready'),
+        ),
+      );
+
+  testWidgets('a captured inspection opens again to be corrected',
+      (tester) async {
+    await captureEgg();
+    await open(tester);
+
+    final row = find.text('Egg inspection');
+    await tester.scrollUntilVisible(row, 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.textContaining('Captured — tap to edit'), findsOneWidget);
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+
+    // The egg form, on the same record, finishing as a correction.
+    await tester.scrollUntilVisible(find.text('SAVE CHANGES'), 600,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('SAVE CHANGES'), findsOneWidget);
+  });
+
+  testWidgets('a signed-off visit sends corrections to Inspection Management',
+      (tester) async {
+    await captureEgg();
+    await (db.update(db.storeVisits)..where((t) => t.uuid.equals(visitUuid)))
+        .write(StoreVisitsCompanion(completedAt: Value(when)));
+    await open(tester);
+
+    final row = find.text('Egg inspection');
+    await tester.scrollUntilVisible(row, 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.textContaining('correct it from Inspection Management'),
+        findsOneWidget);
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    await tester.tap(row, warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.text('SAVE CHANGES'), findsNothing);
   });
 }

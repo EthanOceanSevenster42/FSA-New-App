@@ -69,8 +69,17 @@ void main() {
     final bytes = await out.readAsBytes();
     expect(String.fromCharCodes(bytes.take(5)), '%PDF-');
     final text = String.fromCharCodes(bytes);
-    // Short findings and two photographs: the whole document is one page.
-    expect(RegExp(r'/Type\s*/Page[^s]').allMatches(text).length, 1);
+    // The report closes with its signatures, and the photographs follow in
+    // their own PHOTOGRAPHS section — on the next page when the report has
+    // filled this one, exactly as a rejection does.
+    //
+    // This asserted a single page until 2026-10-08, when the document gained
+    // the sectioned layout the Agency asked for across every report (the
+    // DETAILS and FINDINGS bars, and photographs under their own bar). The
+    // report alone still fits one page; the pictures no longer squeeze on
+    // beside it, which is why this now allows the second.
+    expect(RegExp(r'/Type\s*/Page[^s]').allMatches(text).length,
+        lessThanOrEqualTo(2));
     expect(bytes.length, greaterThan(20 * 1024),
         reason: 'the photos are in it');
   });

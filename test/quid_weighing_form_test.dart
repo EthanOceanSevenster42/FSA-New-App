@@ -15,6 +15,7 @@ import 'package:fsa_app/features/poultry/data/poultry_repository.dart';
 import 'package:fsa_app/features/eggs/presentation/date_field.dart';
 import 'package:fsa_app/features/poultry/domain/quid_flow.dart';
 import 'package:fsa_app/features/poultry/presentation/poultry_quid_continue_page.dart';
+import 'package:fsa_app/features/seizures/data/seizure_repository.dart';
 
 /// A one-pixel PNG: what the fake camera hands back.
 const _onePixelPng =
@@ -277,7 +278,8 @@ void main() {
       await press(tester, 'Carry on inspecting');
       expect(find.text('REJECTION FORM'), findsOneWidget);
       expect(find.textContaining('above the 7% allowed'), findsWidgets);
-      expect(find.textContaining('Seizure declined'), findsOneWidget);
+      // Declined, and nothing on the form says so: the rejection stands.
+      expect(find.textContaining('Seizure declined'), findsNothing);
       final row = (await db.select(db.poultryQuidInspections).get()).single;
       expect(row.directionRequired, isTrue);
       expect(row.seizureDecision, 'inspect');
@@ -315,7 +317,7 @@ void main() {
       // (1080 − 1000) / 1080 = 7.407%, under 8 + 1.
       await seedFive(injector: '1', quidFinal: '1080');
       await open(tester);
-      await yes(tester, 'QUID Determintion Complete');
+      await yes(tester, 'QUID Determination Complete');
       await press(tester, 'Proceed');
       expect(find.textContaining('QUID determination complete'), findsOneWidget);
       expect(find.text('REJECTION FORM'), findsNothing);
@@ -327,7 +329,7 @@ void main() {
       // (1120 − 1000) / 1120 = 10.714%, over 9.
       await seedFive(injector: '1', quidFinal: '1120');
       await open(tester);
-      await yes(tester, 'QUID Determintion Complete');
+      await yes(tester, 'QUID Determination Complete');
       await press(tester, 'Proceed');
       expect(find.text('QUID Deviation Present'), findsOneWidget);
       await press(tester, 'Ok');
@@ -340,15 +342,13 @@ void main() {
       await setStage(iteration: 2, chilling: true, injector: true);
       await seedFive(iteration: 2, injector: '1', quidFinal: '1120');
       await open(tester);
-      await yes(tester, 'QUID Determintion Complete');
+      await yes(tester, 'QUID Determination Complete');
       await press(tester, 'Proceed');
       expect(find.text('This consignment must be seized'), findsOneWidget);
       await press(tester, 'Proceed with seizure');
-      // Seizing asks the Annexure E particulars before anything is written.
-      expect(find.text('Seizure particulars'), findsOneWidget);
-      await tester.enterText(
-          find.byKey(const Key('seizure-quantity')), '12 carcasses');
-      await press(tester, 'Record seizure');
+      // Recorded there and then, with no particulars to fill in: the sheet
+      // takes them from the inspection at the end (Ethan, 2026-09-29).
+      expect(find.text('Seizure particulars'), findsNothing);
       expect(find.text('REJECTION FORM'), findsOneWidget);
       expect(find.textContaining('Brine 1: average QUID 10.714%'),
           findsWidgets);
@@ -357,14 +357,21 @@ void main() {
       expect(row.seizureDecision, 'seize');
       final seizure = (await db.select(db.seizures).get()).single;
       expect(seizure.recordKind, 'quid');
-      expect(seizure.quantity, '12 carcasses');
+      // The quantity is the rejection's batch and quantity, as entered at
+      // the end.
+      await (db.update(db.poultryQuidInspections)
+            ..where((t) => t.clientUuid.equals(row.clientUuid)))
+          .write(const PoultryQuidInspectionsCompanion(
+              directionAction: Value('Batch 4471, 12 carcasses')));
+      final sheet = await SeizureRepository(database: db).current(seizure);
+      expect(sheet.quantity, 'Batch 4471, 12 carcasses');
     });
 
     testWidgets('a repeat is allowed once', (tester) async {
       await setStage(iteration: 2, chilling: true, injector: true);
       await seedFive(iteration: 2, injector: '1', quidFinal: '1080');
       await open(tester);
-      expect(find.text('Repeat QUID Determine Vertification'), findsNothing);
+      expect(find.text('Repeat QUID Determination Verification'), findsNothing);
     });
   });
 

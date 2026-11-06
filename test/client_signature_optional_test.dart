@@ -21,7 +21,7 @@ void main() {
             onPressed: () async {
               result = await captureSignature(
                 context,
-                title: 'Store / Client Signature',
+                title: 'Store/Client Signature',
                 outputPath: '${Directory.systemTemp.path}/never-written.png',
                 declineLabel: 'No client signature',
               );

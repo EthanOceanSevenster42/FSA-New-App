@@ -129,24 +129,19 @@ void main() {
       final mean = EggRules.meanHaughUnit([good, ...List.filled(7, poor)]);
       expect(mean, lessThan(70));
 
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [good, ...List.filled(7, poor)],
-          sampledCount: 8,
-        ),
-        EggRules.haughAdditionalSampleCount,
-      );
+      // The "six more samples" escalation came off the form on 2026-10-26:
+      // 70 is not a figure in R.345, and on a full 60-egg sample it asked
+      // for eggs the form would not let the inspector capture. What is
+      // still true, and what this guards, is that the mean is taken across
+      // the whole sample rather than the last egg typed.
     });
 
-    test('a sample that is fresh throughout needs nothing further', () {
+    test('a sample that is fresh throughout averages well above a poor one',
+        () {
       final fine = EggRules.haughUnit(albumenHeightMm: 7, massG: 52.3);
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: List.filled(8, fine),
-          sampledCount: 8,
-        ),
-        0,
-      );
+      final poor = EggRules.haughUnit(albumenHeightMm: 3, massG: 52.3);
+      expect(EggRules.meanHaughUnit(List.filled(8, fine)),
+          greaterThan(EggRules.meanHaughUnit(List.filled(8, poor))!));
     });
   });
 }

@@ -71,7 +71,7 @@ void main() {
     await pumpVisit(tester, photos: 1);
     expect(find.text('1 of 2 taken — at least 1, 2 at most.'), findsOneWidget);
     final button = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Take photograph'));
+        find.widgetWithText(TextButton, 'Take photo'));
     expect(button.onPressed, isNotNull);
   });
 
@@ -80,7 +80,7 @@ void main() {
     expect(find.text('All 2 taken. Delete one to take another.'),
         findsOneWidget);
     final button = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Take photograph'));
+        find.widgetWithText(TextButton, 'Take photo'));
     expect(button.onPressed, isNull);
   });
 
@@ -95,6 +95,6 @@ void main() {
         find.text('Take at least one photograph before signing off the '
             'occurrence report.'),
         findsOneWidget);
-    expect(find.text('Store / Client Signature'), findsNothing);
+    expect(find.text('Store/Client Signature'), findsNothing);
   });
 }

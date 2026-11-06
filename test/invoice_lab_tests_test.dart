@@ -97,4 +97,68 @@ void main() {
     expect(f.rawFatTests.value, 2);
     expect(f.rawProteinTests.value, 2);
   });
+
+  // What a visit with two different raw products bills, which is how an
+  // inspector meets this: a mince sampled for fat only, and a second
+  // product sampled for meat content. Both laboratory lines have to reach
+  // the form - a visit used to bill whichever one the office typed in
+  // (Ethan, 2026-10-23).
+  group('two raw inspections with different categories', () {
+    test('fat only and meat content bill both lines', () async {
+      await sampledRaw('mince', 4);
+      await sampledRaw('patty', 1);
+      final f = await form();
+      // Both of them are fat: Category D is fat, and Category A is fat and
+      // protein together. There is no protein-only category to pick.
+      expect(f.rawFatTests.value, 2);
+      expect(f.rawProteinTests.value, 1);
+      expect(f.rawSoyaTests.value, 0);
+      expect(f.rawStarchTests.value, 0);
+      expect(f.rawDnaTests.value, 0);
+    });
+
+    test('the order they were captured in makes no difference', () async {
+      await sampledRaw('patty', 1);
+      await sampledRaw('mince', 4);
+      final f = await form();
+      expect(f.rawFatTests.value, 2);
+      expect(f.rawProteinTests.value, 1);
+    });
+
+    test('soya and fat bill their own lines and nothing else', () async {
+      await sampledRaw('mince', 4);
+      await sampledRaw('boerewors', 2);
+      final f = await form();
+      expect(f.rawFatTests.value, 1);
+      expect(f.rawSoyaTests.value, 1);
+      expect(f.rawStarchTests.value, 1);
+      expect(f.rawProteinTests.value, 0);
+      expect(f.rawDnaTests.value, 0);
+    });
+  });
+
+  // The complaint that started this: a mince sample is charged for fat and
+  // the facility was invoiced for protein as well (Nelisa, 2026-10-23).
+  test('one raw inspection sampled for fat bills fat and nothing else',
+      () async {
+    await sampledRaw('mince', 4);
+    final f = await form();
+    expect(f.rawFatTests.value, 1);
+    expect(f.rawProteinTests.value, 0, reason: 'no protein on a fat-only sample');
+    expect(f.rawSoyaTests.value, 0);
+    expect(f.rawStarchTests.value, 0);
+    expect(f.rawDnaTests.value, 0);
+    // And nothing lands on the processed-meat lines either: no PMP
+    // inspection was captured.
+    expect(f.pmpFatTests.value, 0);
+    expect(f.pmpProteinTests.value, 0);
+  });
+
+  test('a sampled inspection with no category chosen bills nothing',
+      () async {
+    await sampledRaw('r1', null);
+    final f = await form();
+    expect(f.rawFatTests.value, 0);
+    expect(f.rawProteinTests.value, 0);
+  });
 }

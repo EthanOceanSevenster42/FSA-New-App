@@ -213,126 +213,17 @@ void main() {
     });
   });
 
-  group('Haugh additional-sample rule (below 70 HU needs 6 more)', () {
-    test('mean is null when nothing was measured, not 0', () {
-      // 0 would trip the "below 70" rule on an unmeasured sample.
+  group('mean Haugh unit', () {
+    // Kept after the "below 70 HU needs six more samples" rule came off the
+    // form on 2026-10-26: the mean is still shown to the inspector, and an
+    // unmeasured sample must read as "not measured" rather than as zero.
+    test('null when nothing was measured, never 0', () {
       expect(EggRules.meanHaughUnit([null, null]), isNull);
+      expect(EggRules.meanHaughUnit([]), isNull);
     });
 
-    test('mean ignores unmeasured eggs', () {
-      expect(EggRules.meanHaughUnit([80.0, null, 60.0]), 70.0);
-    });
-
-    test('no extra samples required when the mean is at or above 70', () {
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [75.0, 80.0],
-          sampledCount: 2,
-        ),
-        0,
-      );
-      // Exactly 70 is acceptable — the rule is "below 70".
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [70.0],
-          sampledCount: 1,
-        ),
-        0,
-      );
-    });
-
-    test('six more required when the mean falls below 70', () {
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [60.0, 65.0],
-          sampledCount: 2,
-        ),
-        6,
-      );
-    });
-
-    test('requirement shrinks as the extra eggs are captured', () {
-      // Two measured below 70 needs 8 total; 5 captured leaves 3 outstanding.
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [60.0, 65.0],
-          sampledCount: 5,
-          baselineCount: 2,
-        ),
-        3,
-      );
-    });
-
-    test('the requirement can actually be satisfied', () {
-      // The bug this pins down: deriving the target from the *current*
-      // measured count meant every egg added and measured pushed the target
-      // six further away, and the inspection could never be saved.
-      const baseline = 2;
-      var sampled = baseline;
-      final readings = <double?>[60.0, 65.0];
-
-      // Capture and measure the six extra eggs the rule asked for.
-      for (var i = 0; i < EggRules.haughAdditionalSampleCount; i++) {
-        sampled++;
-        readings.add(62.0); // still low — the mean stays under 70
-      }
-
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: readings,
-          sampledCount: sampled,
-          baselineCount: baseline,
-        ),
-        0,
-        reason: 'six more eggs must clear the requirement',
-      );
-    });
-
-    test('the target does not move as more eggs are measured', () {
-      // Same baseline, one further egg captured each time: the outstanding
-      // count must fall by one each time, never hold steady.
-      final outstanding = [
-        for (var sampled = 2; sampled <= 8; sampled++)
-          EggRules.additionalSamplesRequired(
-            haughUnits: [for (var i = 0; i < sampled; i++) 60.0],
-            sampledCount: sampled,
-            baselineCount: 2,
-          ),
-      ];
-
-      expect(outstanding, [6, 5, 4, 3, 2, 1, 0]);
-    });
-
-    test('without a baseline the eggs on hand become the baseline', () {
-      // First evaluation: six more than what is already captured.
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [60.0, 65.0],
-          sampledCount: 2,
-        ),
-        6,
-      );
-    });
-
-    test('never negative once the requirement is met', () {
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [60.0, 65.0],
-          sampledCount: 20,
-          baselineCount: 2,
-        ),
-        0,
-      );
-    });
-
-    test('nothing required when no Haugh readings were taken', () {
-      expect(
-        EggRules.additionalSamplesRequired(
-          haughUnits: [null, null],
-          sampledCount: 2,
-        ),
-        0,
-      );
+    test('averages only the eggs that carry a reading', () {
+      expect(EggRules.meanHaughUnit([60, null, 80]), 70);
     });
   });
 
@@ -603,18 +494,6 @@ void main() {
           {1, 2, 6, 34, 29, 30, 36, 37});
     });
 
-    test('the below-70 average needs two readings before it can escalate',
-        () {
-      expect(
-        EggRules.additionalSamplesRequired(haughUnits: [60], sampledCount: 1),
-        0,
-      );
-      expect(
-        EggRules.additionalSamplesRequired(
-            haughUnits: [60, 62], sampledCount: 2),
-        6,
-      );
-    });
   });
 
   group('weighing at a retailer', () {

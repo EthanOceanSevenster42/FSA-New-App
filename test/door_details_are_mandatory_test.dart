@@ -35,6 +35,8 @@ void main() {
     String person = 'T. Dlamini',
     String type = 'Retailer',
     String reason = 'Inspection',
+    String travelStart = '07:30',
+    String travelEnd = '08:15',
   }) =>
       db.into(db.storeVisits).insert(StoreVisitsCompanion.insert(
             uuid: visitUuid,
@@ -47,6 +49,8 @@ void main() {
             contactPerson: Value(person),
             contactEmail: Value(email),
             distanceTravelledKm: Value(distance),
+            travelStart: Value(travelStart),
+            travelEnd: Value(travelEnd),
             plannedLabels: const Value(0),
             plannedPoultry: const Value(1),
           ));
@@ -156,8 +160,8 @@ void main() {
     expect(find.textContaining('the distance travelled (km)'), findsOneWidget);
   });
 
-  testWidgets('the facility type and reason are held to their star too',
-      (tester) async {
+  testWidgets('the facility type is held to its star too; the reason is a '
+      'follow-up switch and always answered', (tester) async {
     await seedVisit(
         address: '1 Farm Road',
         email: 't@rainbow.test',
@@ -166,13 +170,39 @@ void main() {
         reason: '');
     await open(tester);
 
+    // The reason is asked as a switch (Ethan, 2026-10-01); an unanswered
+    // one reads as an inspection, so only the facility type is missing.
+    expect(find.text('Is this a follow-up inspection?'), findsOneWidget);
     await tapText(tester, 'START POULTRY INSPECTION');
 
     expect(
-      find.text('Fill in the inspection facility type and the reason for '
-          'inspection before starting an inspection.'),
+      find.text('Fill in the inspection facility type before starting an '
+          'inspection.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('travel start and end are compulsory too, as on APS',
+      (tester) async {
+    await seedVisit(
+        address: '1 Farm Road',
+        email: 't@rainbow.test',
+        distance: 42,
+        travelStart: '',
+        travelEnd: '');
+    await open(tester);
+    for (final text in ['Travel start', 'Travel end']) {
+      await tester.scrollUntilVisible(label(text), 250,
+          scrollable: find.byType(Scrollable).first);
+      expect(markedRequired(tester, text), isTrue, reason: text);
+    }
+    await tapText(tester, 'START POULTRY INSPECTION');
+    expect(
+      find.text('Fill in the travel start and the travel end before starting '
+          'an inspection.'),
+      findsOneWidget,
+    );
+    expect(find.text('Which poultry inspection?'), findsNothing);
   });
 
   testWidgets('with all three filled in, the inspection starts',
@@ -207,12 +237,12 @@ void main() {
     await tapText(tester, 'SIGN & SUBMIT ALL INSPECTIONS');
 
     expect(
-      find.text('Fill in the person in charge / representative at store, '
+      find.text('Fill in the person in charge/representative at store, '
           'the contact email and the distance travelled (km) before '
           'signing off.'),
       findsOneWidget,
     );
-    expect(find.text('Store / Client Signature'), findsNothing,
+    expect(find.text('Store/Client Signature'), findsNothing,
         reason: 'the signature pad did not open');
   });
 }

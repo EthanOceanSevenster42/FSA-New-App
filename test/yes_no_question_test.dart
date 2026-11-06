@@ -83,7 +83,7 @@ void main() {
     expect(find.text('A sample goes to the laboratory.'), findsOneWidget);
   });
 
-  testWidgets('the checklist slide still reads COMPLIANT / DEVIATION',
+  testWidgets('the checklist slide still reads COMPLIANT/DEVIATION',
       (tester) async {
     await show(tester, ComplianceSlider(compliant: false, onChanged: (_) {}));
     expect(find.text('COMPLIANT'), findsOneWidget);

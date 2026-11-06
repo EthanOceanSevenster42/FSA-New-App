@@ -7,12 +7,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fsa_app/core/data/local_database.dart';
+import 'package:fsa_app/core/widgets/required_label.dart';
 import 'package:fsa_app/core/session/session_user.dart';
 import 'package:fsa_app/core/widgets/compliance_slider.dart';
 import 'package:fsa_app/features/eggs/data/eggs_repository.dart';
 import 'package:fsa_app/features/pmp/data/pmp_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_capture_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_repository.dart';
+import 'package:fsa_app/features/poultry/domain/poultry_rules.dart';
 import 'package:fsa_app/features/poultry/presentation/poultry_label_checklist_form.dart';
 import 'package:fsa_app/features/poultry/presentation/poultry_menu_page.dart';
 import 'package:fsa_app/features/rawrmp/data/rawrmp_repository.dart';
@@ -84,6 +86,9 @@ void main() {
             // The door must be complete before an inspection may start.
             facilityAddress: const Value('1 Farm Road, Hammarsdale'),
             contactEmail: const Value('t@rainbow.test'),
+            contactPerson: const Value('T. Dlamini'),
+            travelStart: const Value('07:30'),
+            travelEnd: const Value('08:15'),
             facilityType: const Value('Retailer'),
             inspectionReason: const Value('Inspection'),
             distanceTravelledKm: const Value(42),
@@ -155,20 +160,24 @@ void main() {
       expect(gradingSlider(tester).value, isTrue);
     });
 
-    testWidgets(
-        'YES opens the grading checklist for the same product once the '
-        'labelling is complete', (tester) async {
-      const visit = VisitPrefill(
-        uuid: 'visit-1',
-        facilityName: 'Rainbow Chickens - Hammarsdale',
-        facilityAddress: '1 Farm Road',
-        facilityPhone: '031 000 0000',
-        contactPerson: 'T. Dlamini',
-        contactEmail: 't@rainbow.test',
-        representative: 'T. Dlamini',
-        managerName: 'S. Naidoo',
-        managerEmail: 's@rainbow.test',
-      );
+    const gradingVisit = VisitPrefill(
+      uuid: 'visit-1',
+      facilityName: 'Rainbow Chickens - Hammarsdale',
+      facilityAddress: '1 Farm Road',
+      facilityPhone: '031 000 0000',
+      contactPerson: 'T. Dlamini',
+      contactEmail: 't@rainbow.test',
+      representative: 'T. Dlamini',
+      managerName: 'S. Naidoo',
+      managerEmail: 's@rainbow.test',
+    );
+
+    /// A label checklist with its two photographs, grading answered
+    /// [grading], opened under a page it can go back to.
+    Future<void> openLabel(WidgetTester tester, {required bool grading}) async {
+      tester.view.physicalSize = const Size(1080, 12000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
       await db
           .into(db.poultryLabelInspections)
           .insert(PoultryLabelInspectionsCompanion.insert(
@@ -178,9 +187,8 @@ void main() {
             updatedAt: when,
             registrationNumber: const Value('ZA-PM-4471'),
             productDetails: const Value('Whole Frozen Chicken'),
-            gradingToFollow: const Value(true),
+            gradingToFollow: Value(grading),
           ));
-      // The two label photographs the checklist is read against.
       for (final name in ['one.png', 'two.png']) {
         await db.into(db.poultryPhotos).insert(PoultryPhotosCompanion.insert(
               recordUuid: 'label-1',
@@ -189,22 +197,196 @@ void main() {
               capturedAt: when,
             ));
       }
-      await open(tester, existingUuid: 'label-1', visit: visit);
-
-      await scrollTo(tester, find.text('Complete'));
-      await tester.tap(find.text('Complete'));
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => PoultryLabelChecklistForm(
+                      repository: poultry,
+                      captureRepository: capture,
+                      inspectorName: 'ethan',
+                      existingUuid: 'label-1',
+                      visit: gradingVisit,
+                    ),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
+    }
 
-      // The labelling is saved, waiting for the visit's sign-off…
+    final gradingUuid = PoultryLabelChecklistForm.gradingUuidFor('label-1');
+    const question = 'Grading and classification as well?';
+    const heading = 'CLASSIFICATION AND GRADING CHECKLIST';
+
+    Future<void> answer(WidgetTester tester, String side) async {
+      final target = find.descendant(
+        of: find.ancestor(
+            of: find.text(question), matching: find.byType(YesNoQuestion)),
+        matching: find.text(side),
+      );
+      await tester.ensureVisible(target);
+      await tester.tap(target);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> complete(WidgetTester tester) async {
+      final button = find.text('Complete');
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the question sits underneath the labelling', (tester) async {
+      await openLabel(tester, grading: false);
+      final asked = tester.getTopLeft(find.text(question)).dy;
+      expect(asked, greaterThan(tester.getTopLeft(find.text('REJECTION FORM')).dy));
+      expect(
+          asked,
+          greaterThan(
+              // One wording on every form since 2026-09-30: the evidence
+              // section's button says "Take photo", whatever the caller
+              // passes as its captureLabel.
+              tester.getTopLeft(find.text('Take photo')).dy));
+      expect(find.text(heading), findsNothing,
+          reason: 'NO: no grading on the form');
+    });
+
+    testWidgets(
+        'YES shows the grading checklist underneath it, on the same form',
+        (tester) async {
+      await openLabel(tester, grading: false);
+      await answer(tester, 'YES');
+
+      expect(find.text('Label/Container Checklist'), findsOneWidget);
+      expect(find.text('Poultry Inspection Details'), findsNothing,
+          reason: 'no screen of its own');
+      expect(find.text(heading), findsOneWidget);
+      expect(tester.getTopLeft(find.text(heading)).dy,
+          greaterThan(tester.getTopLeft(find.text(question)).dy));
+      // Asked once, up in the labelling: not again in the grading. The
+      // caption is a required one, so it renders as rich text with its
+      // asterisk and find.text would not see it.
+      expect(
+          find.byWidgetPredicate(
+              (w) => w is RequiredLabel && w.label == 'Product Name'),
+          findsOneWidget);
+      expect(find.text('GRADING REJECTION FORM'), findsOneWidget);
+    });
+
+    testWidgets('Complete waits for the grading to be answered',
+        (tester) async {
+      await openLabel(tester, grading: true);
+      await complete(tester);
+
+      expect(find.text('Label/Container Checklist'), findsOneWidget,
+          reason: 'held on the form');
+      final label = (await db.select(db.poultryLabelInspections).get()).single;
+      expect(label.status, isNot('ready'));
+    });
+
+    testWidgets('and finishes both together once it is', (tester) async {
+      // A poultry type, a class designation it can carry and a grade that
+      // designation may be given: the answers the grading form itself will
+      // not complete without. The grade became one of them, so seeding only
+      // the first two left the grading unfinishable and the form never
+      // closed (Ethan, 2026-10-08).
+      final meat = (await poultry.meatTypes()).first;
+      final links = await poultry.designationGradeLinks();
+      final designation = PoultryRules.designationsFor(
+        meatTypeId: meat.id,
+        links: links,
+        designations: await poultry.designationClasses(),
+      ).first;
+      final grade = PoultryRules.gradesFor(
+        meatTypeId: meat.id,
+        designationId: designation.id,
+        links: links,
+        grades: await poultry.grades(),
+      ).first;
+      await db.into(db.poultryInspections).insert(
+            PoultryInspectionsCompanion.insert(
+              clientUuid: gradingUuid,
+              visitUuid: const Value('visit-1'),
+              inspectedAt: when,
+              updatedAt: when,
+              meatTypeId: Value(meat.id),
+              designationClassId: Value(designation.id),
+              gradeId: Value(grade.id),
+            ),
+          );
+      // One photograph per sample, captioned with the sample it belongs to:
+      // the grading counts them by that caption, so an uncaptioned one reads
+      // as the carcass still owing its picture (Ethan, 2026-10-08).
+      await db.into(db.poultryPhotos).insert(PoultryPhotosCompanion.insert(
+            recordUuid: gradingUuid,
+            kind: 'grading',
+            filePath: '${scratch.path}/one.png',
+            capturedAt: when,
+            caption: const Value('Sample 1'),
+          ));
+      await openLabel(tester, grading: true);
+      await complete(tester);
+
+      expect(find.text('open'), findsOneWidget, reason: 'back where it began');
       final label = (await db.select(db.poultryLabelInspections).get()).single;
       expect(label.status, 'ready');
-      // …and the grading checklist is open, on the same pack.
-      expect(find.text('Poultry Inspection Details'), findsOneWidget);
-      expect(find.text('Label/Container Checklist'), findsNothing);
-      expect(find.text('ZA-PM-4471'), findsOneWidget);
-      // Further down the grading form's list, so built once scrolled to.
-      await scrollTo(tester, find.text('Whole Frozen Chicken'));
-      expect(find.text('Whole Frozen Chicken'), findsOneWidget);
+      final graded = (await poultry.inspectionByUuid(gradingUuid))!;
+      expect(graded.status, 'ready');
+      // The same pack, from the labelling above it.
+      expect(graded.companyRegNumber, 'ZA-PM-4471');
+      expect(graded.productDetails, 'Whole Frozen Chicken');
+    });
+
+    testWidgets(
+        'there is no Save draft: going back keeps the work as a draft, and '
+        'a finished checklist stays finished', (tester) async {
+      await openLabel(tester, grading: false);
+      expect(find.text('Save draft'), findsNothing);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('open'), findsOneWidget);
+      var label = (await db.select(db.poultryLabelInspections).get()).single;
+      expect(label.status, 'draft');
+      expect(label.productDetails, 'Whole Frozen Chicken');
+
+      await (db.update(db.poultryLabelInspections)
+            ..where((t) => t.clientUuid.equals('label-1')))
+          .write(const PoultryLabelInspectionsCompanion(status: Value('ready')));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      label = (await db.select(db.poultryLabelInspections).get()).single;
+      expect(label.status, 'ready');
+    });
+
+    testWidgets('NO after grading was started asks, then removes it',
+        (tester) async {
+      await db.into(db.poultryInspections).insert(
+            PoultryInspectionsCompanion.insert(
+              clientUuid: gradingUuid,
+              visitUuid: const Value('visit-1'),
+              inspectedAt: when,
+              updatedAt: when,
+            ),
+          );
+      await openLabel(tester, grading: true);
+      await answer(tester, 'NO');
+      expect(find.text('Remove the grading?'), findsOneWidget);
+      await tester.tap(find.text('Remove'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(heading), findsNothing);
+      expect(await poultry.inspectionByUuid(gradingUuid), isNull);
     });
 
     testWidgets('NO leaves it at the labelling', (tester) async {
@@ -226,6 +408,8 @@ void main() {
             visitUuid: const Value('visit-1'),
             inspectedAt: when,
             updatedAt: when,
+            // Required on the label form (Ethan, 2026-09-30).
+            productDetails: const Value('Whole chicken'),
           ));
       for (final name in ['one.png', 'two.png']) {
         await db.into(db.poultryPhotos).insert(PoultryPhotosCompanion.insert(

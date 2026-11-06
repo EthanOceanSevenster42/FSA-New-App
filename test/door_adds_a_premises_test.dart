@@ -63,7 +63,7 @@ void main() {
         );
     await tester.enterText(
         box('Physical address').first, '12 Bridge Road, Pinetown');
-    await tester.enterText(box('Telephone / cellphone').first, '0312001234');
+    await tester.enterText(box('Telephone/cellphone').first, '0312001234');
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add premises'));
     await tester.pumpAndSettle();

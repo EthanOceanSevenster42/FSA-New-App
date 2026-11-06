@@ -197,6 +197,24 @@ void main() {
       'Inspection',
       'Inspection Management',
       'Server Sync',
+      // Released to every inspector on 2026-10-29; this list was not
+      // updated with it, so it had been failing since.
+      'Follow-up Calendar',
     ]);
+  });
+
+  test('the home screen carries the tools used every day', () {
+    // They stay in the drawer as well — an inspector who has learned to
+    // look there must still find them — but syncing and seeing where you
+    // are going should not need the drawer opened at all.
+    expect(
+      kAppFeatures.where((f) => f.onHome).map((f) => f.title),
+      ['Server Sync', 'Follow-up Calendar'],
+    );
+    expect(
+      kAppFeatures.where((f) => f.onHome).every((f) => f.available),
+      isTrue,
+      reason: 'a tile on the home screen must go somewhere',
+    );
   });
 }

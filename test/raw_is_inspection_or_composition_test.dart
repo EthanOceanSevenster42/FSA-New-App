@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fsa_app/core/data/local_database.dart';
+import 'package:fsa_app/core/widgets/compliance_slider.dart';
 import 'package:fsa_app/features/eggs/data/eggs_repository.dart';
 import 'package:fsa_app/features/pmp/data/pmp_repository.dart';
 import 'package:fsa_app/features/poultry/data/poultry_capture_repository.dart';
@@ -66,6 +67,29 @@ void main() {
     return find.text(text).evaluate().isNotEmpty;
   }
 
+  testWidgets('switched on, the compositional checklist shows underneath',
+      (tester) async {
+    tester.view.physicalSize = const Size(1080, 14000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await openForm(tester, RawRecordKind.inspection);
+    // No "Lab info is complete" to set before Next (Ethan, 2026-10-01).
+    expect(find.text('Lab info is complete'), findsNothing);
+    expect(find.text('COMPOSITIONAL REQUIREMENTS CHECKLIST'), findsNothing);
+
+    final ask = find.byWidgetPredicate((w) =>
+        w is YesNoQuestion &&
+        w.label == 'Do the Compositional Checklist for this product as well?');
+    expect(ask, findsOneWidget);
+    tester.widget<YesNoQuestion>(ask).onChanged!(true);
+    await tester.pumpAndSettle();
+    expect(find.text('COMPOSITIONAL REQUIREMENTS CHECKLIST'), findsOneWidget);
+
+    tester.widget<YesNoQuestion>(ask).onChanged!(false);
+    await tester.pumpAndSettle();
+    expect(find.text('COMPOSITIONAL REQUIREMENTS CHECKLIST'), findsNothing);
+  });
+
   testWidgets('the visit asks which, when raw is started', (tester) async {
     await db.into(db.storeVisits).insert(StoreVisitsCompanion.insert(
           uuid: 'visit-1',
@@ -74,6 +98,9 @@ void main() {
           facilityName: const Value('Kroon Foods'),
           facilityAddress: const Value('1 Main Road'),
           contactEmail: const Value('k@kroon.test'),
+          contactPerson: const Value('T. Dlamini'),
+          travelStart: const Value('07:30'),
+          travelEnd: const Value('08:15'),
           facilityType: const Value('Retailer'),
           inspectionReason: const Value('Inspection'),
           distanceTravelledKm: const Value(12),

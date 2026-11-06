@@ -64,6 +64,7 @@ void main() {
         eggs: EggsRepository(database: db, baseUrl: ''),
         invoices: InvoiceRepository(db, visits),
         database: db,
+        inspectorName: 'ethan',
       ),
     ));
     await settle(tester);
@@ -71,10 +72,10 @@ void main() {
 
     await tester.tap(find.text('QUID test'));
     await settle(tester);
-    await tester.ensureVisible(find.text('UNAPPROVE'));
-    await tester.tap(find.text('UNAPPROVE'));
+    await tester.ensureVisible(find.text('RETRACTION'));
+    await tester.tap(find.text('RETRACTION'));
     await settle(tester);
-    await tester.tap(find.text('Unapprove'));
+    await tester.tap(find.text('Retract'));
     await settle(tester);
     expect((await db.select(db.storeVisits).get()).single.approvedAt, isNull);
 

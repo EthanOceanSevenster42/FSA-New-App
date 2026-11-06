@@ -77,15 +77,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// The set-up is closed with a NEXT button, not a YES/NO question: it
+  /// checks there is an injector, asks whether the particulars are right,
+  /// then goes on to the weighing (the form changed on 2026-09-30; this
+  /// helper still drove the old question).
   Future<void> complete(WidgetTester tester) async {
-    final yes = find.descendant(
-      of: find.ancestor(
-          of: find.text('Injector Inspection Set-Up Details Complete'),
-          matching: find.byType(YesNoQuestion)),
-      matching: find.text('YES'),
-    );
-    await tester.ensureVisible(yes);
-    await tester.tap(yes);
+    final next = find.widgetWithText(FilledButton, 'NEXT');
+    await tester.ensureVisible(next);
+    await tester.tap(next);
     await tester.pumpAndSettle();
   }
 
@@ -98,7 +97,7 @@ void main() {
         .toList();
   }
 
-  testWidgets('starts on Water and Whole Carcass, as the original does',
+  testWidgets('starts on Water and whole carcasses, as the original does',
       (tester) async {
     await open(tester);
     final chosen = tester
@@ -106,28 +105,41 @@ void main() {
         .where((c) => c.selected)
         .map((c) => ((c.label as Text).data))
         .toList();
-    expect(chosen, containsAll(['Water', 'Whole Carcass', 'Regulated Standard']));
+    expect(
+        chosen, containsAll(['Water', 'Whole carcass', 'Regulated Standard']));
+    // The product is typed; whole carcass or portions is a toggle beside it,
+    // not a dropdown (Ethan, 2026-10-04).
+    expect(
+        find.descendant(
+            of: find.ancestor(
+                of: labelled('Product'), matching: find.byType(LabelledField)),
+            matching: find.byType(TextField)),
+        findsOneWidget);
+    expect(find.text('Portion type'), findsNothing);
   });
 
+  // 10% on whole carcasses and 15% on portions: AFSQ reported the two
+  // crossed over and Ethan confirmed this way round (2026-10-08).
   testWidgets('a regulated injector is held to 10% on whole carcasses',
       (tester) async {
     await open(tester);
-    await enter(tester, 'Injector Name/Identifier', 'Brine 1');
+    await tap(tester, 'Whole carcass');
+    await enter(tester, 'Injector name', 'Brine 1');
     await tap(tester, 'Add');
     expect(rowFor(tester, 'Brine 1'), ['1', 'Brine 1', '10']);
   });
 
-  testWidgets('and to 15% on cuts', (tester) async {
+  testWidgets('and to 15% on portions', (tester) async {
     await open(tester);
-    await tap(tester, 'Cuts');
-    await enter(tester, 'Injector Name/Identifier', 'Brine 1');
+    await tap(tester, 'Portions');
+    await enter(tester, 'Injector name', 'Brine 1');
     await tap(tester, 'Add');
     expect(rowFor(tester, 'Brine 1'), ['1', 'Brine 1', '15']);
   });
 
   testWidgets('a dispensation needs its percentage', (tester) async {
     await open(tester);
-    await enter(tester, 'Injector Name/Identifier', 'Brine 2');
+    await enter(tester, 'Injector name', 'Brine 2');
     await tap(tester, 'Dispensation');
     await tap(tester, 'Add');
     expect(
@@ -136,7 +148,7 @@ void main() {
         findsOneWidget);
     await tap(tester, 'Ok');
 
-    await enter(tester, 'Dispensation QUID %', '12');
+    await enter(tester, 'Dispensation percentage (%)', '12');
     await tap(tester, 'Add');
     expect(rowFor(tester, 'Brine 2'), ['1', 'Brine 2', '12']);
   });
@@ -145,8 +157,15 @@ void main() {
       (tester) async {
     await open(tester);
     await enter(tester, 'Inspection Facility Name', 'Rainbow Chickens');
+    // The product is asked for before the injector list is checked, so it
+    // has to be filled in to reach that check at all.
+    await enter(tester, 'Product', 'Whole frozen chicken');
     await complete(tester);
-    expect(find.text('No Injector details has been added. Please address.'),
+    // The set-up now says so in a dialog rather than inline.
+    expect(find.text('No injectors yet'), findsOneWidget);
+    expect(
+        find.text(
+            'Add at least one injector, with its name, before going on.'),
         findsOneWidget);
     expect(await db.select(db.poultryQuidInspections).get(), isEmpty);
   });
@@ -155,17 +174,18 @@ void main() {
       (tester) async {
     await open(tester);
     await enter(tester, 'Inspection Facility Name', 'Rainbow Chickens');
-    await enter(tester, 'Injector Name/Identifier', 'Brine 1');
+    await enter(tester, 'Product', 'Whole frozen chicken');
+    await enter(tester, 'Injector name', 'Brine 1');
     await tap(tester, 'Add');
-    await enter(tester, 'Injector Name/Identifier', 'Brine 2');
+    await enter(tester, 'Injector name', 'Brine 2');
     await tap(tester, 'Dispensation');
-    await enter(tester, 'Dispensation QUID %', '12');
+    await enter(tester, 'Dispensation percentage (%)', '12');
     await tap(tester, 'Add');
 
     await complete(tester);
-    expect(find.text('Confirm Setup Data'), findsOneWidget);
-    await tap(tester, 'Save');
-    await tap(tester, 'OK');
+    // The confirmation asks in words now, and starts the weighing itself.
+    expect(find.text('Are you happy with this set-up?'), findsOneWidget);
+    await tap(tester, 'Yes, start weighing');
 
     final row = (await db.select(db.poultryQuidInspections).get()).single;
     expect(row.setupComplete, isTrue);

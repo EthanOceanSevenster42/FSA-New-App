@@ -59,17 +59,38 @@ void main() {
     });
 
     test('may run two and a half percent over on portions', () {
+      // 2.5% (Ethan, 2026-11-05: a 15% injector may run to 17.5%), back
+      // from the 1.5% set on Neo Noe's review of 2026-10-19.
       final cuts = judge(
         const ['10.4', '10.4', '10.4', '10.4', '10.4'],
         isWholeCarcass: false,
       );
       expect(cuts.limitPercent, 10.5);
       expect(cuts.passes, isTrue);
+      expect(
+        judge(const ['10.6', '10.6', '10.6', '10.6', '10.6'],
+                isWholeCarcass: false)
+            .passes,
+        isFalse,
+      );
+    });
+
+    test('water chilling is read against 7% absorbed moisture, Reg. 4(2)', () {
+      // A limit of its own, nothing to do with the allowable QUID: the
+      // sheet used to print 15% over this column on a portion line, so a
+      // chiller running at 12% read as compliant (Neo Noe, 2026-10-19).
+      expect(quidWaterChillMaximumPickup, 7.0);
+      expect(quidWaterChillWithinLimit('6.999'), isTrue);
+      expect(quidWaterChillWithinLimit('7.000'), isFalse);
+      expect(quidWaterChillWithinLimit('12.0'), isFalse);
+      // Nothing weighed is not a finding either way.
+      expect(quidWaterChillWithinLimit(''), isNull);
     });
 
     test('falls back to the regulated maximum when it carries no setting', () {
       // Nothing entered against the injector, so the regulation's own figure
-      // stands in — 10% whole carcass, 15% portions.
+      // stands in — 10% whole carcass, 15% portions. AFSQ reported the two
+      // crossed over and Ethan confirmed this way round (2026-10-08).
       expect(judge(const ['1'], setPercent: '').limitPercent, 10.0);
       expect(
         judge(const ['1'], setPercent: '', isWholeCarcass: false).limitPercent,
